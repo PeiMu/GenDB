@@ -9,8 +9,8 @@
 
 export const defaults = {
   // --- Pipeline settings (provider-agnostic) ---
-  agentProvider: "claude",  // "claude" or "codex" — select the underlying agent SDK
-  targetBenchmark: "tpc-h", // "tpc-h" / "sec-edgar"
+  agentProvider: "claude",  // "claude", "codex", "claude-code", or "glm"
+  targetBenchmark: "tpc-h", // "tpc-h" / "sec-edgar" / "imdb-job"
   scaleFactor: 10,          // 10 for tpc-h, 3 for sec-edgar
   optimizationTarget: "hot",  // "hot" (optimize avg hot runs) or "cold" (optimize cold run)
   maxOptimizationIterations: 5,
@@ -106,6 +106,57 @@ export const defaults = {
       escalationEffortLevel: "high",
       singleAgent: {
         model: "gpt-5.4",
+        effortLevel: "medium",
+      },
+    },
+    "claude-code": {
+      model: "opus",
+      agentModels: {
+        workload_analyzer: "opus",
+        storage_designer: "opus",
+        query_planner: "opus",
+        code_generator: "opus",
+        query_optimizer: "opus",
+        memory_manager: "opus",
+      },
+      agentEffortLevels: {
+        workload_analyzer: "low",
+        storage_designer: "medium",
+        query_planner: "medium",
+        code_generator: "medium",
+        query_optimizer: "medium",
+        memory_manager: "medium",
+      },
+      escalationModel: "opus",
+      escalationEffortLevel: "high",
+      singleAgent: {
+        model: "opus",
+        effortLevel: "medium",
+      },
+    },
+    glm: {
+      model: "glm-5.1",
+      agentModels: {
+        workload_analyzer: "glm-5.1",
+        storage_designer: "glm-5.1",
+        query_planner: "glm-5.1",
+        code_generator: "glm-5.1",
+        query_optimizer: "glm-5.1",
+        memory_manager: "glm-5.1",
+      },
+      agentEffortLevels: {
+        workload_analyzer: "medium",
+        storage_designer: "medium",
+        query_planner: "medium",
+        code_generator: "medium",
+        query_optimizer: "medium",
+        memory_manager: "medium",
+      },
+      maxToolIterations: 80,
+      escalationModel: "glm-5.1",
+      escalationEffortLevel: "high",
+      singleAgent: {
+        model: "glm-5.1",
         effortLevel: "medium",
       },
     },

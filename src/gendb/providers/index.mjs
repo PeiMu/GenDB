@@ -11,6 +11,8 @@
 const PROVIDERS = {
   claude: () => import("./claude.mjs"),
   codex: () => import("./codex.mjs"),
+  "claude-code": () => import("./claude-code.mjs"),
+  glm: () => import("./glm.mjs"),
 };
 
 let activeProviderName = "claude";

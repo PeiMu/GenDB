@@ -1,0 +1,30 @@
+{
+  "timestamp": "2026-05-18T15-47-56",
+  "startedAt": "2026-05-18T15:47:56.331Z",
+  "status": "running",
+  "dataDir": "/home/pei/Project/GenDB/benchmarks/imdb-job/data/sf1",
+  "gendbDir": "/home/pei/Project/GenDB/output/imdb-job-sf1/storage",
+  "scaleFactor": 1,
+  "maxIterations": 5,
+  "model": "opus",
+  "agentProvider": "claude-code",
+  "optimizationTarget": "hot",
+  "phase1": {
+    "status": "running",
+    "steps": {
+      "workload_analysis": {
+        "status": "running",
+        "startedAt": "2026-05-18T15:47:56.366Z"
+      },
+      "storage_design": {
+        "status": "pending"
+      },
+      "data_ingestion": {
+        "status": "pending"
+      },
+      "index_building": {
+        "status": "pending"
+      }
+    }
+  }
+}

@@ -20,6 +20,9 @@ benchmarks/sec-edgar/duckdb
 benchmarks/sec-edgar/gendb
 benchmarks/sec-edgar/monetdb
 
+# JOB
+benchmarks/imdb-job/data
+
 # GenDB output folders — data and compiled binaries
 output/**/gendb/
 output/**/storage/

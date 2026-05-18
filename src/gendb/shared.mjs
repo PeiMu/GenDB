@@ -82,7 +82,7 @@ export function parseQueryFile(queriesText) {
     if (!trimmed || !trimmed.includes("SELECT")) continue;
 
     // Try to extract query ID from comment
-    const idMatch = trimmed.match(/--\s*(?:Q|Query)\s*(\d+)/i);
+    const idMatch = trimmed.match(/--\s*(?:Q|Query)\s*(\w+)/i);
     const id = idMatch ? `Q${idMatch[1]}` : `Q${queryNum}`;
     queries.push({ id, sql: trimmed });
     queryNum++;
