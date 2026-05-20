@@ -1,0 +1,122 @@
+{
+  "query_id": "Q19c",
+  "pipeline": [
+    "resolve_dims",
+    "build_Y_year_bitset",
+    "build_P_fused_bitset",
+    "scan_mi_csr_year_first_then_like",
+    "probe_mc_cn_us",
+    "probe_ci_voice_actress",
+    "aggregate_min"
+  ],
+  "join_order": [
+    {
+      "build": "info_type(it_rd='release dates')",
+      "probe": "movie_info via movie_info__info_type_id CSR",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 1,
+      "notes": "Walk only the it_rd slice of mi (CSR offsets)."
+    },
+    {
+      "build": "title bitset Y over title.id where production_year > 2000 AND != INT32_MIN",
+      "probe": "mi row movie_id during CSR scan",
+      "type": "semi",
+      "strategy": "bitset_lookup",
+      "build_cardinality": 1250000,
+      "notes": "Check Y[mv] FIRST before reading varlen mi.info — skips ~50% of release-date rows' varlen offset+data reads. Y is ~316KB → fits L2."
+    },
+    {
+      "build": "mi rows passing Y[mv] AND LIKE 'Japan:%200%' OR 'USA:%200%'",
+      "probe": "deduped movie_id set T",
+      "type": "inner",
+      "strategy": "direct_array",
+      "build_cardinality": 30000,
+      "notes": "After year-bitset filter, run prefix+memmem only on year-qualifying rows."
+    },
+    {
+      "build": "set of qualifying movie_ids T",
+      "probe": "movie_companies via mc__movie_id offsets",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 30000,
+      "notes": "For each mv, walk mc range; require any cn_country_code[company_id-1]==cc_us."
+    },
+    {
+      "build": "qualifying movie_ids T",
+      "probe": "cast_info via ci__movie_id offsets",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 30000,
+      "notes": "For each mv, walk ci range; apply role_id==rt_actress, person_role_id != INT32_MIN, P_and_an bit, then ci.note voice."
+    },
+    {
+      "build": "fused bitset P_and_an over name.id (gender='f' AND name LIKE '%An%' AND aka_name range non-empty)",
+      "probe": "ci.person_id",
+      "type": "semi",
+      "strategy": "bitset_lookup",
+      "build_cardinality": 600000,
+      "notes": "Single bit test combines name-gender, name-LIKE, and aka_name existence. Bitset is ~520KB → fits L2. Eliminates per-ci-row 16MB aka_name offset array random access."
+    }
+  ],
+  "filters": [
+    {"table": "role_type", "predicate": "role='actress'", "selectivity": 0.083},
+    {"table": "info_type", "predicate": "info='release dates'", "selectivity": 0.0088},
+    {"table": "company_name", "predicate": "country_code='[us]'", "selectivity": 0.5},
+    {"table": "name", "predicate": "gender='f' AND name LIKE '%An%' AND aka_name nonempty", "selectivity": 0.10},
+    {"table": "movie_info", "predicate": "info_type_id=it_rd AND (info LIKE 'Japan:%200%' OR info LIKE 'USA:%200%')", "selectivity": 0.005},
+    {"table": "title", "predicate": "production_year > 2000 AND != INT32_MIN", "selectivity": 0.45},
+    {"table": "cast_info", "predicate": "note IN voice-set AND role_id=rt_actress AND person_role_id present", "selectivity": 0.003}
+  ],
+  "data_structures": {
+    "dim_scalars": "int32 ids for rt_actress, it_rd, cc_us, g_f",
+    "Y_year_bitset": "vector<uint64_t> sized (N_title+1) bits; bit mv set iff production_year[mv-1] > 2000 AND != INT32_MIN. ~316KB → L2-resident.",
+    "P_fused_bitset": "vector<uint64_t> sized (N_name+1) bits; bit pid set iff name[pid-1].gender=='f' AND memmem(name[pid-1],'An') AND an_off[pid+1] > an_off[pid]. ~520KB → L2-resident.",
+    "cn_country_code_lookup": "int16 array[cn_rows]",
+    "ci_note_voice_set": "switch on length + memcmp (no allocation)",
+    "movie_set_T": "vector<int32_t> of qualifying movie_ids, sorted+deduped",
+    "mi_info_type_csr": "offsets+rowids from disk",
+    "ci_movie_offsets": "int32 offsets array",
+    "mc_movie_offsets": "int32 offsets array",
+    "aggregation": "two scalar MIN accumulators (name_id, title_id), per-thread local then reduce"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "morsel_unit": "Y/P bitset builds: parallel for over rows. CSR scan: parallel for over k in [lo,hi) static schedule(4096). Main scan: parallel for over T static schedule(64). Per-thread local accumulators."
+  },
+  "indexes": [
+    {"index": "movie_info__info_type_id (CSR)", "purpose": "drive scan: iterate only release-dates mi rows"},
+    {"index": "cast_info__movie_id (offsets_only)", "purpose": "join_lookup ci rows by movie_id"},
+    {"index": "movie_companies__movie_id (offsets_only)", "purpose": "join_lookup mc rows by movie_id"},
+    {"index": "aka_name__person_id (offsets_only)", "purpose": "consumed only during P_fused_bitset build; not touched during main scan"}
+  ],
+  "like_strategies": [
+    {"column": "mi.info", "patterns": ["Japan:%200%", "USA:%200%"], "method": "prefix_check (memcmp 6 bytes 'Japan:' or 4 bytes 'USA:') then memmem for '200' in remainder. Run ONLY after Y[mv] passes."},
+    {"column": "n.name", "pattern": "%An%", "method": "length-pruned memmem during P_fused_bitset build (one-time cost amortized)."}
+  ],
+  "scan_mi_csr_filter_order": [
+    "1. r = mit_row[k]",
+    "2. mv = mi_movie_id[r]; bounds-check",
+    "3. test Y bitset at mv — if NOT set, continue (skips varlen offset+data reads)",
+    "4. read mi_info_off[r], mi_info_off[r+1] and mi_info bytes",
+    "5. run mi_info_match (prefix + memmem '200')",
+    "6. push mv into per-thread local_T"
+  ],
+  "main_scan_filter_order": [
+    "1. mc range walk: require any cn_country_code[company_id-1]==cc_us; break on first hit",
+    "2. ci range walk: require role_id==rt_actress (cheap int compare)",
+    "3. require person_role_id != INT32_MIN",
+    "4. pid = ci.person_id; require P_and_an bit set (single L2-resident bit test)",
+    "5. require ci.note voice-set (varlen, only for rare survivors)",
+    "6. update local MIN(name) and (once per movie) MIN(title)"
+  ],
+  "aggregation": "scalar_min_two_columns",
+  "output": {"order_by": [], "limit": 1, "projection": ["MIN(n.name)", "MIN(t.title)"]},
+  "execution_target": "cpp",
+  "optimization_notes": "Root cause: scan_mi_csr_and_filter (26ms, 38% of total) wastes varlen offset+data reads on year-failing rows because LIKE check runs before the year filter; main_scan touches a 16MB aka_name offsets array per surviving ci row, exceeding LLC. Strategy: Category A+C (plan restructuring + work elimination). (1) Build a compact Y bitset over title.id (production_year > 2000 AND != INT32_MIN, ~316KB → L2). In the CSR scan, look up Y[mv] FIRST (after computing mv from mi_movie_id[r]); skip mi_info_off and mi_info_dat reads for rows whose movie fails the year filter — eliminates ~50% of varlen accesses, saving ~10-12ms. (2) Fuse three name-side filters into a single P_and_an bitset over name.id (gender='f' ∧ name LIKE '%An%' ∧ aka_name nonempty, ~520KB → L2). One bit test per ci row replaces a bit test + a separate 16MB cache-exceeding aka_name offsets random probe — should shave ~2-3ms from main_scan. Expected total: ~52-55ms vs 68ms baseline. No changes to threshold_constant 2000 (year cutoff preserved verbatim).",
+  "correctness_anchors": {
+    "threshold_constant_year": 2000,
+    "threshold_constant_year_dup": 2000
+  }
+}

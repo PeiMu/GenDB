@@ -1,0 +1,104 @@
+{
+  "query_id": "Q31a",
+  "pipeline": [
+    "resolve_dims",
+    "scan_company_name_prefix",
+    "drive_mc_csr_by_company",
+    "collect_candidate_movies",
+    "probe_movie_keyword_filter_k",
+    "probe_movie_info_filter_it1_genre",
+    "probe_movie_info_idx_filter_it2",
+    "probe_cast_info_filter_note_gender",
+    "aggregate_min"
+  ],
+  "join_order": [
+    {
+      "build": "company_name(LIKE 'Lionsgate%') -> cn_ids",
+      "probe": "movie_companies via CSR movie_companies__company_id",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 20,
+      "notes": "Lionsgate prefix is the most selective filter; drive via CSR by company_id to collect movie_id candidates"
+    },
+    {
+      "build": "candidate_movie_ids (from mc drive)",
+      "probe": "movie_keyword via offsets_only on movie_id",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 5000,
+      "notes": "For each candidate movie, walk mk rows; require keyword_id in k_ids (hash_set of 7 ids)"
+    },
+    {
+      "build": "k_ids (7 keyword ids resolved from keyword.keyword IN-set)",
+      "probe": "movie_keyword.keyword_id",
+      "type": "semi",
+      "strategy": "hash_set",
+      "build_cardinality": 7
+    },
+    {
+      "build": "candidate_movie_ids (surviving mk semi)",
+      "probe": "movie_info via offsets_only on movie_id",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 2000,
+      "notes": "Filter info_type_id==it1_id AND info IN {Horror,Thriller}; capture mi.info for MIN"
+    },
+    {
+      "build": "candidate_movie_ids (surviving mi)",
+      "probe": "movie_info_idx via offsets_only on movie_id",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 500,
+      "notes": "Filter info_type_id==it2_id; capture mi_idx.info for MIN"
+    },
+    {
+      "build": "candidate_movie_ids (surviving mi_idx)",
+      "probe": "cast_info via offsets_only on movie_id",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 300,
+      "notes": "Filter ci.note in writer-set; then lookup name.gender==m and capture name for MIN"
+    },
+    {
+      "build": "name.gender == m_code (resolved from dict)",
+      "probe": "name[ci.person_id]",
+      "type": "semi",
+      "strategy": "direct_array",
+      "build_cardinality": 1,
+      "notes": "Random lookup into name/gender.bin per ci row; compare to m_code byte"
+    }
+  ],
+  "filters": [
+    {"table": "company_name", "predicate": "name LIKE 'Lionsgate%' (memcmp first 9 bytes)", "selectivity": 0.00009},
+    {"table": "info_type", "predicate": "info='genres' -> it1_id", "selectivity": 0.0089},
+    {"table": "info_type", "predicate": "info='votes' -> it2_id", "selectivity": 0.0089},
+    {"table": "keyword", "predicate": "keyword IN 7-set -> k_ids", "selectivity": 0.00005},
+    {"table": "movie_info", "predicate": "info_type_id==it1_id AND info IN ('Horror','Thriller')", "selectivity": 0.005},
+    {"table": "movie_info_idx", "predicate": "info_type_id==it2_id", "selectivity": 0.3},
+    {"table": "cast_info", "predicate": "note IN writer-5-set", "selectivity": 0.02},
+    {"table": "name", "predicate": "gender==m_code", "selectivity": 0.55}
+  ],
+  "data_structures": {
+    "cn_ids": "flat_array<int32> (tiny, ~20 entries)",
+    "k_ids": "hash_set<int32> (7 entries) or sorted small flat_array with linear probe",
+    "writer_notes": "flat_array of 5 (offset,len) pairs; compare via length-bucketed memcmp",
+    "mi_info_set": "two literal compares ('Horror','Thriller') via length+memcmp",
+    "candidate_movies": "flat_array<int32> (sorted/dedup not required; movie ids may be visited multiple times but mc->movie_id from one Lionsgate company unique)",
+    "min_aggregates": "four (offset,len) running MINs over varlen payloads compared lexicographically"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "notes": "Parallelize over cn_ids x mc CSR ranges; or partition candidate_movies across threads with per-thread local MINs merged at end. Driver set is very small (~20 ids) so prefer expanding to candidate_movies level for parallelism."
+  },
+  "indexes": [
+    {"index": "movie_companies__company_id (CSR)", "purpose": "join_lookup: cn_ids -> mc rows -> movie_id"},
+    {"index": "movie_keyword__movie_id (offsets_only)", "purpose": "join_lookup: movie_id -> mk rows"},
+    {"index": "movie_info__movie_id (offsets_only)", "purpose": "join_lookup: movie_id -> mi rows"},
+    {"index": "movie_info_idx__movie_id (offsets_only)", "purpose": "join_lookup: movie_id -> mi_idx rows"},
+    {"index": "cast_info__movie_id (offsets_only)", "purpose": "join_lookup: movie_id -> ci rows"}
+  ],
+  "aggregation": "four_scalar_min_lexicographic",
+  "output": {"order_by": [], "limit": 1},
+  "execution_target": "cpp"
+}

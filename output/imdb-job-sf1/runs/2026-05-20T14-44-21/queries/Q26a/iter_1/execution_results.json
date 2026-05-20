@@ -1,0 +1,73 @@
+{
+  "compile": {
+    "status": "pass"
+  },
+  "run": {
+    "status": "pass",
+    "duration_ms": 36
+  },
+  "validation": {
+    "status": "fail",
+    "details": {
+      "match": false,
+      "queries": {
+        "Q26a": {
+          "rows_expected": 1,
+          "rows_actual": 1,
+          "match": false,
+          "error": "1 row(s) differ",
+          "sample_mismatches": [
+            {
+              "row": 0,
+              "expected": [
+                "'Agua' Man",
+                "7.10",
+                "Acereda, Hermie",
+                "3:10 to Yuma"
+              ],
+              "actual": [
+                "A Bomb Test Anchorwoman",
+                "7.10",
+                "Acheson, Mark",
+                "A History of Violence"
+              ],
+              "cell_details": [
+                {
+                  "expected": "'Agua' Man",
+                  "actual": "A Bomb Test Anchorwoman",
+                  "pattern": "string_mismatch",
+                  "col": 0
+                },
+                {
+                  "expected": "Acereda, Hermie",
+                  "actual": "Acheson, Mark",
+                  "pattern": "string_mismatch",
+                  "col": 2
+                },
+                {
+                  "expected": "3:10 to Yuma",
+                  "actual": "A History of Violence",
+                  "pattern": "string_mismatch",
+                  "col": 3
+                }
+              ]
+            }
+          ],
+          "mismatch_patterns": {
+            "string_mismatch": 3
+          }
+        }
+      }
+    }
+  },
+  "optimization_target": "hot",
+  "timing_ms": 32.92,
+  "hot_timing_ms": 32.92,
+  "operation_timings": {
+    "data_loading": 0.17,
+    "build_dim_sets": 23.49,
+    "main_scan": 3.93,
+    "output": 0.16,
+    "total": 32.66
+  }
+}

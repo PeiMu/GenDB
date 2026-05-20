@@ -1,0 +1,25 @@
+{
+  "query_id": "Q28c",
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 15.92,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 15.92,
+      "validation": "pass",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "data_loading": 0.55,
+        "dim_resolution": 0.88,
+        "driver_scan": 7.23,
+        "main_scan": 2.41,
+        "output": 0.1,
+        "total": 15.91
+      }
+    }
+  ]
+}

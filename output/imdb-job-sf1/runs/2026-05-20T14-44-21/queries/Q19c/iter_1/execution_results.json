@@ -1,0 +1,25 @@
+{
+  "compile": {
+    "status": "pass"
+  },
+  "run": {
+    "status": "pass",
+    "duration_ms": 73
+  },
+  "validation": {
+    "status": "pass"
+  },
+  "optimization_target": "hot",
+  "timing_ms": 65.99333333333334,
+  "hot_timing_ms": 65.99333333333334,
+  "operation_timings": {
+    "data_loading": 0.42,
+    "resolve_dict_constants": 0.01,
+    "build_Y_year_bitset": 1.72,
+    "build_P_fused_bitset": 1.38,
+    "scan_mi_csr_year_first_then_like": 23.79,
+    "main_scan": 6.67,
+    "output": 0.14,
+    "total": 62.95
+  }
+}

@@ -1,0 +1,89 @@
+{
+  "query_id": "Q30c",
+  "pipeline": [
+    "resolve_dim_constants",
+    "scan_complete_cast_driver",
+    "collect_distinct_movie_ids",
+    "per_movie_probe_mk_mi_miidx_ci",
+    "min_aggregate"
+  ],
+  "dim_resolution": [
+    {"table": "comp_cast_type", "column": "kind", "literal": "cast", "out": "cct1_id", "method": "linear_scan_varlen"},
+    {"table": "comp_cast_type", "column": "kind", "literal": "complete+verified", "out": "cct2_id", "method": "linear_scan_varlen"},
+    {"table": "info_type", "column": "info", "literal": "genres", "out": "it1_id", "method": "linear_scan_varlen"},
+    {"table": "info_type", "column": "info", "literal": "votes", "out": "it2_id", "method": "linear_scan_varlen"},
+    {"table": "name", "column": "gender", "literal": "m", "out": "m_code", "method": "dict_lookup"},
+    {"table": "keyword", "column": "keyword", "literals": ["murder","violence","blood","gore","death","female-nudity","hospital"], "out": "k_ids_set", "method": "linear_scan_collect"}
+  ],
+  "join_order": [
+    {
+      "build": "complete_cast(filtered subject_id==cct1_id AND status_id==cct2_id)",
+      "probe": "self",
+      "type": "scan",
+      "strategy": "linear_scan",
+      "build_cardinality": 10000,
+      "notes": "Driver: complete_cast is smallest fact (135K). Filter and collect distinct movie_ids into flat set."
+    },
+    {
+      "build": "mv_set (driver distinct)",
+      "probe": "movie_keyword via offsets index",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 10000,
+      "notes": "For each mv in driver, scan mk rows via _idx/movie_keyword__movie_id__offsets.bin; check any keyword_id in k_ids_set (hash_set int32)."
+    },
+    {
+      "build": "mv survivors after mk semi-join",
+      "probe": "movie_info via offsets index",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 5000,
+      "notes": "For each mv, scan mi rows; require info_type_id==it1_id AND info in 6-genre set (flat_hash_set<string_view>). Track MIN(info)."
+    },
+    {
+      "build": "mv survivors",
+      "probe": "movie_info_idx via offsets index",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 5000,
+      "notes": "For each mv, scan mi_idx rows; require info_type_id==it2_id. Track MIN(info)."
+    },
+    {
+      "build": "mv survivors",
+      "probe": "cast_info via offsets index",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 5000,
+      "notes": "For each mv, scan ci rows; require note in 5-writer-set (flat_hash_set<string_view> with length prefilter 6-15). For each match, get person_id, check name.gender[pid-1]==m_code; track MIN(name.name)."
+    }
+  ],
+  "filters": [
+    {"table": "complete_cast", "predicate": "subject_id==cct1_id AND status_id==cct2_id", "selectivity": 0.08},
+    {"table": "movie_keyword", "predicate": "keyword_id IN k_ids (per-mv any)", "selectivity": 0.5},
+    {"table": "movie_info", "predicate": "info_type_id==it1_id AND info IN 6-genre-set", "selectivity": 0.05},
+    {"table": "movie_info_idx", "predicate": "info_type_id==it2_id", "selectivity": 0.5},
+    {"table": "cast_info", "predicate": "note IN 5-writer-set", "selectivity": 0.02},
+    {"table": "name", "predicate": "gender==m_code", "selectivity": 0.65}
+  ],
+  "data_structures": {
+    "k_ids_set": "flat_hash_set<int32_t> (size 7)",
+    "mi_genre_set": "flat_hash_set<string_view> (size 6, length prefilter 3-8)",
+    "ci_note_set": "flat_hash_set<string_view> (size 5, length prefilter 6-15)",
+    "mv_driver_set": "std::vector<int32_t> sorted+unique (~10K)",
+    "min_aggregates": "4 std::string_view running minima (mi.info, mi_idx.info, name.name, title.title)"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven_over_mv_set",
+    "threads": "auto(nproc)",
+    "notes": "Partition mv_driver_set across 12 threads; each thread maintains local 4 MIN, merge at end."
+  },
+  "indexes": [
+    {"index": "_idx/movie_keyword__movie_id__offsets.bin", "purpose": "join_lookup mk by movie_id"},
+    {"index": "_idx/movie_info__movie_id__offsets.bin", "purpose": "join_lookup mi by movie_id"},
+    {"index": "_idx/movie_info_idx__movie_id__offsets.bin", "purpose": "join_lookup mi_idx by movie_id"},
+    {"index": "_idx/cast_info__movie_id__offsets.bin", "purpose": "join_lookup ci by movie_id"}
+  ],
+  "aggregation": "scalar_min_4way",
+  "output": {"order_by": [], "limit": 1, "projection": ["MIN(mi.info)", "MIN(mi_idx.info)", "MIN(n.name)", "MIN(t.title)"]},
+  "execution_target": "cpp"
+}

@@ -1,0 +1,97 @@
+{
+  "query_id": "Q26c",
+  "pipeline": [
+    "build_dim_scalars",
+    "build_kw_set",
+    "build_chn_set",
+    "filter_title_driver",
+    "probe_movie_keyword",
+    "probe_complete_cast",
+    "probe_movie_info_idx",
+    "probe_cast_info",
+    "aggregate_min"
+  ],
+  "filters": [
+    {"table": "comp_cast_type", "predicate": "kind = 'cast'", "selectivity": 0.25, "produces": "cct1_id (scalar int32)"},
+    {"table": "comp_cast_type", "predicate": "kind LIKE '%complete%'", "selectivity": 0.5, "produces": "complete_status_set (bitset[4])"},
+    {"table": "info_type", "predicate": "info = 'rating'", "selectivity": 0.009, "produces": "it2_id (scalar int32)"},
+    {"table": "kind_type", "predicate": "kind = 'movie'", "selectivity": 0.143, "produces": "movie_kind_id (scalar int32)"},
+    {"table": "keyword", "predicate": "keyword IN (10 values)", "selectivity": 0.0000745, "produces": "kw_set (bitset[134170])"},
+    {"table": "char_name", "predicate": "name IS NOT NULL AND (name LIKE '%man%' OR name LIKE '%Man%')", "selectivity": 0.03, "produces": "chn_set (bitset[3140339], ~94K bits set)"},
+    {"table": "title", "predicate": "production_year > 2000 AND kind_id = movie_kind_id", "selectivity": 0.35, "produces": "title_set (bitset[2528312], ~885K bits set)"}
+  ],
+  "join_order": [
+    {
+      "step": 1,
+      "build": "kw_set (bitset over keyword.id)",
+      "probe": "movie_keyword via title_set",
+      "type": "semi",
+      "strategy": "bitset_lookup_via_index",
+      "build_cardinality": 10,
+      "notes": "For each t.id in title_set, iterate movie_keyword via movie_keyword__movie_id offsets; check kw_set[mk.keyword_id]. Collect surviving t.ids into a movie_id bitset."
+    },
+    {
+      "step": 2,
+      "build": "complete_status_set, cct1_id",
+      "probe": "complete_cast via surviving movie_ids",
+      "type": "semi",
+      "strategy": "index_nested_loop_with_bitset",
+      "build_cardinality": 4,
+      "notes": "Iterate cc via complete_cast__movie_id offsets; require subject_id == cct1_id AND complete_status_set[status_id]. Keep movie_ids."
+    },
+    {
+      "step": 3,
+      "build": "it2_id (scalar)",
+      "probe": "movie_info_idx via surviving movie_ids",
+      "type": "semi_with_value_capture",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 1,
+      "notes": "Iterate mi_idx via movie_info_idx__movie_id offsets; require info_type_id == it2_id. Capture mi_idx.info varlen for MIN aggregation per surviving movie."
+    },
+    {
+      "step": 4,
+      "build": "chn_set (bitset over char_name.id)",
+      "probe": "cast_info via surviving movie_ids",
+      "type": "semi_with_value_capture",
+      "strategy": "index_nested_loop_with_bitset",
+      "build_cardinality": 94000,
+      "notes": "Iterate ci via cast_info__movie_id offsets; require ci.person_role_id IS NOT NULL AND chn_set[ci.person_role_id]. Capture chn.name varlen for MIN. n.id=ci.person_id is no-op (dense PK, FK always valid)."
+    }
+  ],
+  "data_structures": {
+    "cct1_id": "scalar int32",
+    "complete_status_set": "bitset[4]",
+    "it2_id": "scalar int32",
+    "movie_kind_id": "scalar int32",
+    "kw_set": "bitset[134170]",
+    "chn_set": "bitset[3140339] (~393KB)",
+    "title_set": "bitset[2528312] (~316KB)",
+    "aggregation": "three running MINs (scalar) using lexicographic comparison on varlen strings"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "notes": "Partition title.id range into morsels; each thread maintains local MIN triple for chn.name, mi_idx.info, t.title; merge at end via lex-min reduction."
+  },
+  "indexes": [
+    {"index": "movie_keyword__movie_id", "purpose": "join_lookup (title->mk)"},
+    {"index": "complete_cast__movie_id", "purpose": "join_lookup (title->cc)"},
+    {"index": "movie_info_idx__movie_id", "purpose": "join_lookup (title->mi_idx)"},
+    {"index": "cast_info__movie_id", "purpose": "join_lookup (title->ci)"}
+  ],
+  "aggregation": "global_min_triple",
+  "output": {
+    "projection": ["MIN(chn.name) AS character_name", "MIN(mi_idx.info) AS rating", "MIN(t.title) AS complete_hero_movie"],
+    "order_by": [],
+    "limit": null
+  },
+  "execution_target": "cpp",
+  "implementation_notes": [
+    "Build phase order: scan tiny dims (kt, it2, cct) first to get scalar ids; abort early if any required dim id is missing.",
+    "kw_set: scan keyword.keyword varlen once, mark 10 matches into bitset.",
+    "chn_set: scan char_name.name varlen with memmem for 'man' and 'Man' (no allocations); mark id in bitset.",
+    "Driver loop: walk title.id range, gate on title_set, then for each surviving t.id execute the 4-stage probe early-exiting at first failed semi-join.",
+    "For mi_idx and ci value capture: only fetch varlen .off/.dat slices when needed for MIN update (i.e., compare current best against candidate using memcmp-style lex compare without allocating).",
+    "Per-thread local MINs reduce contention; combine via three pairwise lex-min comparisons at end."
+  ]
+}

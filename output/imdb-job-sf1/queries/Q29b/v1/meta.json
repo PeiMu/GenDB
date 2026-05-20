@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "created_by_run": "2026-05-20T14-44-21",
+  "created_at": "2026-05-20T16:19:09.921Z",
+  "source_iteration": "iter_0",
+  "storage_deps": [
+    "comp_cast_type/id.bin",
+    "info_type/id.bin",
+    "role_type/id.bin",
+    "keyword/id.bin",
+    "char_name/id.bin",
+    "company_name/country_code.bin",
+    "company_name/id.bin",
+    "title/id.bin",
+    "title/production_year.bin",
+    "movie_keyword/movie_id.bin",
+    "movie_keyword/keyword_id.bin",
+    "complete_cast/movie_id.bin",
+    "complete_cast/subject_id.bin",
+    "complete_cast/status_id.bin",
+    "movie_companies/movie_id.bin",
+    "movie_companies/company_id.bin",
+    "movie_info/movie_id.bin",
+    "movie_info/info_type_id.bin",
+    "cast_info/movie_id.bin",
+    "cast_info/person_id.bin",
+    "cast_info/person_role_id.bin",
+    "cast_info/role_id.bin",
+    "name/gender.bin",
+    "aka_name/person_id.bin",
+    "person_info/person_id.bin",
+    "person_info/info_type_id.bin",
+    "_idx/movie_keyword__movie_id__offsets.bin",
+    "_idx/complete_cast__movie_id__offsets.bin",
+    "_idx/movie_companies__movie_id__offsets.bin",
+    "_idx/movie_info__movie_id__offsets.bin",
+    "_idx/cast_info__movie_id__offsets.bin",
+    "_idx/aka_name__person_id__offsets.bin",
+    "_idx/person_info__person_id__offsets.bin"
+  ],
+  "hardware_results": {
+    "5825bbdaf7d0": {
+      "fingerprint": {
+        "cpu_cores": 12,
+        "simd": "avx2",
+        "total_memory_gb": 63,
+        "disk_type": "hdd",
+        "l3_cache_mb": 12
+      },
+      "hot_ms": 22.94666666666667,
+      "cold_ms": null,
+      "validated": true,
+      "validated_at": "2026-05-20T16:19:09.921Z",
+      "validated_by_run": "2026-05-20T14-44-21"
+    }
+  }
+}

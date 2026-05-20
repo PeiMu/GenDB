@@ -1,0 +1,918 @@
+{
+  "total_wall_clock_ms": 5688895,
+  "total_tokens": {
+    "input": 19804,
+    "output": 783890,
+    "cache_read": 34785065,
+    "cache_creation": 1920369
+  },
+  "total_cost_usd": 59.949307000000005,
+  "phases": {
+    "phase1": {
+      "total_ms": 250950,
+      "agents": {
+        "workload_analyzer": {
+          "duration_ms": 92524,
+          "tokens": {
+            "input": 7,
+            "output": 1117,
+            "cache_read": 216981,
+            "cache_creation": 112132
+          },
+          "cost_usd": 0.8372755000000001
+        },
+        "storage_designer_extend": {
+          "duration_ms": 158426,
+          "tokens": {
+            "input": 9,
+            "output": 6025,
+            "cache_read": 372665,
+            "cache_creation": 88550
+          },
+          "cost_usd": 0.8904399999999999
+        }
+      }
+    },
+    "query_Q19c": {
+      "total_ms": 5382749,
+      "agents": {
+        "query_planner": {
+          "duration_ms": 86421,
+          "tokens": {
+            "input": 6,
+            "output": 2682,
+            "cache_read": 34538,
+            "cache_creation": 10007
+          },
+          "cost_usd": 0.14689275000000002
+        },
+        "code_generator": {
+          "duration_ms": 3847436,
+          "tokens": {
+            "input": 1061,
+            "output": 146978,
+            "cache_read": 8408254,
+            "cache_creation": 305937
+          },
+          "cost_usd": 11.022568499999998
+        },
+        "query_optimizer": {
+          "duration_ms": 1448892,
+          "tokens": {
+            "input": 115,
+            "output": 74633,
+            "cache_read": 1330482,
+            "cache_creation": 176714
+          },
+          "cost_usd": 3.70512425
+        }
+      }
+    },
+    "query_Q23c": {
+      "total_ms": 402898,
+      "agents": {
+        "query_planner": {
+          "duration_ms": 112864,
+          "tokens": {
+            "input": 6,
+            "output": 2528,
+            "cache_read": 34980,
+            "cache_creation": 10288
+          },
+          "cost_usd": 0.14501999999999998
+        },
+        "code_generator": {
+          "duration_ms": 290034,
+          "tokens": {
+            "input": 5230,
+            "output": 17097,
+            "cache_read": 628654,
+            "cache_creation": 37157
+          },
+          "cost_usd": 1.0001332500000002
+        }
+      }
+    },
+    "query_Q23b": {
+      "total_ms": 800649,
+      "agents": {
+        "query_planner": {
+          "duration_ms": 113796,
+          "tokens": {
+            "input": 6,
+            "output": 2823,
+            "cache_read": 35018,
+            "cache_creation": 10653
+          },
+          "cost_usd": 0.15469525
+        },
+        "code_generator": {
+          "duration_ms": 686853,
+          "tokens": {
+            "input": 20,
+            "output": 14400,
+            "cache_read": 596629,
+            "cache_creation": 31293
+          },
+          "cost_usd": 1.23655725
+        }
+      }
+    },
+    "query_Q25c": {
+      "total_ms": 925972,
+      "agents": {
+        "query_planner": {
+          "duration_ms": 114881,
+          "tokens": {
+            "input": 6,
+            "output": 2964,
+            "cache_read": 35034,
+            "cache_creation": 10798
+          },
+          "cost_usd": 0.15913449999999998
+        },
+        "code_generator": {
+          "duration_ms": 811091,
+          "tokens": {
+            "input": 549,
+            "output": 7575,
+            "cache_read": 465298,
+            "cache_creation": 20123
+          },
+          "cost_usd": 1.3754307499999998
+        }
+      }
+    },
+    "query_Q27b": {
+      "total_ms": 406013,
+      "agents": {
+        "query_planner": {
+          "duration_ms": 115977,
+          "tokens": {
+            "input": 6,
+            "output": 3015,
+            "cache_read": 35315,
+            "cache_creation": 11150
+          },
+          "cost_usd": 0.16275
+        },
+        "code_generator": {
+          "duration_ms": 290036,
+          "tokens": {
+            "input": 19,
+            "output": 18956,
+            "cache_read": 523898,
+            "cache_creation": 36621
+          },
+          "cost_usd": 0.9648252499999999
+        }
+      }
+    },
+    "query_Q22b": {
+      "total_ms": 476801,
+      "agents": {
+        "query_planner": {
+          "duration_ms": 116816,
+          "tokens": {
+            "input": 6,
+            "output": 2971,
+            "cache_read": 35344,
+            "cache_creation": 11096
+          },
+          "cost_usd": 0.161327
+        },
+        "code_generator": {
+          "duration_ms": 359985,
+          "tokens": {
+            "input": 25,
+            "output": 21120,
+            "cache_read": 812691,
+            "cache_creation": 39638
+          },
+          "cost_usd": 1.1822080000000001
+        }
+      }
+    },
+    "query_Q26a": {
+      "total_ms": 1657562,
+      "agents": {
+        "query_planner": {
+          "duration_ms": 117410,
+          "tokens": {
+            "input": 6,
+            "output": 2983,
+            "cache_read": 36155,
+            "cache_creation": 11921
+          },
+          "cost_usd": 0.16718875
+        },
+        "code_generator": {
+          "duration_ms": 600143,
+          "tokens": {
+            "input": 173,
+            "output": 20471,
+            "cache_read": 1060576,
+            "cache_creation": 47031
+          },
+          "cost_usd": 1.61022125
+        },
+        "query_optimizer": {
+          "duration_ms": 940009,
+          "tokens": {
+            "input": 10,
+            "output": 20474,
+            "cache_read": 499975,
+            "cache_creation": 31311
+          },
+          "cost_usd": 1.625801
+        }
+      }
+    },
+    "query_Q27c": {
+      "total_ms": 717601,
+      "agents": {
+        "query_planner": {
+          "duration_ms": 117608,
+          "tokens": {
+            "input": 6,
+            "output": 3173,
+            "cache_read": 35461,
+            "cache_creation": 11457
+          },
+          "cost_usd": 0.16869174999999997
+        },
+        "code_generator": {
+          "duration_ms": 599993,
+          "tokens": {
+            "input": 6449,
+            "output": 9075,
+            "cache_read": 268421,
+            "cache_creation": 23418
+          },
+          "cost_usd": 0.9440385000000001
+        }
+      }
+    },
+    "query_Q29c": {
+      "total_ms": 384158,
+      "agents": {
+        "query_planner": {
+          "duration_ms": 119130,
+          "tokens": {
+            "input": 6,
+            "output": 3302,
+            "cache_read": 37125,
+            "cache_creation": 13215
+          },
+          "cost_usd": 0.18373625
+        },
+        "code_generator": {
+          "duration_ms": 265028,
+          "tokens": {
+            "input": 20,
+            "output": 15794,
+            "cache_read": 643489,
+            "cache_creation": 40624
+          },
+          "cost_usd": 0.9705945000000001
+        }
+      }
+    },
+    "query_Q27a": {
+      "total_ms": 455912,
+      "agents": {
+        "query_planner": {
+          "duration_ms": 120903,
+          "tokens": {
+            "input": 6,
+            "output": 3211,
+            "cache_read": 36007,
+            "cache_creation": 11936
+          },
+          "cost_usd": 0.17290849999999997
+        },
+        "code_generator": {
+          "duration_ms": 335009,
+          "tokens": {
+            "input": 31,
+            "output": 19253,
+            "cache_read": 1177027,
+            "cache_creation": 38826
+          },
+          "cost_usd": 1.3126559999999996
+        }
+      }
+    },
+    "query_Q24b": {
+      "total_ms": 576923,
+      "agents": {
+        "query_planner": {
+          "duration_ms": 121912,
+          "tokens": {
+            "input": 6,
+            "output": 3563,
+            "cache_read": 36046,
+            "cache_creation": 12340
+          },
+          "cost_usd": 0.184253
+        },
+        "code_generator": {
+          "duration_ms": 455011,
+          "tokens": {
+            "input": 28,
+            "output": 19475,
+            "cache_read": 1065445,
+            "cache_creation": 53446
+          },
+          "cost_usd": 1.40585175
+        }
+      }
+    },
+    "query_Q29a": {
+      "total_ms": 675580,
+      "agents": {
+        "query_planner": {
+          "duration_ms": 125630,
+          "tokens": {
+            "input": 6,
+            "output": 3785,
+            "cache_read": 37977,
+            "cache_creation": 14443
+          },
+          "cost_usd": 0.20391224999999996
+        },
+        "code_generator": {
+          "duration_ms": 549950,
+          "tokens": {
+            "input": 7,
+            "output": 11287,
+            "cache_read": 343539,
+            "cache_creation": 22237
+          },
+          "cost_usd": 0.9238392500000001
+        }
+      }
+    },
+    "query_Q26b": {
+      "total_ms": 1041474,
+      "agents": {
+        "query_planner": {
+          "duration_ms": 126204,
+          "tokens": {
+            "input": 6,
+            "output": 3551,
+            "cache_read": 35148,
+            "cache_creation": 11373
+          },
+          "cost_usd": 0.17746024999999999
+        },
+        "code_generator": {
+          "duration_ms": 915270,
+          "tokens": {
+            "input": 4,
+            "output": 1049,
+            "cache_read": 152227,
+            "cache_creation": 13754
+          },
+          "cost_usd": 0.786072
+        }
+      }
+    },
+    "query_Q29b": {
+      "total_ms": 1214469,
+      "agents": {
+        "query_planner": {
+          "duration_ms": 156413,
+          "tokens": {
+            "input": 1,
+            "output": 336,
+            "cache_read": 23147,
+            "cache_creation": 2721
+          },
+          "cost_usd": 0.158575
+        },
+        "code_generator": {
+          "duration_ms": 1058056,
+          "tokens": {
+            "input": 11,
+            "output": 4550,
+            "cache_read": 554816,
+            "cache_creation": 6424
+          },
+          "cost_usd": 1.2057122500000002
+        }
+      }
+    },
+    "query_Q24a": {
+      "total_ms": 868935,
+      "agents": {
+        "query_planner": {
+          "duration_ms": 156419,
+          "tokens": {
+            "input": 0,
+            "output": 0,
+            "cache_read": 0,
+            "cache_creation": 0
+          },
+          "cost_usd": 0.15976875
+        },
+        "code_generator": {
+          "duration_ms": 505317,
+          "tokens": {
+            "input": 34,
+            "output": 33258,
+            "cache_read": 1484212,
+            "cache_creation": 58541
+          },
+          "cost_usd": 1.9396072500000001
+        },
+        "query_optimizer": {
+          "duration_ms": 207199,
+          "tokens": {
+            "input": 0,
+            "output": 0,
+            "cache_read": 0,
+            "cache_creation": 0
+          },
+          "cost_usd": 0
+        }
+      }
+    },
+    "query_Q25a": {
+      "total_ms": 554891,
+      "agents": {
+        "query_planner": {
+          "duration_ms": 156420,
+          "tokens": {
+            "input": 0,
+            "output": 0,
+            "cache_read": 0,
+            "cache_creation": 0
+          },
+          "cost_usd": 0.16352875
+        },
+        "code_generator": {
+          "duration_ms": 398471,
+          "tokens": {
+            "input": 30,
+            "output": 22640,
+            "cache_read": 1025623,
+            "cache_creation": 42074
+          },
+          "cost_usd": 1.3419240000000001
+        }
+      }
+    },
+    "query_Q20a": {
+      "total_ms": 555379,
+      "agents": {
+        "query_planner": {
+          "duration_ms": 156422,
+          "tokens": {
+            "input": 0,
+            "output": 0,
+            "cache_read": 0,
+            "cache_creation": 0
+          },
+          "cost_usd": 0.16354849999999999
+        },
+        "code_generator": {
+          "duration_ms": 398957,
+          "tokens": {
+            "input": 34,
+            "output": 21814,
+            "cache_read": 1206096,
+            "cache_creation": 41490
+          },
+          "cost_usd": 1.4078804999999999
+        }
+      }
+    },
+    "query_Q28a": {
+      "total_ms": 1065440,
+      "agents": {
+        "query_planner": {
+          "duration_ms": 156416,
+          "tokens": {
+            "input": 1,
+            "output": 426,
+            "cache_read": 22864,
+            "cache_creation": 3631
+          },
+          "cost_usd": 0.18735225
+        },
+        "code_generator": {
+          "duration_ms": 909024,
+          "tokens": {
+            "input": 7,
+            "output": 10949,
+            "cache_read": 314217,
+            "cache_creation": 8967
+          },
+          "cost_usd": 1.0665570000000002
+        }
+      }
+    },
+    "query_Q25b": {
+      "total_ms": 590121,
+      "agents": {
+        "query_planner": {
+          "duration_ms": 156421,
+          "tokens": {
+            "input": 1,
+            "output": 422,
+            "cache_read": 21378,
+            "cache_creation": 2592
+          },
+          "cost_usd": 0.144753
+        },
+        "code_generator": {
+          "duration_ms": 433700,
+          "tokens": {
+            "input": 5229,
+            "output": 21118,
+            "cache_read": 1241586,
+            "cache_creation": 44342
+          },
+          "cost_usd": 1.4520255000000002
+        }
+      }
+    },
+    "query_Q28c": {
+      "total_ms": 581587,
+      "agents": {
+        "query_planner": {
+          "duration_ms": 156419,
+          "tokens": {
+            "input": 0,
+            "output": 0,
+            "cache_read": 0,
+            "cache_creation": 0
+          },
+          "cost_usd": 0.16350625
+        },
+        "code_generator": {
+          "duration_ms": 425168,
+          "tokens": {
+            "input": 29,
+            "output": 18810,
+            "cache_read": 1012475,
+            "cache_creation": 38939
+          },
+          "cost_usd": 1.2962649999999998
+        }
+      }
+    },
+    "query_Q22d": {
+      "total_ms": 442268,
+      "agents": {
+        "query_planner": {
+          "duration_ms": 156425,
+          "tokens": {
+            "input": 0,
+            "output": 0,
+            "cache_read": 0,
+            "cache_creation": 0
+          },
+          "cost_usd": 0.15433024999999997
+        },
+        "code_generator": {
+          "duration_ms": 285843,
+          "tokens": {
+            "input": 0,
+            "output": 0,
+            "cache_read": 0,
+            "cache_creation": 0
+          },
+          "cost_usd": 0
+        }
+      }
+    },
+    "query_Q30c": {
+      "total_ms": 666589,
+      "agents": {
+        "query_planner": {
+          "duration_ms": 91581,
+          "tokens": {
+            "input": 6,
+            "output": 2765,
+            "cache_read": 37309,
+            "cache_creation": 9101
+          },
+          "cost_usd": 0.14469074999999998
+        },
+        "code_generator": {
+          "duration_ms": 575008,
+          "tokens": {
+            "input": 41,
+            "output": 35241,
+            "cache_read": 1873131,
+            "cache_creation": 65623
+          },
+          "cost_usd": 2.227939250000001
+        }
+      }
+    },
+    "query_Q30a": {
+      "total_ms": 573616,
+      "agents": {
+        "query_planner": {
+          "duration_ms": 93603,
+          "tokens": {
+            "input": 6,
+            "output": 3393,
+            "cache_read": 38149,
+            "cache_creation": 10409
+          },
+          "cost_usd": 0.16898575
+        },
+        "code_generator": {
+          "duration_ms": 480013,
+          "tokens": {
+            "input": 42,
+            "output": 27259,
+            "cache_read": 2139843,
+            "cache_creation": 71763
+          },
+          "cost_usd": 2.2001252499999997
+        }
+      }
+    },
+    "query_Q28b": {
+      "total_ms": 480081,
+      "agents": {
+        "query_planner": {
+          "duration_ms": 120051,
+          "tokens": {
+            "input": 6,
+            "output": 3588,
+            "cache_read": 37712,
+            "cache_creation": 10216
+          },
+          "cost_usd": 0.17243599999999998
+        },
+        "code_generator": {
+          "duration_ms": 360030,
+          "tokens": {
+            "input": 14,
+            "output": 12122,
+            "cache_read": 549507,
+            "cache_creation": 14933
+          },
+          "cost_usd": 0.8650030000000001
+        }
+      }
+    },
+    "query_Q33c": {
+      "total_ms": 784725,
+      "agents": {
+        "query_planner": {
+          "duration_ms": 109641,
+          "tokens": {
+            "input": 6,
+            "output": 2659,
+            "cache_read": 37766,
+            "cache_creation": 9400
+          },
+          "cost_usd": 0.144138
+        },
+        "code_generator": {
+          "duration_ms": 675084,
+          "tokens": {
+            "input": 0,
+            "output": 0,
+            "cache_read": 0,
+            "cache_creation": 0
+          },
+          "cost_usd": 0.23607050000000002
+        }
+      }
+    },
+    "query_Q32a": {
+      "total_ms": 274777,
+      "agents": {
+        "query_planner": {
+          "duration_ms": 116996,
+          "tokens": {
+            "input": 5,
+            "output": 1530,
+            "cache_read": 15418,
+            "cache_creation": 4913
+          },
+          "cost_usd": 0.10551699999999999
+        },
+        "code_generator": {
+          "duration_ms": 157781,
+          "tokens": {
+            "input": 14,
+            "output": 5407,
+            "cache_read": 253439,
+            "cache_creation": 13988
+          },
+          "cost_usd": 0.3493895
+        }
+      }
+    },
+    "query_Q26c": {
+      "total_ms": 476010,
+      "agents": {
+        "query_planner": {
+          "duration_ms": 236003,
+          "tokens": {
+            "input": 1,
+            "output": 486,
+            "cache_read": 21537,
+            "cache_creation": 2724
+          },
+          "cost_usd": 0.15155125
+        },
+        "code_generator": {
+          "duration_ms": 240007,
+          "tokens": {
+            "input": 332,
+            "output": 14170,
+            "cache_read": 329085,
+            "cache_creation": 30359
+          },
+          "cost_usd": 0.7101962500000001
+        }
+      }
+    },
+    "query_Q33a": {
+      "total_ms": 400742,
+      "agents": {
+        "query_planner": {
+          "duration_ms": 118315,
+          "tokens": {
+            "input": 6,
+            "output": 3225,
+            "cache_read": 38246,
+            "cache_creation": 10422
+          },
+          "cost_usd": 0.1649155
+        },
+        "code_generator": {
+          "duration_ms": 282427,
+          "tokens": {
+            "input": 0,
+            "output": 0,
+            "cache_read": 0,
+            "cache_creation": 0
+          },
+          "cost_usd": 0
+        }
+      }
+    },
+    "query_Q31c": {
+      "total_ms": 639946,
+      "agents": {
+        "query_planner": {
+          "duration_ms": 119845,
+          "tokens": {
+            "input": 6,
+            "output": 2849,
+            "cache_read": 37010,
+            "cache_creation": 8740
+          },
+          "cost_usd": 0.14438499999999999
+        },
+        "code_generator": {
+          "duration_ms": 520101,
+          "tokens": {
+            "input": 5,
+            "output": 1384,
+            "cache_read": 215766,
+            "cache_creation": 1734
+          },
+          "cost_usd": 0.8638734999999998
+        }
+      }
+    },
+    "query_Q33b": {
+      "total_ms": 1134725,
+      "agents": {
+        "query_planner": {
+          "duration_ms": 116894,
+          "tokens": {
+            "input": 6,
+            "output": 3176,
+            "cache_read": 37466,
+            "cache_creation": 9519
+          },
+          "cost_usd": 0.15765674999999998
+        },
+        "code_generator": {
+          "duration_ms": 1017831,
+          "tokens": {
+            "input": 22,
+            "output": 14408,
+            "cache_read": 1027466,
+            "cache_creation": 23188
+          },
+          "cost_usd": 1.9885049999999997
+        }
+      }
+    },
+    "query_Q31a": {
+      "total_ms": 590272,
+      "agents": {
+        "query_planner": {
+          "duration_ms": 135389,
+          "tokens": {
+            "input": 1,
+            "output": 384,
+            "cache_read": 21976,
+            "cache_creation": 2472
+          },
+          "cost_usd": 0.14408949999999998
+        },
+        "code_generator": {
+          "duration_ms": 454883,
+          "tokens": {
+            "input": 29,
+            "output": 26570,
+            "cache_read": 1052768,
+            "cache_creation": 53439
+          },
+          "cost_usd": 1.5247727500000001
+        }
+      }
+    },
+    "query_Q30b": {
+      "total_ms": 591026,
+      "agents": {
+        "query_planner": {
+          "duration_ms": 147537,
+          "tokens": {
+            "input": 1,
+            "output": 444,
+            "cache_read": 22169,
+            "cache_creation": 2966
+          },
+          "cost_usd": 0.16232975
+        },
+        "code_generator": {
+          "duration_ms": 443489,
+          "tokens": {
+            "input": 8,
+            "output": 9451,
+            "cache_read": 372117,
+            "cache_creation": 5230
+          },
+          "cost_usd": 0.9870282499999999
+        }
+      }
+    },
+    "query_Q31b": {
+      "total_ms": 780877,
+      "agents": {
+        "query_planner": {
+          "duration_ms": 154933,
+          "tokens": {
+            "input": 1,
+            "output": 380,
+            "cache_read": 22129,
+            "cache_creation": 3248
+          },
+          "cost_usd": 0.16927225
+        },
+        "code_generator": {
+          "duration_ms": 625944,
+          "tokens": {
+            "input": 1,
+            "output": 127,
+            "cache_read": 33888,
+            "cache_creation": 973
+          },
+          "cost_usd": 0.3079335
+        }
+      }
+    },
+    "query_Q32b": {
+      "total_ms": 333352,
+      "agents": {
+        "query_planner": {
+          "duration_ms": 175808,
+          "tokens": {
+            "input": 17,
+            "output": 7405,
+            "cache_read": 315095,
+            "cache_creation": 17231
+          },
+          "cost_usd": 0.45045124999999997
+        },
+        "code_generator": {
+          "duration_ms": 157544,
+          "tokens": {
+            "input": 16,
+            "output": 5814,
+            "cache_read": 319260,
+            "cache_creation": 18568
+          },
+          "cost_usd": 0.42111
+        }
+      }
+    }
+  },
+  "status": "completed"
+}

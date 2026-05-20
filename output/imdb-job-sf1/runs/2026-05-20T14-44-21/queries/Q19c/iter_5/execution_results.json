@@ -1,0 +1,28 @@
+{
+  "compile": {
+    "status": "pass"
+  },
+  "run": {
+    "status": "pass",
+    "duration_ms": 69
+  },
+  "validation": {
+    "status": "pass"
+  },
+  "optimization_target": "hot",
+  "timing_ms": 67.13000000000001,
+  "hot_timing_ms": 67.13000000000001,
+  "operation_timings": {
+    "data_loading": 0.45,
+    "resolve_dims": 0.01,
+    "resolve_prefix_codes": 0.07,
+    "build_Y_year_bitset": 1.77,
+    "build_P_fused_bitset": 1.42,
+    "build_M_prefix_bitset": 2.73,
+    "scan_mi_csr_M_prefix_first": 23.74,
+    "main_scan_mc_ci": 6.82,
+    "aggregate_min": 0,
+    "output": 0.14,
+    "total": 67.23
+  }
+}

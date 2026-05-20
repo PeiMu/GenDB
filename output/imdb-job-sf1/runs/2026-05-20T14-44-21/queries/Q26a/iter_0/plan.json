@@ -1,0 +1,124 @@
+{
+  "query_id": "Q26a",
+  "pipeline": [
+    "build_dim_sets",
+    "scan_title_filter",
+    "probe_movie_keyword",
+    "probe_complete_cast",
+    "probe_movie_info_idx",
+    "probe_cast_info",
+    "aggregate_min"
+  ],
+  "dim_builds": [
+    {
+      "name": "cast_id",
+      "source": "comp_cast_type.kind",
+      "predicate": "kind == 'cast'",
+      "output": "int32_t scalar",
+      "expected_cardinality": 1
+    },
+    {
+      "name": "complete_status_ids",
+      "source": "comp_cast_type.kind",
+      "predicate": "kind LIKE '%complete%' (memmem)",
+      "output": "small flat array / bitmask of int32 (size 4)",
+      "expected_cardinality": 2
+    },
+    {
+      "name": "it2_id",
+      "source": "info_type.info",
+      "predicate": "info == 'rating'",
+      "output": "int32_t scalar",
+      "expected_cardinality": 1
+    },
+    {
+      "name": "movie_kind_id",
+      "source": "kind_type.kind",
+      "predicate": "kind == 'movie'",
+      "output": "int32_t scalar",
+      "expected_cardinality": 1
+    },
+    {
+      "name": "kw_set",
+      "source": "keyword.keyword",
+      "predicate": "keyword IN (10 literals)",
+      "output": "flat_hash_set<int32_t> (pre-sized 16)",
+      "expected_cardinality": 10
+    },
+    {
+      "name": "chn_set",
+      "source": "char_name.name",
+      "predicate": "name IS NOT NULL AND (memmem(name,'man') OR memmem(name,'Man'))",
+      "output": "bitset(3140340) over chn_id",
+      "expected_cardinality": 100000,
+      "notes": "~3% selectivity; bitset uses ~393KB, faster lookup than hash_set"
+    }
+  ],
+  "join_order": [
+    {
+      "build": "title (filter: production_year>2000 AND kind_id==movie_kind_id)",
+      "probe": "movie_keyword via offsets[t_id..t_id+1]",
+      "type": "semi",
+      "strategy": "index_range_probe + kw_set membership",
+      "build_cardinality": 600000,
+      "notes": "title is driver; mk filter (kw_set IN 10 of 134170) is ~0.0075% per mk row, but per-title ~0.05% titles survive"
+    },
+    {
+      "build": "survivors",
+      "probe": "complete_cast via offsets[t_id..t_id+1]",
+      "type": "semi",
+      "strategy": "index_range_probe + subject==cast_id AND status_id IN complete_status_ids",
+      "build_cardinality": 5000,
+      "notes": "complete_cast 135k rows; only titles with matching cc survive"
+    },
+    {
+      "build": "survivors",
+      "probe": "movie_info_idx via offsets[t_id..t_id+1]",
+      "type": "semi+project",
+      "strategy": "index_range_probe + info_type_id==it2_id AND info>'7.0'",
+      "build_cardinality": 1000,
+      "notes": "also captures candidate mi_idx.info string_views for MIN"
+    },
+    {
+      "build": "chn_set bitset",
+      "probe": "cast_info via offsets[t_id..t_id+1]",
+      "type": "inner+project",
+      "strategy": "index_range_probe + chn_set membership; fetch n.name via person_id-1",
+      "build_cardinality": 100000,
+      "notes": "cast_info is largest fact (36M); only probe within ranges of surviving t_ids"
+    }
+  ],
+  "filters": [
+    {"table": "title", "predicate": "production_year > 2000 AND != NULL_INT", "selectivity": 0.25},
+    {"table": "title", "predicate": "kind_id == movie_kind_id", "selectivity": 0.6},
+    {"table": "char_name", "predicate": "name LIKE '%man%' OR '%Man%' (memmem)", "selectivity": 0.03},
+    {"table": "keyword", "predicate": "keyword IN (10)", "selectivity": 0.0000745},
+    {"table": "movie_keyword", "predicate": "keyword_id IN kw_set", "selectivity": 0.001},
+    {"table": "complete_cast", "predicate": "subject_id == cast_id AND status_id IN complete_status_ids", "selectivity": 0.25},
+    {"table": "movie_info_idx", "predicate": "info_type_id == it2_id AND info > '7.0'", "selectivity": 0.05},
+    {"table": "cast_info", "predicate": "person_role_id IN chn_set (skip NULL)", "selectivity": 0.03}
+  ],
+  "data_structures": {
+    "chn_set": "bitset(3140340) ~393KB",
+    "kw_set": "flat_hash_set<int32_t> pre-sized 16",
+    "complete_status_ids": "small int32 array (sorted, linear search OK; size 2)",
+    "scalars": "int32_t cast_id, movie_kind_id, it2_id",
+    "aggregation": "4 string_view MIN trackers (chn.name, mi_idx.info, n.name, t.title) with copy-on-update into local buffer"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven over title rows",
+    "threads": "auto(nproc)",
+    "morsel_size": 100000,
+    "reduction": "per-thread MIN trackers reduced at end (4 string_views)"
+  },
+  "indexes": [
+    {"index": "movie_keyword__movie_id (offsets_only)", "purpose": "range probe by t_id"},
+    {"index": "complete_cast__movie_id (offsets_only)", "purpose": "range probe by t_id"},
+    {"index": "movie_info_idx__movie_id (offsets_only)", "purpose": "range probe by t_id"},
+    {"index": "cast_info__movie_id (offsets_only)", "purpose": "range probe by t_id"}
+  ],
+  "aggregation": "scalar_min_4_columns",
+  "output": {"order_by": [], "limit": 1, "columns": ["MIN(chn.name)", "MIN(mi_idx.info)", "MIN(n.name)", "MIN(t.title)"]},
+  "execution_target": "cpp",
+  "notes": "Driver: title scan. For each title row, apply year+kind filters cheaply (int32). Then sequentially probe the four fact ranges via offsets indexes in order of selectivity (mk most selective). Within each surviving title, iterate ci range, test chn_set membership and project n.name (person_id-1). Capture candidate (chn.name, mi_idx.info, n.name, t.title) tuples and update 4 separate per-thread MIN trackers. Pre-build chn_set as bitset since char_name is dense PK. Pre-build kw_set as hash_set since only 10 entries."
+}

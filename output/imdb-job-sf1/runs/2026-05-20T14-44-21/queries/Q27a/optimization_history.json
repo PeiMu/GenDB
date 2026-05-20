@@ -1,0 +1,29 @@
+{
+  "query_id": "Q27a",
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 14.156666666666666,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 14.156666666666666,
+      "validation": "pass",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "data_loading": 0.3,
+        "dim_resolve_cct": 0,
+        "dim_resolve_ct": 0,
+        "dim_resolve_kw": 0.01,
+        "dim_resolve_lt": 0,
+        "dim_resolve_pl_code": 0,
+        "dim_resolve_cn": 10.7,
+        "main_scan": 0.86,
+        "output": 0.12,
+        "total": 13.22
+      }
+    }
+  ]
+}

@@ -1,0 +1,693 @@
+{
+  "timestamp": "2026-05-20T14-44-21",
+  "startedAt": "2026-05-20T14:44:21.087Z",
+  "status": "completed",
+  "phase2": {
+    "status": "completed",
+    "queries": [
+      "Q1a",
+      "Q1b",
+      "Q1c",
+      "Q1d",
+      "Q2a",
+      "Q2b",
+      "Q2c",
+      "Q2d",
+      "Q3a",
+      "Q3b",
+      "Q3c",
+      "Q4a",
+      "Q4b",
+      "Q4c",
+      "Q5a",
+      "Q5b",
+      "Q5c",
+      "Q6a",
+      "Q6b",
+      "Q6c",
+      "Q6d",
+      "Q6e",
+      "Q6f",
+      "Q7a",
+      "Q7b",
+      "Q7c",
+      "Q8a",
+      "Q8b",
+      "Q8c",
+      "Q8d",
+      "Q9a",
+      "Q9b",
+      "Q9c",
+      "Q9d",
+      "Q10a",
+      "Q10b",
+      "Q10c",
+      "Q11a",
+      "Q11b",
+      "Q11c",
+      "Q11d",
+      "Q12a",
+      "Q12b",
+      "Q12c",
+      "Q13a",
+      "Q13b",
+      "Q13c",
+      "Q13d",
+      "Q14a",
+      "Q14b",
+      "Q14c",
+      "Q15a",
+      "Q15b",
+      "Q15c",
+      "Q15d",
+      "Q16a",
+      "Q16b",
+      "Q16c",
+      "Q16d",
+      "Q17a",
+      "Q17b",
+      "Q17c",
+      "Q17d",
+      "Q17e",
+      "Q17f",
+      "Q18a",
+      "Q18b",
+      "Q18c",
+      "Q19a",
+      "Q19b",
+      "Q19c",
+      "Q19d",
+      "Q20a",
+      "Q20b",
+      "Q20c",
+      "Q21a",
+      "Q21b",
+      "Q21c",
+      "Q22a",
+      "Q22b",
+      "Q22c",
+      "Q22d",
+      "Q23a",
+      "Q23b",
+      "Q23c",
+      "Q24a",
+      "Q24b",
+      "Q25a",
+      "Q25b",
+      "Q25c",
+      "Q26a",
+      "Q26b",
+      "Q26c",
+      "Q27a",
+      "Q27b",
+      "Q27c",
+      "Q28a",
+      "Q28b",
+      "Q28c",
+      "Q29a",
+      "Q29b",
+      "Q29c",
+      "Q30a",
+      "Q30b",
+      "Q30c",
+      "Q31a",
+      "Q31b",
+      "Q31c",
+      "Q32a",
+      "Q32b",
+      "Q33a",
+      "Q33b",
+      "Q33c"
+    ],
+    "maxConcurrent": 22,
+    "pipelines": {
+      "Q1a": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q1a/v1/q1a.cpp",
+        "iterations": 0
+      },
+      "Q1b": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q1b/v1/q1b.cpp",
+        "iterations": 0
+      },
+      "Q1c": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q1c/v1/q1c.cpp",
+        "iterations": 0
+      },
+      "Q1d": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q1d/v1/q1d.cpp",
+        "iterations": 0
+      },
+      "Q2a": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q2a/v1/q2a.cpp",
+        "iterations": 0
+      },
+      "Q2b": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q2b/v1/q2b.cpp",
+        "iterations": 0
+      },
+      "Q2c": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q2c/v1/q2c.cpp",
+        "iterations": 0
+      },
+      "Q2d": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q2d/v1/q2d.cpp",
+        "iterations": 0
+      },
+      "Q3a": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q3a/v1/q3a.cpp",
+        "iterations": 0
+      },
+      "Q3b": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q3b/v1/q3b.cpp",
+        "iterations": 0
+      },
+      "Q3c": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q3c/v1/q3c.cpp",
+        "iterations": 0
+      },
+      "Q4a": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q4a/v1/q4a.cpp",
+        "iterations": 0
+      },
+      "Q4b": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q4b/v1/q4b.cpp",
+        "iterations": 0
+      },
+      "Q4c": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q4c/v1/q4c.cpp",
+        "iterations": 0
+      },
+      "Q5a": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q5a/v1/q5a.cpp",
+        "iterations": 0
+      },
+      "Q5b": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q5b/v1/q5b.cpp",
+        "iterations": 0
+      },
+      "Q5c": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q5c/v1/q5c.cpp",
+        "iterations": 0
+      },
+      "Q6a": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q6a/v1/q6a.cpp",
+        "iterations": 0
+      },
+      "Q6b": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q6b/v1/q6b.cpp",
+        "iterations": 0
+      },
+      "Q6c": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q6c/v1/q6c.cpp",
+        "iterations": 0
+      },
+      "Q6d": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q6d/v1/q6d.cpp",
+        "iterations": 0
+      },
+      "Q6e": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q6e/v1/q6e.cpp",
+        "iterations": 0
+      },
+      "Q6f": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q6f/v1/q6f.cpp",
+        "iterations": 0
+      },
+      "Q7a": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q7a/v1/q7a.cpp",
+        "iterations": 0
+      },
+      "Q7b": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q7b/v1/q7b.cpp",
+        "iterations": 0
+      },
+      "Q7c": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q7c/v1/q7c.cpp",
+        "iterations": 0
+      },
+      "Q8a": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q8a/v1/q8a.cpp",
+        "iterations": 0
+      },
+      "Q8b": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q8b/v1/q8b.cpp",
+        "iterations": 0
+      },
+      "Q8c": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q8c/v1/q8c.cpp",
+        "iterations": 0
+      },
+      "Q8d": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q8d/v1/q8d.cpp",
+        "iterations": 0
+      },
+      "Q9a": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q9a/v1/q9a.cpp",
+        "iterations": 0
+      },
+      "Q9b": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q9b/v1/q9b.cpp",
+        "iterations": 0
+      },
+      "Q9c": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q9c/v1/q9c.cpp",
+        "iterations": 0
+      },
+      "Q9d": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q9d/v1/q9d.cpp",
+        "iterations": 0
+      },
+      "Q10a": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q10a/v1/q10a.cpp",
+        "iterations": 0
+      },
+      "Q10b": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q10b/v1/q10b.cpp",
+        "iterations": 0
+      },
+      "Q10c": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q10c/v1/q10c.cpp",
+        "iterations": 0
+      },
+      "Q11a": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q11a/v1/q11a.cpp",
+        "iterations": 0
+      },
+      "Q11b": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q11b/v1/q11b.cpp",
+        "iterations": 0
+      },
+      "Q11c": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q11c/v1/q11c.cpp",
+        "iterations": 0
+      },
+      "Q11d": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q11d/v1/q11d.cpp",
+        "iterations": 0
+      },
+      "Q12a": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q12a/v1/q12a.cpp",
+        "iterations": 0
+      },
+      "Q12b": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q12b/v1/q12b.cpp",
+        "iterations": 0
+      },
+      "Q12c": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q12c/v1/q12c.cpp",
+        "iterations": 0
+      },
+      "Q13a": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q13a/v1/q13a.cpp",
+        "iterations": 0
+      },
+      "Q13b": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q13b/v1/q13b.cpp",
+        "iterations": 0
+      },
+      "Q13c": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q13c/v1/q13c.cpp",
+        "iterations": 0
+      },
+      "Q13d": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q13d/v1/q13d.cpp",
+        "iterations": 0
+      },
+      "Q14a": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q14a/v1/q14a.cpp",
+        "iterations": 0
+      },
+      "Q14b": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q14b/v1/q14b.cpp",
+        "iterations": 0
+      },
+      "Q14c": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q14c/v1/q14c.cpp",
+        "iterations": 0
+      },
+      "Q15a": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q15a/v1/q15a.cpp",
+        "iterations": 0
+      },
+      "Q15b": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q15b/v1/q15b.cpp",
+        "iterations": 0
+      },
+      "Q15c": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q15c/v1/q15c.cpp",
+        "iterations": 0
+      },
+      "Q15d": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q15d/v1/q15d.cpp",
+        "iterations": 0
+      },
+      "Q16a": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q16a/v1/q16a.cpp",
+        "iterations": 0
+      },
+      "Q16b": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q16b/v1/q16b.cpp",
+        "iterations": 0
+      },
+      "Q17a": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q17a/v1/q17a.cpp",
+        "iterations": 0
+      },
+      "Q17b": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q17b/v1/q17b.cpp",
+        "iterations": 0
+      },
+      "Q17c": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q17c/v1/q17c.cpp",
+        "iterations": 0
+      },
+      "Q17d": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q17d/v1/q17d.cpp",
+        "iterations": 0
+      },
+      "Q17f": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q17f/v1/q17f.cpp",
+        "iterations": 0
+      },
+      "Q18a": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q18a/v1/q18a.cpp",
+        "iterations": 0
+      },
+      "Q18b": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q18b/v1/q18b.cpp",
+        "iterations": 0
+      },
+      "Q19b": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q19b/v1/q19b.cpp",
+        "iterations": 0
+      },
+      "Q19d": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q19d/v1/q19d.cpp",
+        "iterations": 0
+      },
+      "Q20b": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q20b/v1/q20b.cpp",
+        "iterations": 0
+      },
+      "Q20c": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q20c/v1/q20c.cpp",
+        "iterations": 0
+      },
+      "Q21a": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q21a/v1/q21a.cpp",
+        "iterations": 0
+      },
+      "Q21b": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q21b/v1/q21b.cpp",
+        "iterations": 0
+      },
+      "Q22a": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q22a/v1/q22a.cpp",
+        "iterations": 0
+      },
+      "Q23a": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/queries/Q23a/v1/q23a.cpp",
+        "iterations": 0
+      },
+      "Q16c": {
+        "status": "failed",
+        "bestCppPath": null,
+        "iterations": 0
+      },
+      "Q16d": {
+        "status": "failed",
+        "bestCppPath": null,
+        "iterations": 0
+      },
+      "Q17e": {
+        "status": "failed",
+        "bestCppPath": null,
+        "iterations": 0
+      },
+      "Q18c": {
+        "status": "failed",
+        "bestCppPath": null,
+        "iterations": 0
+      },
+      "Q19a": {
+        "status": "failed",
+        "bestCppPath": null,
+        "iterations": 0
+      },
+      "Q21c": {
+        "status": "failed",
+        "bestCppPath": null,
+        "iterations": 0
+      },
+      "Q22c": {
+        "status": "failed",
+        "bestCppPath": null,
+        "iterations": 0
+      },
+      "Q19c": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/runs/2026-05-20T14-44-21/queries/Q19c/iter_2/q19c.cpp",
+        "iterations": 2
+      },
+      "Q20a": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/runs/2026-05-20T14-44-21/queries/Q20a/iter_0/q20a.cpp",
+        "iterations": 0
+      },
+      "Q22b": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/runs/2026-05-20T14-44-21/queries/Q22b/iter_0/q22b.cpp",
+        "iterations": 0
+      },
+      "Q22d": {
+        "status": "failed",
+        "bestCppPath": null,
+        "iterations": 0
+      },
+      "Q23b": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/runs/2026-05-20T14-44-21/queries/Q23b/iter_0/q23b.cpp",
+        "iterations": 0
+      },
+      "Q23c": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/runs/2026-05-20T14-44-21/queries/Q23c/iter_0/q23c.cpp",
+        "iterations": 0
+      },
+      "Q24a": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/runs/2026-05-20T14-44-21/queries/Q24a/iter_1/q24a.cpp",
+        "iterations": 1
+      },
+      "Q24b": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/runs/2026-05-20T14-44-21/queries/Q24b/iter_0/q24b.cpp",
+        "iterations": 0
+      },
+      "Q25a": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/runs/2026-05-20T14-44-21/queries/Q25a/iter_0/q25a.cpp",
+        "iterations": 0
+      },
+      "Q25b": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/runs/2026-05-20T14-44-21/queries/Q25b/iter_0/q25b.cpp",
+        "iterations": 0
+      },
+      "Q25c": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/runs/2026-05-20T14-44-21/queries/Q25c/iter_0/q25c.cpp",
+        "iterations": 0
+      },
+      "Q26a": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/runs/2026-05-20T14-44-21/queries/Q26a/iter_2/q26a.cpp",
+        "iterations": 2
+      },
+      "Q26b": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/runs/2026-05-20T14-44-21/queries/Q26b/iter_0/q26b.cpp",
+        "iterations": 0
+      },
+      "Q26c": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/runs/2026-05-20T14-44-21/queries/Q26c/iter_0/q26c.cpp",
+        "iterations": 0
+      },
+      "Q27a": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/runs/2026-05-20T14-44-21/queries/Q27a/iter_0/q27a.cpp",
+        "iterations": 0
+      },
+      "Q27b": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/runs/2026-05-20T14-44-21/queries/Q27b/iter_0/q27b.cpp",
+        "iterations": 0
+      },
+      "Q27c": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/runs/2026-05-20T14-44-21/queries/Q27c/iter_0/q27c.cpp",
+        "iterations": 0
+      },
+      "Q28a": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/runs/2026-05-20T14-44-21/queries/Q28a/iter_0/q28a.cpp",
+        "iterations": 0
+      },
+      "Q28b": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/runs/2026-05-20T14-44-21/queries/Q28b/iter_0/q28b.cpp",
+        "iterations": 0
+      },
+      "Q28c": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/runs/2026-05-20T14-44-21/queries/Q28c/iter_0/q28c.cpp",
+        "iterations": 0
+      },
+      "Q29a": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/runs/2026-05-20T14-44-21/queries/Q29a/iter_0/q29a.cpp",
+        "iterations": 0
+      },
+      "Q29b": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/runs/2026-05-20T14-44-21/queries/Q29b/iter_0/q29b.cpp",
+        "iterations": 0
+      },
+      "Q29c": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/runs/2026-05-20T14-44-21/queries/Q29c/iter_0/q29c.cpp",
+        "iterations": 0
+      },
+      "Q30a": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/runs/2026-05-20T14-44-21/queries/Q30a/iter_0/q30a.cpp",
+        "iterations": 0
+      },
+      "Q30b": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/runs/2026-05-20T14-44-21/queries/Q30b/iter_0/q30b.cpp",
+        "iterations": 0
+      },
+      "Q30c": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/runs/2026-05-20T14-44-21/queries/Q30c/iter_0/q30c.cpp",
+        "iterations": 0
+      },
+      "Q31a": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/runs/2026-05-20T14-44-21/queries/Q31a/iter_0/q31a.cpp",
+        "iterations": 0
+      },
+      "Q31b": {
+        "status": "failed",
+        "bestCppPath": null,
+        "iterations": 0
+      },
+      "Q31c": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/runs/2026-05-20T14-44-21/queries/Q31c/iter_0/q31c.cpp",
+        "iterations": 0
+      },
+      "Q32a": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/runs/2026-05-20T14-44-21/queries/Q32a/iter_0/q32a.cpp",
+        "iterations": 0
+      },
+      "Q32b": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/runs/2026-05-20T14-44-21/queries/Q32b/iter_0/q32b.cpp",
+        "iterations": 0
+      },
+      "Q33a": {
+        "status": "failed",
+        "bestCppPath": null,
+        "iterations": 0
+      },
+      "Q33b": {
+        "status": "completed",
+        "bestCppPath": "/home/pei/Project/GenDB/output/imdb-job-sf1/runs/2026-05-20T14-44-21/queries/Q33b/iter_0/q33b.cpp",
+        "iterations": 0
+      },
+      "Q33c": {
+        "status": "failed",
+        "bestCppPath": null,
+        "iterations": 0
+      }
+    },
+    "completedAt": "2026-05-20T16:19:09.895Z"
+  },
+  "completedAt": "2026-05-20T16:19:09.934Z"
+}

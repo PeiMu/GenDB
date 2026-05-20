@@ -1,0 +1,26 @@
+{
+  "query_id": "Q26c",
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 37.193333333333335,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 37.193333333333335,
+      "validation": "pass",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "data_loading": 0.21,
+        "build_dim_scalars": 0.01,
+        "build_kw_set": 0.95,
+        "build_chn_set": 22.39,
+        "main_scan": 1.91,
+        "output": 0.12,
+        "total": 31.56
+      }
+    }
+  ]
+}

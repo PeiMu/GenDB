@@ -1,0 +1,81 @@
+{
+  "query_id": "Q26a",
+  "pipeline": [
+    "build_dim_sets",
+    "scan_title_filter",
+    "probe_movie_keyword",
+    "probe_complete_cast",
+    "probe_movie_info_idx",
+    "probe_cast_info",
+    "aggregate_min"
+  ],
+  "join_order": [
+    {
+      "build": "title (filter: production_year>2000 AND kind_id==movie_kind_id)",
+      "probe": "movie_keyword via offsets[t_id..t_id+1]",
+      "type": "semi",
+      "strategy": "index_range_probe + kw_set membership"
+    },
+    {
+      "build": "survivors",
+      "probe": "complete_cast via offsets[t_id..t_id+1]",
+      "type": "semi",
+      "strategy": "index_range_probe + subject==cast_id AND status_id IN complete_status_ids"
+    },
+    {
+      "build": "survivors",
+      "probe": "movie_info_idx via offsets[t_id..t_id+1]",
+      "type": "semi+project",
+      "strategy": "index_range_probe + info_type_id==it2_id AND info>'7.0'; track per-title min(info)"
+    },
+    {
+      "build": "chn_set bitset",
+      "probe": "cast_info via offsets[t_id..t_id+1]",
+      "type": "inner+project",
+      "strategy": "index_range_probe + chn_set membership; fetch chn.name and n.name for MIN"
+    }
+  ],
+  "filters": [
+    {"table": "title", "predicate": "production_year > 2000 AND != NULL_INT", "selectivity": 0.25},
+    {"table": "title", "predicate": "kind_id == movie_kind_id", "selectivity": 0.6},
+    {"table": "char_name", "predicate": "name LIKE '%man%' OR '%Man%' (memmem)", "selectivity": 0.03},
+    {"table": "keyword", "predicate": "keyword IN (10)", "selectivity": 0.0000745},
+    {"table": "movie_keyword", "predicate": "keyword_id IN kw_set"},
+    {"table": "complete_cast", "predicate": "subject_id == cast_id AND status_id IN complete_status_ids"},
+    {"table": "movie_info_idx", "predicate": "info_type_id == it2_id AND info > '7.0'"},
+    {"table": "cast_info", "predicate": "person_role_id IN chn_set (skip NULL); person_id > 0"}
+  ],
+  "scan": {
+    "table": "title",
+    "rows": 2528312,
+    "columns": [
+      {"name": "kind_id", "file": "title/kind_id.bin", "type": "int32_t", "bytes_per_row": 4},
+      {"name": "production_year", "file": "title/production_year.bin", "type": "int32_t", "bytes_per_row": 4},
+      {"name": "title", "file": "title/title.{off,dat}", "type": "varlen", "bytes_per_row": 0}
+    ],
+    "access_pattern": "sequential"
+  },
+  "data_structures": {
+    "chn_set": "uint64_t bitset over chn_id (size ~393KB); built single-threaded over char_name rows (3.14M rows is fast; avoids any atomic concerns) — scan rows, skip NULL (off[i]==off[i+1]), set bit (id-indexed) if memmem(name,'man') OR memmem(name,'Man')",
+    "kw_set": "flat_hash_set<int32_t> pre-sized 16; built by scanning keyword (134k rows) against 10 literals",
+    "complete_status_ids": "small int32 array (size up to 4)",
+    "scalars": "int32_t cast_id (=1 expected), movie_kind_id (=1 expected), it2_id (=101 expected)",
+    "aggregation": "4 thread-local std::string MIN trackers (best_chn, best_mi, best_n, best_t) + thread-local has_any flag as std::vector<char> or std::vector<uint8_t> — NEVER std::vector<bool>"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven over title rows",
+    "threads": "auto(nproc)",
+    "morsel_size": 4096,
+    "reduction": "after parallel region, single-threaded loop merges per-thread MIN trackers into 4 global MIN strings; only consider threads where has_any[tid] != 0"
+  },
+  "indexes": [
+    {"index": "movie_keyword__movie_id (offsets_only)", "purpose": "range probe by t_id"},
+    {"index": "complete_cast__movie_id (offsets_only)", "purpose": "range probe by t_id"},
+    {"index": "movie_info_idx__movie_id (offsets_only)", "purpose": "range probe by t_id"},
+    {"index": "cast_info__movie_id (offsets_only)", "purpose": "range probe by t_id"}
+  ],
+  "aggregation": "scalar_min_4_columns",
+  "output": {"order_by": [], "limit": 1},
+  "execution_target": "cpp",
+  "optimization_notes": "CORRECTNESS FIX (Category A). Root cause: iter_1 used std::vector<bool> tl_has(nthreads) as the per-thread 'has_any' sentinel. std::vector<bool> is the bit-packed specialization in C++: threads writing tl_has[tid] for adjacent tids share a byte in the underlying storage, and concurrent non-atomic writes corrupt each other's bits non-deterministically. As a result, some threads' has_any flag would read false during reduction even though those threads processed qualifying titles, dropping their per-thread MIN contributions. This is why iter_0 and iter_1 produced DIFFERENT wrong results despite identical source (e.g. iter_1 missed title id=1640975 '3:10 to Yuma' (2007, kind=movie), which has matching keywords {violence, fight}, cc subj=1/stat=4, mi rating='7.8', and 7 chn-matching ci rows — it must contribute to MIN(t.title) but its thread's flag got clobbered). Fix: replace std::vector<bool> with std::vector<char> (or std::vector<uint8_t>) for the per-thread has_any flag so each element occupies its own byte and concurrent writes to different indices are race-free. Keep the rest of the logic identical: same dim builds, same probe order (mk -> cc -> mi -> ci), same per-title cand_chn/cand_mi/cand_n tracking, same string MIN reduction across threads. The chn bitset build can remain parallel with OMP atomic |= on the uint64_t word (vector<uint64_t> stores 8 bytes per element, no false-sharing of bits across elements, and OMP atomic update on |= is well-defined for integer types); alternatively make it single-threaded — it touches only ~3.14M short strings and is cheap. No performance regression expected; only the broken thread-local sentinel is replaced."
+}

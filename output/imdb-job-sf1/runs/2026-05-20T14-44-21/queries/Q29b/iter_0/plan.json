@@ -1,0 +1,121 @@
+{
+  "query_id": "Q29b",
+  "pipeline": [
+    "resolve_dim_ids",
+    "build_chn_set",
+    "build_cn_us_set",
+    "scan_title_driver",
+    "probe_mk_per_movie",
+    "probe_cc_per_movie",
+    "probe_mc_per_movie",
+    "probe_mi_per_movie",
+    "probe_ci_per_movie",
+    "filter_name_per_person",
+    "probe_an_per_person",
+    "probe_pi_per_person",
+    "aggregate_min"
+  ],
+  "join_order": [
+    {
+      "build": "title(title='Shrek 2' AND year BETWEEN 2000 AND 2005)",
+      "probe": "movie_keyword(keyword_id=cam_kw_id)",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 5,
+      "notes": "Driver: scan title varlen for 'Shrek 2'; year guard via production_year.bin; probe movie_keyword via movie_keyword__movie_id offsets"
+    },
+    {
+      "build": "title_movie_id (survived mk)",
+      "probe": "complete_cast(subject_id=cast_id, status_id=verified_id)",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 3,
+      "notes": "Probe complete_cast__movie_id offsets; filter cct1/cct2"
+    },
+    {
+      "build": "title_movie_id (survived cc)",
+      "probe": "movie_companies(company_id in cn_us_set)",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 3,
+      "notes": "Probe movie_companies__movie_id offsets; check company_id in us bitset"
+    },
+    {
+      "build": "title_movie_id (survived mc)",
+      "probe": "movie_info(info_type_id=it_id, info LIKE 'USA:%200%')",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 3,
+      "notes": "Probe movie_info__movie_id offsets; check info_type_id==it_id then varlen LIKE: prefix 'USA:' and memmem '200'"
+    },
+    {
+      "build": "title_movie_id (survived mi)",
+      "probe": "cast_info(role_id=actress_id, person_role_id in chn_set, note in 3-literal set)",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 3,
+      "notes": "Probe cast_info__movie_id offsets; emit candidate persons (n_id = person_id)"
+    },
+    {
+      "build": "n_candidate(person_id)",
+      "probe": "name(gender=f_code, name contains 'An')",
+      "type": "inner",
+      "strategy": "direct_array",
+      "build_cardinality": 50,
+      "notes": "Lazy per-candidate predicate: random-access name.gender.bin and name varlen"
+    },
+    {
+      "build": "n_candidate(filtered)",
+      "probe": "aka_name(person_id)",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 20,
+      "notes": "Probe aka_name__person_id offsets_only — existence check"
+    },
+    {
+      "build": "n_candidate(survived an)",
+      "probe": "person_info(person_id, info_type_id=it3_id)",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 20,
+      "notes": "Probe person_info__person_id offsets — small candidate set; filter info_type_id==it3_id (height)"
+    }
+  ],
+  "filters": [
+    {"table": "title", "predicate": "title='Shrek 2'", "selectivity": 0.000005},
+    {"table": "title", "predicate": "production_year BETWEEN 2000 AND 2005", "selectivity": 0.6},
+    {"table": "char_name", "predicate": "name='Queen'", "selectivity": 0.00001},
+    {"table": "company_name", "predicate": "country_code='[us]'", "selectivity": 0.35},
+    {"table": "cast_info", "predicate": "role_id=actress_id AND person_role_id in chn_set AND note in voice-set", "selectivity": 0.0001},
+    {"table": "movie_keyword", "predicate": "keyword_id=cam_kw_id", "selectivity": 0.00005},
+    {"table": "movie_info", "predicate": "info_type_id=it_id AND info LIKE 'USA:%200%'", "selectivity": 0.001},
+    {"table": "complete_cast", "predicate": "subject_id=cast_id AND status_id=verified_id", "selectivity": 0.05},
+    {"table": "name", "predicate": "gender=f_code AND name contains 'An'", "selectivity": 0.05},
+    {"table": "person_info", "predicate": "info_type_id=it3_id (height)", "selectivity": 0.05}
+  ],
+  "data_structures": {
+    "chn_set": "hash_set<int32_t> (small — likely <50 ids)",
+    "cn_us_set": "bitset(234997)",
+    "ci_note_set": "small 3-literal compare (inline strcmp or fixed dispatch)",
+    "dim_ids": "scalar int32_t (cast_id, verified_id, actress_id, it_id, it3_id, cam_kw_id, f_code, us_code)",
+    "title_driver": "vector<int32_t> movie_id candidates (tiny)",
+    "aggregation": "3 scalar MIN buffers (varlen string compare) — single-threaded final reduction"
+  },
+  "parallelism": {
+    "strategy": "single_threaded",
+    "threads": 1,
+    "notes": "Driver scan produces only a handful of Shrek 2 rows; per-movie probing is tiny. Parallelism overhead would dominate. Optional: parallelize title scan over morsels then serial probe."
+  },
+  "indexes": [
+    {"index": "movie_keyword__movie_id", "purpose": "join_lookup per movie"},
+    {"index": "complete_cast__movie_id", "purpose": "join_lookup per movie"},
+    {"index": "movie_companies__movie_id", "purpose": "join_lookup per movie"},
+    {"index": "movie_info__movie_id", "purpose": "join_lookup per movie"},
+    {"index": "cast_info__movie_id", "purpose": "join_lookup per movie"},
+    {"index": "aka_name__person_id", "purpose": "existence_check"},
+    {"index": "person_info__person_id", "purpose": "join_lookup per candidate person (filter it3_id=height)"}
+  ],
+  "aggregation": "scalar_min_3way",
+  "output": {"order_by": [], "limit": 1},
+  "execution_target": "cpp"
+}

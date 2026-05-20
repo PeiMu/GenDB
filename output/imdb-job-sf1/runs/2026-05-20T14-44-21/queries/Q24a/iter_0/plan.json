@@ -1,0 +1,132 @@
+{
+  "query_id": "Q24a",
+  "pipeline": [
+    "resolve_dims",
+    "build_valid_persons_bitset",
+    "scan_title_driver",
+    "probe_mk_kw",
+    "probe_mc_us",
+    "probe_mi_info",
+    "probe_ci_filters",
+    "probe_aka_existence",
+    "fetch_chn_name",
+    "aggregate_min"
+  ],
+  "dim_resolution": [
+    {"table": "role_type", "filter": "role = 'actress'", "output": "rt_id (int32)"},
+    {"table": "info_type", "filter": "info = 'release dates'", "output": "it_id (int32)"},
+    {"table": "keyword", "filter": "keyword IN ('hero','martial-arts','hand-to-hand-combat')", "output": "kw_ids (flat_hash_set<int32_t>, 3 ids)"},
+    {"table": "company_name", "filter": "country_code = '[us]'", "output": "us_code (int8 dict code)"},
+    {"table": "name (gender dict)", "filter": "gender = 'f'", "output": "f_code (int8 dict code)"}
+  ],
+  "prepass": {
+    "name": {
+      "structure": "bitset(4167491) valid_persons",
+      "predicate": "gender[i] == f_code AND memmem(name[i], 'An')",
+      "parallel": true,
+      "notes": "Built once before driver loop; very selective (gender='f' AND substring 'An')."
+    }
+  },
+  "join_order": [
+    {
+      "build": "valid_persons bitset (name pre-pass)",
+      "probe": "cast_info.person_id",
+      "type": "semi",
+      "strategy": "bitset_lookup",
+      "build_cardinality": 4167491,
+      "notes": "1-bit/person; O(1) test"
+    },
+    {
+      "build": "kw_ids (3 ids)",
+      "probe": "movie_keyword.keyword_id",
+      "type": "semi",
+      "strategy": "flat_hash_set",
+      "build_cardinality": 3
+    },
+    {
+      "build": "company_name.country_code dict per id",
+      "probe": "movie_companies.company_id",
+      "type": "semi",
+      "strategy": "direct_array",
+      "build_cardinality": 234997,
+      "notes": "Lookup country_code[company_id-1] == us_code"
+    },
+    {
+      "build": "ci.note IN-set",
+      "probe": "cast_info.note (varlen)",
+      "type": "semi",
+      "strategy": "flat_hash_set<string_view> with length prefilter",
+      "build_cardinality": 4
+    },
+    {
+      "build": "title (driver, year>2010)",
+      "probe": "mk,mc,mi,ci via offsets_only by movie_id",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 2528312,
+      "notes": "Driver is title; iterate v=1..N, skip year<=2010 and INT32_MIN"
+    },
+    {
+      "build": "aka_name__person_id offsets",
+      "probe": "cast_info.person_id existence",
+      "type": "semi",
+      "strategy": "offsets_only lo<hi check",
+      "build_cardinality": 901343
+    },
+    {
+      "build": "char_name.name via direct id",
+      "probe": "ci.person_role_id (non-NULL)",
+      "type": "inner",
+      "strategy": "direct_array",
+      "build_cardinality": 3140339,
+      "notes": "Only fetched when row survives all earlier filters"
+    }
+  ],
+  "filters": [
+    {"table": "title", "predicate": "production_year > 2010 AND != INT32_MIN", "selectivity": 0.25},
+    {"table": "movie_keyword", "predicate": "keyword_id IN kw_ids", "selectivity": 0.00002},
+    {"table": "movie_companies", "predicate": "country_code[company_id-1] == us_code", "selectivity": 0.45},
+    {"table": "movie_info", "predicate": "info_type_id == it_id", "selectivity": 0.08},
+    {"table": "movie_info", "predicate": "info LIKE 'Japan:%201%' OR info LIKE 'USA:%201%'", "selectivity": 0.02, "implementation": "prefix memcmp 'Japan:' or 'USA:' then memmem '201' in remainder"},
+    {"table": "cast_info", "predicate": "role_id == rt_id", "selectivity": 0.15},
+    {"table": "cast_info", "predicate": "valid_persons[person_id-1]", "selectivity": 0.02},
+    {"table": "cast_info", "predicate": "note IN ('(voice)','(voice: Japanese version)','(voice) (uncredited)','(voice: English version)')", "selectivity": 0.005},
+    {"table": "cast_info", "predicate": "person_role_id != INT32_MIN", "selectivity": 0.4},
+    {"table": "aka_name", "predicate": "exists offset range for person_id", "selectivity": 0.2}
+  ],
+  "data_structures": {
+    "kw_ids": "flat_hash_set<int32_t> (3)",
+    "ci_notes": "flat_hash_set<string_view> (4) with length prefilter (min/max len)",
+    "valid_persons": "bitset (4,167,491 bits ~ 522 KB)",
+    "cn_country_code": "int8_t[234997] direct array (dict codes)",
+    "title_year": "int32_t[2528312] direct array",
+    "title_name_off/dat": "varlen via offsets",
+    "char_name_off/dat": "varlen via offsets",
+    "fact_offsets": "offsets_only arrays for mk, mc, mi, ci, aka_name",
+    "aggregation": "3 running MIN string_view (per-thread, merged at end)"
+  },
+  "evaluation_order_per_title": [
+    "production_year > 2010",
+    "mk range: any keyword_id IN kw_ids -> early exit at first hit",
+    "mc range: any company_id with us_code -> early exit at first hit",
+    "mi range: info_type_id == it_id AND info LIKE -> early exit at first hit",
+    "ci range: per row apply role_id, valid_persons, note, person_role_id non-NULL; then aka existence; then fetch chn.name; update MINs"
+  ],
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "driver": "title id range partitioned into morsels (~16384 rows)",
+    "threads": "auto(nproc) = 12",
+    "prepass_parallel": true,
+    "reduction": "per-thread running MIN(string_view); final merge at end"
+  },
+  "indexes": [
+    {"index": "movie_keyword__movie_id", "purpose": "join_lookup"},
+    {"index": "movie_companies__movie_id", "purpose": "join_lookup"},
+    {"index": "movie_info__movie_id", "purpose": "join_lookup"},
+    {"index": "cast_info__movie_id", "purpose": "join_lookup"},
+    {"index": "aka_name__person_id", "purpose": "semi_join_existence"}
+  ],
+  "aggregation": "scalar_min (3 MIN string_view aggregates, per-thread, merged at end)",
+  "output": {"select": ["MIN(chn.name)", "MIN(n.name)", "MIN(t.title)"], "order_by": [], "limit": null},
+  "execution_target": "cpp"
+}

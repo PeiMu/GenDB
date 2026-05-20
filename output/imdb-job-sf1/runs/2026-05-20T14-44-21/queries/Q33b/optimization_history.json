@@ -1,0 +1,23 @@
+{
+  "query_id": "Q33b",
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 1.2,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 1.2,
+      "validation": "pass",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "data_loading": 0.15,
+        "main_scan": 0.41,
+        "output": 0.04,
+        "total": 1.18
+      }
+    }
+  ]
+}

@@ -1,0 +1,67 @@
+{
+  "compile": {
+    "status": "pass"
+  },
+  "run": {
+    "status": "pass",
+    "duration_ms": 41
+  },
+  "validation": {
+    "status": "fail",
+    "details": {
+      "match": false,
+      "queries": {
+        "Q26a": {
+          "rows_expected": 1,
+          "rows_actual": 1,
+          "match": false,
+          "error": "1 row(s) differ",
+          "sample_mismatches": [
+            {
+              "row": 0,
+              "expected": [
+                "'Agua' Man",
+                "7.10",
+                "Acereda, Hermie",
+                "3:10 to Yuma"
+              ],
+              "actual": [
+                "'Agua' Man",
+                "7.10",
+                "Alam, Ahmad Shah",
+                "Batman Begins"
+              ],
+              "cell_details": [
+                {
+                  "expected": "Acereda, Hermie",
+                  "actual": "Alam, Ahmad Shah",
+                  "pattern": "string_mismatch",
+                  "col": 2
+                },
+                {
+                  "expected": "3:10 to Yuma",
+                  "actual": "Batman Begins",
+                  "pattern": "string_mismatch",
+                  "col": 3
+                }
+              ]
+            }
+          ],
+          "mismatch_patterns": {
+            "string_mismatch": 2
+          }
+        }
+      }
+    }
+  },
+  "optimization_target": "hot",
+  "timing_ms": 41.983333333333334,
+  "hot_timing_ms": 41.983333333333334,
+  "operation_timings": {
+    "data_loading": 0.17,
+    "build_dim_sets": 27.74,
+    "main_scan": 3.93,
+    "output": 0.16,
+    "total": 36.95
+  }
+}

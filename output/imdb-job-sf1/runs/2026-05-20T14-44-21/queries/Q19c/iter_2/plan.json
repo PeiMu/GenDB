@@ -1,0 +1,160 @@
+{
+  "query_id": "Q19c",
+  "storage_extensions": [
+    {
+      "id": "movie_info.info.prefix_dict",
+      "action": "built_new",
+      "files": {
+        "codes": "column_versions/movie_info.info.prefix_dict/codes.bin",
+        "codes_format": "uint16_t[14835720]",
+        "dict_offsets": "column_versions/movie_info.info.prefix_dict/dict.offsets",
+        "dict_offsets_format": "uint64_t[19352]",
+        "dict_data": "column_versions/movie_info.info.prefix_dict/dict.data",
+        "dict_data_format": "raw prefix bytes (19351 entries, 122565 bytes total)"
+      },
+      "usage": "At query start: resolve 'Japan' -> japan_code and 'USA' -> usa_code via linear scan of dict.offsets+dict.data (19351 entries, ~150KB, one-time). In CSR scan, after the Y[mv] year-bitset check, test code = mi_info_prefix[r]: if code != japan_code && code != usa_code, skip — this avoids reading mi_info.off and mi_info.dat (118MB + 626MB) for ~60-70% of year-passing rows that don't start with 'Japan:' or 'USA:'. For survivors, still run the existing mi_info_match (memmem '200' in the remainder) to enforce the full LIKE semantics (Japan:%200% / USA:%200%). codes.bin is 29MB; strided access in CSR order is bandwidth-friendly. If japan_code or usa_code resolves to a value not present in the dict (0), skip the corresponding pattern."
+    }
+  ],
+  "pipeline": [
+    "resolve_dims",
+    "resolve_prefix_codes",
+    "build_Y_year_bitset",
+    "build_P_fused_bitset",
+    "scan_mi_csr_year_prefix_then_like",
+    "probe_mc_cn_us",
+    "probe_ci_voice_actress",
+    "aggregate_min"
+  ],
+  "join_order": [
+    {
+      "build": "info_type(it_rd='release dates')",
+      "probe": "movie_info via movie_info__info_type_id CSR",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 1,
+      "notes": "Walk only the it_rd slice of mi (CSR offsets)."
+    },
+    {
+      "build": "title bitset Y over title.id where production_year > 2000 AND != INT32_MIN",
+      "probe": "mi row movie_id during CSR scan",
+      "type": "semi",
+      "strategy": "bitset_lookup",
+      "build_cardinality": 1250000,
+      "notes": "Test Y[mv] FIRST; ~316KB → L2."
+    },
+    {
+      "build": "mi_info_prefix dict-encoded code column (storage extension)",
+      "probe": "mi row r in CSR scan",
+      "type": "semi",
+      "strategy": "uint16_code_compare",
+      "build_cardinality": 14835720,
+      "notes": "After Y passes, test mi_info_prefix[r] ∈ {japan_code, usa_code}. Skips ~60-70% of varlen mi.info reads vs iter_1. Uses precomputed column version."
+    },
+    {
+      "build": "mi rows passing Y AND prefix AND memmem('200', tail)",
+      "probe": "deduped movie_id set T",
+      "type": "inner",
+      "strategy": "direct_array",
+      "build_cardinality": 8000,
+      "notes": "After prefix filter only Japan:/USA: rows reach the varlen read; full LIKE preserved."
+    },
+    {
+      "build": "set of qualifying movie_ids T",
+      "probe": "movie_companies via mc__movie_id offsets",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 8000,
+      "notes": "For each mv, walk mc range; require any cn_country_code[company_id-1]==cc_us."
+    },
+    {
+      "build": "qualifying movie_ids T",
+      "probe": "cast_info via ci__movie_id offsets",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 8000,
+      "notes": "For each mv, walk ci range; cheap int filters first, then P_and_an bit, then varlen note voice-set."
+    },
+    {
+      "build": "fused bitset P_and_an over name.id (gender='f' AND name LIKE '%An%' AND aka_name range non-empty)",
+      "probe": "ci.person_id",
+      "type": "semi",
+      "strategy": "bitset_lookup",
+      "build_cardinality": 600000,
+      "notes": "Single bit test; ~520KB → L2. Eliminates per-ci-row 16MB aka_name offsets random probe."
+    }
+  ],
+  "filters": [
+    {"table": "role_type", "predicate": "role='actress'", "selectivity": 0.083},
+    {"table": "info_type", "predicate": "info='release dates'", "selectivity": 0.0088},
+    {"table": "company_name", "predicate": "country_code='[us]'", "selectivity": 0.5},
+    {"table": "name", "predicate": "gender='f' AND name LIKE '%An%' AND aka_name nonempty", "selectivity": 0.10},
+    {"table": "movie_info", "predicate": "info_type_id=it_rd AND prefix_code ∈ {japan,usa} AND info LIKE 'Japan:%200%' OR 'USA:%200%'", "selectivity": 0.0015},
+    {"table": "title", "predicate": "production_year > 2000 AND != INT32_MIN", "selectivity": 0.45},
+    {"table": "cast_info", "predicate": "note IN voice-set AND role_id=rt_actress AND person_role_id present", "selectivity": 0.003}
+  ],
+  "scan": {
+    "table": "movie_info (it_rd CSR slice)",
+    "rows": 8000000,
+    "columns": [
+      {"name": "mit_row", "file": "_idx/movie_info__info_type_id__rowids.bin", "type": "int32_t", "bytes_per_row": 4},
+      {"name": "mi.movie_id", "file": "movie_info/movie_id.bin", "type": "int32_t", "bytes_per_row": 4},
+      {"name": "mi.info_prefix_code", "file": "column_versions/movie_info.info.prefix_dict/codes.bin", "type": "uint16_t", "bytes_per_row": 2},
+      {"name": "mi.info_off", "file": "movie_info/info.off", "type": "int64_t", "bytes_per_row": 8},
+      {"name": "mi.info_dat", "file": "movie_info/info.dat", "type": "uint8_t", "bytes_per_row": 1}
+    ],
+    "access_pattern": "sequential over k (mit_row), strided over r (sorted within slice)"
+  },
+  "data_structures": {
+    "dim_scalars": "int32 ids for rt_actress, it_rd, cc_us, g_f; uint16 japan_code, usa_code resolved from prefix dict",
+    "Y_year_bitset": "vector<uint64_t> sized (N_title+1) bits; bit mv set iff production_year[mv-1] > 2000 AND != INT32_MIN. ~316KB → L2-resident.",
+    "P_fused_bitset": "vector<uint64_t> sized (N_name+1) bits; bit pid set iff name[pid-1].gender=='f' AND memmem(name[pid-1],'An') AND an_off[pid+1] > an_off[pid]. ~520KB → L2-resident.",
+    "mi_info_prefix_codes": "mmap uint16_t[N_mi] = 29MB; strided read in CSR-row order; allows pre-filter without touching info.off/info.dat",
+    "cn_country_code_lookup": "int16 array[cn_rows]",
+    "ci_note_voice_set": "switch on length + memcmp (no allocation)",
+    "movie_set_T": "vector<int32_t> of qualifying movie_ids, sorted+deduped",
+    "mi_info_type_csr": "offsets+rowids from disk",
+    "ci_movie_offsets": "int32 offsets array",
+    "mc_movie_offsets": "int32 offsets array",
+    "aggregation": "two scalar MIN accumulators (name_id, title_id), per-thread local then reduce"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "morsel_unit": "Y/P bitset builds: parallel for over rows. CSR scan: parallel for over k in [lo,hi) static schedule(4096). Main scan: parallel for over T static schedule(64). Per-thread local accumulators."
+  },
+  "indexes": [
+    {"index": "movie_info__info_type_id (CSR)", "purpose": "drive scan: iterate only release-dates mi rows"},
+    {"index": "cast_info__movie_id (offsets_only)", "purpose": "join_lookup ci rows by movie_id"},
+    {"index": "movie_companies__movie_id (offsets_only)", "purpose": "join_lookup mc rows by movie_id"},
+    {"index": "aka_name__person_id (offsets_only)", "purpose": "consumed only during P_fused_bitset build; not touched during main scan"}
+  ],
+  "like_strategies": [
+    {"column": "mi.info", "patterns": ["Japan:%200%", "USA:%200%"], "method": "Step 1: resolve 'Japan' and 'USA' to uint16 codes via prefix_dict (one-time linear scan of ~19351 dict entries). Step 2: in CSR scan, after Y[mv] passes, test prefix_codes[r] ∈ {japan_code, usa_code} (single uint16 compare, no varlen read). Step 3: for survivors, read mi_info bytes and run memmem('200', tail) on the suffix after the prefix to enforce the '%200%' part. If japan_code or usa_code resolves to 0 (not present in dict), skip that branch."},
+    {"column": "n.name", "pattern": "%An%", "method": "length-pruned memmem during P_fused_bitset build (one-time)."}
+  ],
+  "scan_mi_csr_filter_order": [
+    "1. r = mit_row[k]",
+    "2. mv = mi_movie_id[r]; bounds-check",
+    "3. test Y bitset at mv — if NOT set, continue (skips ALL subsequent reads)",
+    "4. code = mi_info_prefix_codes[r]; if code != japan_code && code != usa_code: continue (skips varlen offset+data reads)",
+    "5. read mi_info_off[r], mi_info_off[r+1] and the suffix after the prefix length",
+    "6. require memmem('200', 3) in the suffix portion",
+    "7. push mv into per-thread local_T"
+  ],
+  "main_scan_filter_order": [
+    "1. mc range walk: require any cn_country_code[company_id-1]==cc_us; break on first hit",
+    "2. ci range walk: require role_id==rt_actress (cheap int compare)",
+    "3. require person_role_id != INT32_MIN",
+    "4. pid = ci.person_id; require P_and_an bit set (single L2-resident bit test)",
+    "5. require ci.note voice-set (varlen, only for rare survivors)",
+    "6. update local MIN(name) and (once per movie) MIN(title)"
+  ],
+  "aggregation": "scalar_min_two_columns",
+  "output": {"order_by": [], "limit": 1, "projection": ["MIN(n.name)", "MIN(t.title)"]},
+  "execution_target": "cpp",
+  "optimization_notes": "Iter 1 reduced total 68->66ms but scan_mi_csr_year_first_then_like still dominates at 24ms (36% of total). Diagnosis: after Y bitset prunes ~50% of release_dates rows, the remaining ~4M rows still do random varlen reads into mi_info.off (118MB) and mi_info.dat (626MB) — both vastly exceeding L3 (12MB). Only ~30-40% of these rows actually start with 'Japan:' or 'USA:', so 60-70% of varlen reads are wasted. Strategy: Category E (storage extension). Built column_versions/movie_info.info.prefix_dict — a uint16 dict-encoded column where each mi row's code is the dict id of its letter-only prefix-before-colon (or 0 if no usable prefix). At query time, resolve 'Japan' and 'USA' to codes once, then in the CSR scan check prefix_codes[r] ∈ {japan_code, usa_code} BEFORE reading info.off/info.dat. The codes column is 29MB strided-sequential in CSR order, far cheaper than random probes into 744MB of varlen data. Expected: scan_mi drops from 24ms to ~10-13ms. All other phases (build_Y, build_P, main_scan) unchanged. Year threshold 2000 preserved verbatim.",
+  "correctness_anchors": {
+    "threshold_constant_year": 2000,
+    "threshold_constant_year_dup": 2000
+  }
+}

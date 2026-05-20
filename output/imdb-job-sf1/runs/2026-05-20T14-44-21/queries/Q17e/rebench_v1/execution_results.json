@@ -1,0 +1,57 @@
+{
+  "compile": {
+    "status": "pass"
+  },
+  "run": {
+    "status": "pass",
+    "duration_ms": 15
+  },
+  "validation": {
+    "status": "fail",
+    "details": {
+      "match": false,
+      "queries": {
+        "Q17e": {
+          "rows_expected": 1,
+          "rows_actual": 1,
+          "match": false,
+          "error": "1 row(s) differ",
+          "sample_mismatches": [
+            {
+              "row": 0,
+              "expected": [
+                "$hort, Too"
+              ],
+              "actual": [
+                "'El Morito', José"
+              ],
+              "cell_details": [
+                {
+                  "expected": "$hort, Too",
+                  "actual": "'El Morito', José",
+                  "pattern": "string_mismatch",
+                  "col": 0
+                }
+              ]
+            }
+          ],
+          "mismatch_patterns": {
+            "string_mismatch": 1
+          }
+        }
+      }
+    }
+  },
+  "optimization_target": "hot",
+  "timing_ms": 8.723333333333333,
+  "hot_timing_ms": 8.723333333333333,
+  "operation_timings": {
+    "data_loading": 0.37,
+    "resolve_kid": 0.01,
+    "resolve_us_code": 0,
+    "mk_csr_scan": 1.18,
+    "main_scan": 6.74,
+    "output": 0.08,
+    "total": 8.44
+  }
+}

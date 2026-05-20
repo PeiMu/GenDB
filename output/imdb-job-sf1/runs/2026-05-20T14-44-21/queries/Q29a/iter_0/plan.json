@@ -1,0 +1,143 @@
+{
+  "query_id": "Q29a",
+  "pipeline": [
+    "resolve_dim_codes",
+    "scan_title_driver",
+    "filter_production_year",
+    "probe_movie_keyword",
+    "probe_complete_cast",
+    "probe_movie_companies",
+    "probe_movie_info",
+    "probe_cast_info",
+    "per_person_filter_name",
+    "per_person_existence_aka_name",
+    "per_person_existence_person_info_trivia",
+    "aggregate_min"
+  ],
+  "dimension_resolution": [
+    {"table": "comp_cast_type", "scan": "kind.off/.dat", "resolve": ["cast_id where kind=='cast'", "verified_id where kind=='complete+verified'"]},
+    {"table": "info_type", "scan": "info.off/.dat", "resolve": ["it_id where info=='release dates'", "it3_id where info=='trivia'"]},
+    {"table": "role_type", "scan": "role.off/.dat", "resolve": ["actress_id where role=='actress'"]},
+    {"table": "keyword", "scan": "keyword.off/.dat", "resolve": ["cam_kw_id where keyword=='computer-animation'"]},
+    {"table": "company_name", "scan": "country_code dict + .bin", "resolve": ["us_code from dict where bytes=='[us]'"], "build": "cn_us_set = ids where country_code==us_code"},
+    {"table": "char_name", "scan": "name.off/.dat", "build": "chn_set = all ids where length==5 and bytes=='Queen'"},
+    {"table": "name", "scan": "gender dict", "resolve": ["f_code from dict where bytes=='f'"], "note": "do NOT pre-materialize full n_set; test predicate lazily per candidate ci.person_id"}
+  ],
+  "join_order": [
+    {
+      "build": "title (filter title=='Shrek 2' AND production_year BETWEEN 2000 AND 2010)",
+      "probe": "(driver — small set of t_ids, typically 1)",
+      "type": "filter",
+      "strategy": "varlen_scan_length_prefilter",
+      "build_cardinality": 2,
+      "notes": "scan title.off+.dat once; length-7 entries equal to 'Shrek 2'; check production_year.bin"
+    },
+    {
+      "build": "t_id set (≤few)",
+      "probe": "movie_keyword via movie_keyword__movie_id offsets",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 2,
+      "notes": "require keyword_id == cam_kw_id; surviving movies advance"
+    },
+    {
+      "build": "t_id set",
+      "probe": "complete_cast via complete_cast__movie_id offsets",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 2,
+      "notes": "require subject_id==cast_id AND status_id==verified_id"
+    },
+    {
+      "build": "cn_us_set (~hundreds of thousands ids)",
+      "probe": "movie_companies via movie_companies__movie_id offsets restricted to surviving t_ids",
+      "type": "semi",
+      "strategy": "index_nested_loop_with_bitset_membership",
+      "build_cardinality": 200000,
+      "notes": "use bitset(234997) over company_name ids for O(1) cn_us_set membership"
+    },
+    {
+      "build": "t_id set",
+      "probe": "movie_info via movie_info__movie_id offsets",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 2,
+      "notes": "require info_type_id==it_id AND (info starts_with 'Japan:' OR info starts_with 'USA:') AND info contains '200'"
+    },
+    {
+      "build": "chn_set (Queen ids)",
+      "probe": "cast_info via cast_info__movie_id offsets restricted to surviving t_ids",
+      "type": "inner",
+      "strategy": "index_nested_loop_with_hashset",
+      "build_cardinality": 8,
+      "notes": "row filters: person_role_id ∈ chn_set, role_id==actress_id, note ∈ 3-literal set; emit ci.person_id"
+    },
+    {
+      "build": "candidate person_id set (small, from ci output)",
+      "probe": "name.gender.bin + name.off/.dat (lazy per-person)",
+      "type": "filter",
+      "strategy": "direct_array_probe",
+      "build_cardinality": 100,
+      "notes": "for each p: check gender_code[p-1]==f_code AND memmem(name[p-1], 'An')"
+    },
+    {
+      "build": "surviving person_id set",
+      "probe": "aka_name__person_id offsets (existence)",
+      "type": "semi",
+      "strategy": "index_existence_check",
+      "build_cardinality": 100,
+      "notes": "off[p+1] > off[p]"
+    },
+    {
+      "build": "surviving person_id set",
+      "probe": "person_info__person_id offsets + info_type_id.bin",
+      "type": "semi",
+      "strategy": "index_nested_loop_per_person",
+      "build_cardinality": 100,
+      "notes": "for each p: scan tiny pi range, check info_type_id == it3_id; do NOT use info_type CSR"
+    }
+  ],
+  "filters": [
+    {"table": "title", "predicate": "title == 'Shrek 2'", "selectivity": 4e-7},
+    {"table": "title", "predicate": "production_year BETWEEN 2000 AND 2010", "selectivity": 0.9},
+    {"table": "char_name", "predicate": "name == 'Queen'", "selectivity": 3e-6},
+    {"table": "movie_keyword", "predicate": "keyword_id == cam_kw_id", "selectivity": 0.0005},
+    {"table": "complete_cast", "predicate": "subject_id==cast_id AND status_id==verified_id", "selectivity": 0.25},
+    {"table": "company_name", "predicate": "country_code == '[us]'", "selectivity": 0.5},
+    {"table": "movie_companies", "predicate": "company_id ∈ cn_us_set", "selectivity": 0.5},
+    {"table": "movie_info", "predicate": "info_type_id==it_id AND (info starts_with 'Japan:' OR 'USA:') AND info contains '200'", "selectivity": 0.001},
+    {"table": "cast_info", "predicate": "person_role_id ∈ chn_set AND role_id==actress_id AND note ∈ {3 literals}", "selectivity": 1e-7},
+    {"table": "name", "predicate": "gender=='f' AND name contains 'An'", "selectivity": 0.1},
+    {"table": "person_info", "predicate": "info_type_id == it3_id", "selectivity": 0.05}
+  ],
+  "data_structures": {
+    "chn_set": "small_vector<int32> (Queen char_name ids, typically <10)",
+    "cn_us_set": "bitset(234998) over company_name dense ids",
+    "ci_note_set": "tiny 3-string array; per-row strcmp/memcmp on note bytes (length prefilter)",
+    "t_id_set": "small_vector<int32> (Shrek 2 candidate title ids, typically 1-3)",
+    "person_candidates": "small_vector<int32> from ci output (unique-deduped)",
+    "aggregation": "scalar min trackers: const 'Queen', const 'Shrek 2' for two cols; min over n.name bytes for voicing_actress"
+  },
+  "parallelism": {
+    "strategy": "single_thread",
+    "threads": 1,
+    "notes": "driver collapses to ~1 title; total work dominated by ~tiny per-person probes; parallel overhead would exceed benefit"
+  },
+  "indexes": [
+    {"index": "movie_keyword__movie_id", "purpose": "join_lookup"},
+    {"index": "complete_cast__movie_id", "purpose": "join_lookup"},
+    {"index": "movie_companies__movie_id", "purpose": "join_lookup"},
+    {"index": "movie_info__movie_id", "purpose": "join_lookup"},
+    {"index": "cast_info__movie_id", "purpose": "join_lookup"},
+    {"index": "aka_name__person_id", "purpose": "existence_check"},
+    {"index": "person_info__person_id", "purpose": "per_person_range_scan"}
+  ],
+  "aggregation": "scalar_min",
+  "output": {
+    "order_by": [],
+    "limit": 1,
+    "columns": ["MIN(chn.name) AS voiced_char", "MIN(n.name) AS voicing_actress", "MIN(t.title) AS voiced_animation"],
+    "notes": "if no matches, emit NULL row per SQL semantics"
+  },
+  "execution_target": "cpp"
+}

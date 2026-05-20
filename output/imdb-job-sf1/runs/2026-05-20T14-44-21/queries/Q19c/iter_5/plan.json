@@ -1,0 +1,158 @@
+{
+  "query_id": "Q19c",
+  "storage_extensions": [
+    {
+      "id": "movie_info.info.prefix_dict",
+      "action": "use_existing",
+      "files": {
+        "codes": "column_versions/movie_info.info.prefix_dict/codes.bin",
+        "codes_format": "uint16_t[14835720]",
+        "dict_offsets": "column_versions/movie_info.info.prefix_dict/dict.offsets",
+        "dict_offsets_format": "uint64_t[19352]",
+        "dict_data": "column_versions/movie_info.info.prefix_dict/dict.data",
+        "dict_data_format": "raw prefix bytes (19351 entries, 1-based ids; id 0 means no letter-only prefix)"
+      },
+      "usage": "MANDATORY: mmap codes.bin as `const uint16_t* mi_prefix_codes` of length 14835720, plus dict.offsets and dict.data. AT STARTUP: linear-scan dict.offsets+dict.data once to resolve `uint16_t japan_code` and `uint16_t usa_code` (the dict id whose bytes equal 'Japan' and 'USA' respectively; ids are 1-based). IN A NEW DEDICATED PHASE `build_M_prefix_bitset` (parallel sequential sweep over codes.bin): build `std::vector<uint64_t> M_prefix((N_mi+63)/64,0)` where bit r is set iff `mi_prefix_codes[r] == japan_code || mi_prefix_codes[r] == usa_code`. The build sweeps the 29.5MB codes column SEQUENTIALLY in 12-thread parallel chunks; output bitset is ~1.85MB (LLC-resident). IN PHASE `scan_mi_csr_M_prefix_first`: the inner-loop FIRST CHECK after computing `r = mit_row[k]` MUST be `if (!((M_prefix[r>>6] >> (r&63)) & 1ULL)) continue;` — BEFORE reading `mi_mid[r]`, BEFORE the Y bitset, BEFORE `mi_info_off[r]`. This rejects ~99.5% of the 8M-row CSR slice using a single cache-line read into a 1.85MB bitset, eliminating the dominant random probes into mi_movie_id (58MB), mi_info_off (118MB), and mi_info_dat (626MB) for all rejected rows. For survivors (~80K), proceed with mv = mi_mid[r], Y[mv] check, then read mi_info bytes and run `mi_info_match` (the existing memmem('200', tail) LIKE check, with prefix-length known: 6 for Japan:, 4 for USA:, distinguished by reading mi_prefix_codes[r] which is already in cache). If japan_code or usa_code resolves to 0 (not in dict), set it to a sentinel that won't match any row."
+    }
+  ],
+  "pipeline": [
+    "resolve_dims",
+    "resolve_prefix_codes",
+    "build_Y_year_bitset",
+    "build_P_fused_bitset",
+    "build_M_prefix_bitset",
+    "scan_mi_csr_M_prefix_first",
+    "main_scan_mc_ci",
+    "aggregate_min"
+  ],
+  "join_order": [
+    {
+      "build": "info_type(it_rd='release dates')",
+      "probe": "movie_info via movie_info__info_type_id CSR",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 1,
+      "notes": "Walk only the it_rd CSR slice (~8M rows out of 14.8M)."
+    },
+    {
+      "build": "M_prefix bitset over mi.id (prefix_codes[r] in {japan_code, usa_code})",
+      "probe": "mit_row[k] in CSR walk",
+      "type": "semi",
+      "strategy": "bitset_lookup_first",
+      "build_cardinality": 14835720,
+      "notes": "Single cache-line bit test on ~1.85MB LLC-resident bitset BEFORE reading any wide mi columns. Rejects ~99.5% of the 8M slice."
+    },
+    {
+      "build": "Y bitset over title.id (production_year > 2000 AND != INT32_MIN)",
+      "probe": "mv = mi_movie_id[r] (only for M_prefix survivors)",
+      "type": "semi",
+      "strategy": "bitset_lookup",
+      "build_cardinality": 1250000,
+      "notes": "~316KB → L2; touched only for ~80K survivors."
+    },
+    {
+      "build": "mi rows passing M_prefix AND Y AND memmem('200', tail)",
+      "probe": "deduped movie_id set T",
+      "type": "inner",
+      "strategy": "direct_array",
+      "build_cardinality": 8000,
+      "notes": "Full LIKE preserved via memmem on suffix; prefix length is 6 (Japan:) or 4 (USA:), distinguished by re-reading mi_prefix_codes[r]."
+    },
+    {
+      "build": "qualifying movie_ids T",
+      "probe": "movie_companies via mc__movie_id offsets",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 8000,
+      "notes": "For each mv, walk mc range; require any cn_country_code[company_id-1]==cc_us; break on first hit."
+    },
+    {
+      "build": "qualifying movie_ids T",
+      "probe": "cast_info via ci__movie_id offsets",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 8000,
+      "notes": "Cheap int filters first (role_id==rt_actress, person_role_id != INT32_MIN), then P_and_an bit test, then varlen ci.note voice-set."
+    },
+    {
+      "build": "fused bitset P_and_an over name.id (gender='f' AND name LIKE '%An%' AND aka_name range non-empty)",
+      "probe": "ci.person_id",
+      "type": "semi",
+      "strategy": "bitset_lookup",
+      "build_cardinality": 600000,
+      "notes": "Single L2-resident bit test; eliminates per-ci-row 16MB aka_name offsets random probe."
+    }
+  ],
+  "filters": [
+    {"table": "role_type", "predicate": "role='actress'", "selectivity": 0.083},
+    {"table": "info_type", "predicate": "info='release dates'", "selectivity": 0.0088},
+    {"table": "company_name", "predicate": "country_code='[us]'", "selectivity": 0.5},
+    {"table": "name", "predicate": "gender='f' AND name LIKE '%An%' AND aka_name nonempty", "selectivity": 0.10},
+    {"table": "movie_info", "predicate": "info_type_id=it_rd AND prefix_code in {japan,usa} AND info LIKE 'Japan:%200%' OR 'USA:%200%'", "selectivity": 0.0015},
+    {"table": "title", "predicate": "production_year > 2000 AND != INT32_MIN", "selectivity": 0.45},
+    {"table": "cast_info", "predicate": "note IN voice-set AND role_id=rt_actress AND person_role_id present", "selectivity": 0.003}
+  ],
+  "scan": {
+    "table": "movie_info (it_rd CSR slice)",
+    "rows": 8000000,
+    "columns": [
+      {"name": "mit_row", "file": "_idx/movie_info__info_type_id__rowids.bin", "type": "int32_t", "bytes_per_row": 4},
+      {"name": "mi.info_prefix_code", "file": "column_versions/movie_info.info.prefix_dict/codes.bin", "type": "uint16_t", "bytes_per_row": 2},
+      {"name": "mi.movie_id", "file": "movie_info/movie_id.bin", "type": "int32_t", "bytes_per_row": 4},
+      {"name": "mi.info_off", "file": "movie_info/info.off", "type": "int64_t", "bytes_per_row": 8},
+      {"name": "mi.info_dat", "file": "movie_info/info.dat", "type": "uint8_t", "bytes_per_row": 1}
+    ],
+    "access_pattern": "sequential mit_row; strided M_prefix bitset (LLC); only survivors touch mi.movie_id/info_off/info_dat"
+  },
+  "data_structures": {
+    "dim_scalars": "int32 ids for rt_actress, it_rd, cc_us, g_f; uint16 japan_code, usa_code resolved via one-time linear scan of prefix_dict.offsets+data.",
+    "Y_year_bitset": "vector<uint64_t> of (N_title+1) bits; bit mv set iff production_year[mv-1] > 2000 AND != INT32_MIN. ~316KB → L2.",
+    "P_fused_bitset": "vector<uint64_t> of (N_name+1) bits; bit pid set iff gender=='f' AND memmem(name,'An') AND an_off[pid+1] > an_off[pid]. ~520KB → L2.",
+    "M_prefix_bitset": "vector<uint64_t> of (N_mi+1) bits; bit r set iff mi_prefix_codes[r] == japan_code || mi_prefix_codes[r] == usa_code. ~1.85MB → LLC-resident.",
+    "mi_prefix_codes_mmap": "const uint16_t* over codes.bin (29.5MB); accessed SEQUENTIALLY during M_prefix build, then NEVER touched again during scan_mi.",
+    "movie_set_T": "vector<int32_t> of qualifying movie_ids, sorted+deduped",
+    "aggregation": "two per-thread MIN accumulators (name_id, title_id); final reduce."
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "morsel_unit": "build_Y/P/M: #pragma omp parallel for schedule(static, 65536). M_prefix build sweeps codes.bin sequentially in 12 chunks. scan_mi_csr: #pragma omp for over k in [lo,hi) schedule(static, 4096). main_scan: parallel for over T schedule(static, 64). Per-thread local accumulators reduced at the end."
+  },
+  "indexes": [
+    {"index": "movie_info__info_type_id (CSR)", "purpose": "drive scan: iterate only release-dates mi rows"},
+    {"index": "cast_info__movie_id (offsets_only)", "purpose": "join_lookup ci rows by movie_id"},
+    {"index": "movie_companies__movie_id (offsets_only)", "purpose": "join_lookup mc rows by movie_id"},
+    {"index": "aka_name__person_id (offsets_only)", "purpose": "consumed only during P_fused_bitset build"}
+  ],
+  "like_strategies": [
+    {"column": "mi.info", "patterns": ["Japan:%200%", "USA:%200%"], "method": "Step 1 (startup): linear-scan dict.offsets+dict.data once to resolve japan_code (entry bytes 'Japan', len 5) and usa_code (entry bytes 'USA', len 3); if not found set to UINT16_MAX sentinel. Step 2 (build_M_prefix_bitset phase, parallel sequential sweep over codes.bin): for each r in [0,N_mi), set M_prefix[r>>6] |= (1ULL << (r&63)) iff prefix_codes[r] == japan_code || prefix_codes[r] == usa_code. Step 3 (scan_mi_csr_M_prefix_first inner loop): test M_prefix[r] bit FIRST; only survivors read mi_movie_id, Y bitset, mi_info_off, mi_info_dat. Step 4 (LIKE finalization for survivors): re-read prefix_codes[r] (already cached); if code==japan_code, prefix_len=6, search 'Japan:' boundary then memmem('200',3) in suffix; if code==usa_code, prefix_len=4 similarly. memcmp the literal prefix bytes to be safe."},
+    {"column": "n.name", "pattern": "%An%", "method": "length-pruned memmem during P_fused_bitset build (one-time)."}
+  ],
+  "scan_mi_csr_filter_order": [
+    "1. k iterates sequentially; r = mit_row[k] (sequential read of rowids.bin)",
+    "2. FIRST CHECK: test M_prefix bitset at r — if NOT set, continue (skips ALL subsequent reads)",
+    "3. mv = mi_movie_id[r]; bounds-check 1..N_title",
+    "4. test Y bitset at mv — if NOT set, continue",
+    "5. read mi_info_off[r], mi_info_off[r+1]; if empty, continue",
+    "6. re-read mi_prefix_codes[r] (in L1 if recently read; otherwise just memcmp prefix bytes): pick prefix length (6 for Japan:, 4 for USA:); verify memcmp matches",
+    "7. require memmem('200', 3) in suffix bytes after the prefix",
+    "8. push mv into per-thread local_T"
+  ],
+  "main_scan_filter_order": [
+    "1. mc range walk: require any cn_country_code[company_id-1]==cc_us; break on first hit",
+    "2. ci range walk: require role_id==rt_actress",
+    "3. require person_role_id != INT32_MIN",
+    "4. pid = ci.person_id; require P_and_an bit set (single L2-resident bit test)",
+    "5. require ci.note voice-set (varlen, only for rare survivors)",
+    "6. update local MIN(name) and (once per movie) MIN(title)"
+  ],
+  "aggregation": "scalar_min_two_columns",
+  "output": {"order_by": [], "limit": 1, "projection": ["MIN(n.name)", "MIN(t.title)"]},
+  "execution_target": "cpp",
+  "optimization_notes": "Iter_2 best at 63ms with scan_mi=24ms (38% of total). Iter_3 (prescribe prefix check inside CSR loop) and iter_4 (sequential scan over all 14.8M mi rows) both regressed because the codegen either did not actually mmap codes.bin or did extra full-table work. Root cause: scan_mi makes 8M random/strided probes into mi_movie_id (58MB), mi_info_off (118MB), and mi_info_dat (626MB) — all greatly exceeding the 12MB L3. The prefix_codes column version already exists; the problem is integrating it correctly. Strategy: Category B (algorithm change) + Category E (use existing storage extension). Make the prefix filter a DEDICATED separate phase build_M_prefix_bitset that sequentially sweeps the 29.5MB codes.bin once (parallel, ~1-2ms) and produces a 1.85MB LLC-resident bitset M_prefix over mi rows. The CSR walk then tests M_prefix[r] as its FIRST inner-loop operation, BEFORE reading mi_movie_id[r], Y, or any varlen mi.info bytes. The ~99.5% of CSR-slice rows that fail the prefix filter incur exactly one cache-line read into the small bitset — no probes into the L3-exceeding columns. Expected: scan_mi drops from 24ms to ~3-6ms; build_M_prefix adds ~1-2ms. Net gain ~17-20ms; total ~43-48ms. Making M_prefix a separate named phase forces codegen to actually mmap codes.bin and use it — distinct from the previously failed inline-check approach. Year threshold 2000 and the four voice-note strings are preserved verbatim.",
+  "correctness_anchors": {
+    "threshold_constant_year": 2000,
+    "threshold_constant_year_dup1": 2000,
+    "threshold_constant_year_dup2": 2000
+  }
+}

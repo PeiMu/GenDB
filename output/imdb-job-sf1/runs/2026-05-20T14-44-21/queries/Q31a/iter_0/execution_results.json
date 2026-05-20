@@ -1,0 +1,24 @@
+{
+  "compile": {
+    "status": "pass"
+  },
+  "run": {
+    "status": "pass",
+    "duration_ms": 12
+  },
+  "validation": {
+    "status": "pass"
+  },
+  "optimization_target": "hot",
+  "timing_ms": 10.499999999999998,
+  "hot_timing_ms": 10.499999999999998,
+  "operation_timings": {
+    "data_loading": 0.2,
+    "resolve_dims": 0,
+    "scan_company_name_prefix": 0.73,
+    "drive_mc_csr_by_company": 0.36,
+    "main_scan": 5.64,
+    "output": 0.07,
+    "total": 10.41
+  }
+}

@@ -1,0 +1,174 @@
+{
+  "query_id": "Q19c",
+  "storage_extensions": [
+    {
+      "id": "movie_info.info.prefix_dict",
+      "action": "use_existing",
+      "files": {
+        "codes": "column_versions/movie_info.info.prefix_dict/codes.bin",
+        "codes_format": "uint16_t[14835720]",
+        "dict_offsets": "column_versions/movie_info.info.prefix_dict/dict.offsets",
+        "dict_offsets_format": "uint64_t[19352]",
+        "dict_data": "column_versions/movie_info.info.prefix_dict/dict.data",
+        "dict_data_format": "raw prefix bytes (122565 bytes total)"
+      },
+      "usage": "MANDATORY. mmap codes.bin as `const uint16_t* prefix_codes` (29.5MB). At startup resolve `japan_code` and `usa_code` by linear-scanning dict.offsets+dict.data once (~19K entries, <1ms): for each dict id i (0-based), if dict.offsets[i+1]-dict.offsets[i] == 5 && memcmp(&dict.data[dict.offsets[i]], \"Japan\", 5)==0 then japan_code = (uint16_t)(i+1); similarly for \"USA\" (len 3). If either resolves to 0 (not found), treat that branch as a no-op. The prefix_codes array drives the entire mi scan in this iteration."
+    }
+  ],
+  "pipeline": [
+    "resolve_dims",
+    "resolve_prefix_codes",
+    "build_Y_year_bitset",
+    "build_P_fused_bitset",
+    "scan_mi_prefix_driven",
+    "main_scan_mc_ci",
+    "aggregate_min"
+  ],
+  "join_order": [
+    {
+      "build": "prefix_codes column (storage extension, 29.5MB uint16 over all mi rows)",
+      "probe": "movie_info rows scanned SEQUENTIALLY in row order (NOT via CSR)",
+      "type": "semi",
+      "strategy": "sequential_bandwidth_scan",
+      "build_cardinality": 14835720,
+      "notes": "DIRECTION CHANGE vs iter_2/iter_3: drop the it_rd CSR as the scan driver. Walk r=0..N_mi-1 sequentially; the dominant filter is prefix_codes[r] in {japan_code, usa_code}. Sequential read of 29.5MB across 12 threads is bandwidth-bound (~1-2ms) and far cheaper than the CSR's strided access into 58MB mi_movie_id + 118MB mi_info_off + 626MB mi_info_dat."
+    },
+    {
+      "build": "info_type_id == it_rd",
+      "probe": "mi row r AFTER prefix passes",
+      "type": "semi",
+      "strategy": "int_compare_on_survivor",
+      "build_cardinality": 1,
+      "notes": "Only ~30K-60K rows pass the prefix filter (very rare globally); read mi_info_type_id[r] only for those — random reads into 58MB are cheap when the set is tiny."
+    },
+    {
+      "build": "title bitset Y over title.id where production_year > 2000 AND != INT32_MIN",
+      "probe": "mv = mi_movie_id[r] for survivors of prefix AND info_type",
+      "type": "semi",
+      "strategy": "bitset_lookup",
+      "build_cardinality": 1250000,
+      "notes": "Y is ~316KB (L2-resident). Survivors at this point are tiny (~few K) so probing 58MB mi_movie_id incurs only a few K random reads."
+    },
+    {
+      "build": "mi rows passing prefix AND info_type AND Y AND memmem('200', tail)",
+      "probe": "deduped movie_id set T",
+      "type": "inner",
+      "strategy": "direct_array",
+      "build_cardinality": 8000,
+      "notes": "Only after prefix+itid+year all pass do we touch varlen mi_info.off / mi_info.dat. Re-skip-prefix-bytes (Japan: = 6, USA: = 4) and run memmem('200', 3) over the suffix."
+    },
+    {
+      "build": "set of qualifying movie_ids T (sorted+deduped)",
+      "probe": "movie_companies via mc__movie_id offsets",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 8000,
+      "notes": "For each mv, walk mc range; require any cn_country_code[company_id-1]==cc_us."
+    },
+    {
+      "build": "qualifying movie_ids T",
+      "probe": "cast_info via ci__movie_id offsets",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 8000,
+      "notes": "For each mv, walk ci range; cheap int filters first (role_id==rt_actress, person_role_id != INT32_MIN), then P_and_an bit test, then varlen note voice-set."
+    },
+    {
+      "build": "fused bitset P_and_an over name.id",
+      "probe": "ci.person_id",
+      "type": "semi",
+      "strategy": "bitset_lookup",
+      "build_cardinality": 600000,
+      "notes": "gender=='f' AND name LIKE '%An%' AND aka_name range non-empty. ~520KB → L2."
+    }
+  ],
+  "filters": [
+    {"table": "role_type", "predicate": "role='actress'", "selectivity": 0.083},
+    {"table": "info_type", "predicate": "info='release dates'", "selectivity": 0.0088},
+    {"table": "company_name", "predicate": "country_code='[us]'", "selectivity": 0.5},
+    {"table": "name", "predicate": "gender='f' AND name LIKE '%An%' AND aka_name nonempty", "selectivity": 0.10},
+    {"table": "movie_info", "predicate": "prefix_code in {japan,usa} AND info_type_id=it_rd AND Y[movie_id] AND info LIKE 'Japan:%200%' OR 'USA:%200%'", "selectivity": 0.0005},
+    {"table": "title", "predicate": "production_year > 2000 AND != INT32_MIN", "selectivity": 0.45},
+    {"table": "cast_info", "predicate": "note IN voice-set AND role_id=rt_actress AND person_role_id present", "selectivity": 0.003}
+  ],
+  "scan": {
+    "table": "movie_info (sequential over ALL rows, prefix-code driven)",
+    "rows": 14835720,
+    "columns": [
+      {"name": "mi.info_prefix_code", "file": "column_versions/movie_info.info.prefix_dict/codes.bin", "type": "uint16_t", "bytes_per_row": 2},
+      {"name": "mi.info_type_id", "file": "movie_info/info_type_id.bin", "type": "int32_t", "bytes_per_row": 4},
+      {"name": "mi.movie_id", "file": "movie_info/movie_id.bin", "type": "int32_t", "bytes_per_row": 4},
+      {"name": "mi.info_off", "file": "movie_info/info.off", "type": "int64_t", "bytes_per_row": 8},
+      {"name": "mi.info_dat", "file": "movie_info/info.dat", "type": "uint8_t", "bytes_per_row": 1}
+    ],
+    "access_pattern": "sequential over r=0..N_mi-1 on prefix_codes; rare random reads on other columns for prefix survivors only"
+  },
+  "data_structures": {
+    "dim_scalars": "int32 ids for rt_actress, it_rd; int16 cc_us; int8 g_f; uint16 japan_code, usa_code resolved from prefix dict at startup",
+    "Y_year_bitset": "vector<uint64_t> sized (N_title+1) bits; bit mv set iff production_year[mv-1] > 2000 AND != INT32_MIN. ~316KB → L2-resident.",
+    "P_fused_bitset": "vector<uint64_t> sized (N_name+1) bits; bit pid set iff name[pid-1].gender=='f' AND memmem(name[pid-1],'An') AND an_off[pid+1] > an_off[pid]. ~520KB → L2-resident.",
+    "prefix_codes": "mmap const uint16_t* (29.5MB); SEQUENTIAL scan driver — replaces the it_rd CSR walk entirely",
+    "mi_itid": "mmap const int32_t* (59MB); read only for prefix survivors",
+    "cn_country_code_lookup": "int16 array[cn_rows]",
+    "ci_note_voice_set": "switch on length + memcmp (no allocation)",
+    "movie_set_T": "vector<int32_t> of qualifying movie_ids, sorted+deduped",
+    "ci_movie_offsets": "int32 offsets array",
+    "mc_movie_offsets": "int32 offsets array",
+    "aggregation": "two scalar MIN accumulators (name_id, title_id), per-thread local then reduce"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "morsel_unit": "Y/P bitset builds: parallel for over rows. Mi prefix-driven scan: parallel for over r in [0,N_mi) with static schedule(65536) — large morsels for max sequential prefetch on prefix_codes. Main scan: parallel for over T static schedule(64). Per-thread local accumulators + per-thread local_T vector, merged after."
+  },
+  "indexes": [
+    {"index": "cast_info__movie_id (offsets_only)", "purpose": "join_lookup ci rows by movie_id in main scan"},
+    {"index": "movie_companies__movie_id (offsets_only)", "purpose": "join_lookup mc rows by movie_id in main scan"},
+    {"index": "aka_name__person_id (offsets_only)", "purpose": "consumed only during P_fused_bitset build; not touched during main scan"}
+  ],
+  "indexes_intentionally_unused": [
+    {"index": "movie_info__info_type_id (CSR)", "reason": "iter_4 abandons CSR-driven scan; sequential prefix_codes scan is faster because it touches 29.5MB of contiguous uint16 instead of strided access into 58MB mi_movie_id + 118MB mi_info_off + 626MB mi_info_dat. The it_rd filter is applied to prefix-passing rows via mi_info_type_id[r] direct read (a few K random reads, free)."}
+  ],
+  "like_strategies": [
+    {
+      "column": "mi.info",
+      "patterns": ["Japan:%200%", "USA:%200%"],
+      "method": "Two-stage. Stage 1 (driver): in the main mi scan, read prefix_codes[r] (one uint16) and require code == japan_code OR code == usa_code. NO varlen read at this stage. Stage 2 (survivor verification): only for rows passing prefix AND mi_info_type_id[r]==it_rd AND Y[mv]: read mi_info bytes, skip past the known prefix length (6 for Japan, 4 for USA), and run memmem(suffix, suffix_len, \"200\", 3). The prefix length is known because the prefix code already tells us which branch we're in."
+    },
+    {
+      "column": "n.name",
+      "pattern": "%An%",
+      "method": "length-pruned memmem during P_fused_bitset build (one-time)."
+    }
+  ],
+  "scan_mi_prefix_driven_filter_order": [
+    "1. parallel-for r = 0 .. N_mi-1",
+    "2. code = prefix_codes[r]",
+    "3. branch_is_japan = (japan_code != 0 && code == japan_code)",
+    "4. branch_is_usa   = (usa_code != 0   && code == usa_code)",
+    "5. if (!branch_is_japan && !branch_is_usa) continue; — this is the dominant filter (~99.7% reject), no further memory touched",
+    "6. if (mi_itid[r] != it_rd) continue;",
+    "7. mv = mi_mid[r]; if (mv<=0 || (size_t)mv > N_title) continue;",
+    "8. if (!Y[mv]) continue;",
+    "9. read mi_info bytes [off[r], off[r+1]); skip prefix_len (6 if branch_is_japan else 4); require memmem(suffix, suffix_len, \"200\", 3)",
+    "10. push mv into per-thread local_T",
+    "11. after parallel region: gather, sort, dedupe into T"
+  ],
+  "main_scan_filter_order": [
+    "1. parallel-for over T",
+    "2. mc range walk: require any cn_country_code[company_id-1]==cc_us; break on first hit",
+    "3. ci range walk: require role_id==rt_actress (cheap int compare)",
+    "4. require person_role_id != INT32_MIN",
+    "5. pid = ci.person_id; require P_and_an bit set (single L2-resident bit test)",
+    "6. require ci.note voice-set (varlen, only for rare survivors)",
+    "7. update local MIN(name) and (once per movie) MIN(title)"
+  ],
+  "aggregation": "scalar_min_two_columns",
+  "output": {"order_by": [], "limit": 1, "projection": ["MIN(n.name)", "MIN(t.title)"]},
+  "execution_target": "cpp",
+  "optimization_notes": "Iter_4 takes a DIFFERENT direction from iter_3 (which regressed). Root cause: scan_mi at 24ms (38% of total) is dominated by strided access into mi_movie_id (58MB), mi_info_off (118MB), and mi_info_dat (626MB) while walking the it_rd CSR slice (8M rows). All three are L3-exceeding and accessed in strided/random fashion. Strategy: Category B (algorithm change) + Category E (use storage extension). Abandon the CSR-driven scan entirely. Drive the scan with a SEQUENTIAL pass over the 29.5MB prefix_codes column (storage extension): each thread sweeps a contiguous range of mi rows, doing one uint16 compare per row. The prefix filter rejects ~99.7% of rows (only ~30K-60K of 14.8M mi rows have Japan/USA prefix), and rejected rows incur zero further memory touches. For the tiny prefix-surviving set we read mi_info_type_id, mi_movie_id, then Y bitset, then varlen mi_info — all cheap because the set is small. This converts 58MB+118MB+626MB strided/random access into 29.5MB sequential access. Expected scan_mi: 24ms -> 3-5ms. To prevent the codegen regression seen in iter_2 and iter_3 (where prefix_dict was prescribed but not actually mmap'd), the storage_extensions.usage and scan_mi_prefix_driven_filter_order sections give the exact code structure. Year threshold 2000 and the four voice-note strings are preserved verbatim.",
+  "correctness_anchors": {
+    "threshold_constant_year": 2000,
+    "threshold_constant_year_dup": 2000
+  }
+}

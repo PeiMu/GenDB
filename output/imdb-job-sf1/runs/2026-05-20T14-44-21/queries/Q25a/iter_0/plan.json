@@ -1,0 +1,154 @@
+{
+  "query_id": "Q25a",
+  "pipeline": [
+    "resolve_dims",
+    "build_valid_persons_bitset",
+    "scan_title_driver",
+    "probe_mk_range_filter_kw",
+    "probe_mi_idx_range_filter_it2",
+    "probe_mi_range_filter_it1_and_info_set",
+    "probe_ci_range_filter_note_and_male",
+    "fetch_name_via_dense_pk",
+    "running_min_aggregation"
+  ],
+  "join_order": [
+    {
+      "build": "it1_id from info_type WHERE info='genres'",
+      "probe": "scalar",
+      "type": "scan",
+      "strategy": "linear_scan",
+      "build_cardinality": 1,
+      "notes": "scan 113-row info_type once; resolve scalar id"
+    },
+    {
+      "build": "it2_id from info_type WHERE info='votes'",
+      "probe": "scalar",
+      "type": "scan",
+      "strategy": "linear_scan",
+      "build_cardinality": 1,
+      "notes": "same 113-row scan, second pass or combined; scalar id"
+    },
+    {
+      "build": "kw_ids from keyword WHERE keyword IN (3-set)",
+      "probe": "scalar_set",
+      "type": "scan",
+      "strategy": "linear_scan",
+      "build_cardinality": 3,
+      "notes": "store as small std::array<int32,3> or flat_hash_set<int32>"
+    },
+    {
+      "build": "m_code from name.gender dict",
+      "probe": "scalar",
+      "type": "dict_lookup",
+      "strategy": "dict_scan",
+      "build_cardinality": 1,
+      "notes": "resolve 'm' code from gender dictionary"
+    },
+    {
+      "build": "valid_persons bitset[name_rows]",
+      "probe": "name.gender_bin",
+      "type": "filter",
+      "strategy": "bitset_build_linear_scan",
+      "build_cardinality": 4167491,
+      "notes": "single linear scan over gender_bin; set bit if == m_code"
+    },
+    {
+      "build": "title driver",
+      "probe": "movie_id v=1..2528312",
+      "type": "scan",
+      "strategy": "morsel_parallel_scan",
+      "build_cardinality": 2528312,
+      "notes": "no predicate on title; iterate all movie ids"
+    },
+    {
+      "build": "kw_ids (3 ids)",
+      "probe": "movie_keyword range [off_mk[v], off_mk[v+1])",
+      "type": "semi",
+      "strategy": "offsets_range_then_inline_set_check",
+      "build_cardinality": 3,
+      "notes": "first probe; very selective (3/134170); branch out cheap"
+    },
+    {
+      "build": "it2_id scalar",
+      "probe": "movie_info_idx range [off_mi_idx[v], off_mi_idx[v+1])",
+      "type": "semi",
+      "strategy": "offsets_range_then_scalar_equality",
+      "build_cardinality": 1,
+      "notes": "cheap equality on info_type_id == it2_id"
+    },
+    {
+      "build": "it1_id scalar + info 6-set (template: 'Horror' single literal)",
+      "probe": "movie_info range [off_mi[v], off_mi[v+1])",
+      "type": "semi",
+      "strategy": "offsets_range_then_equality_and_set",
+      "build_cardinality": 7,
+      "notes": "filter info_type_id == it1_id then info ∈ set via flat_hash_set<string_view>; project MIN(mi.info)"
+    },
+    {
+      "build": "writer-note set (5) + valid_persons bitset",
+      "probe": "cast_info range [off_ci[v], off_ci[v+1])",
+      "type": "semi",
+      "strategy": "offsets_range_then_set_and_bitset",
+      "build_cardinality": 5,
+      "notes": "note ∈ writer-set (length prefilter then flat_hash_set<string_view>); then valid_persons[person_id-1]; collect surviving person_id for name MIN"
+    },
+    {
+      "build": "name dense PK",
+      "probe": "ci.person_id (surviving rows)",
+      "type": "inner",
+      "strategy": "direct_array_index",
+      "build_cardinality": 4167491,
+      "notes": "name.off[pid-1] .. name.off[pid] for MIN(n.name)"
+    }
+  ],
+  "filters": [
+    {"table": "info_type (it1)", "predicate": "info = 'genres'", "selectivity": 0.0088},
+    {"table": "info_type (it2)", "predicate": "info = 'votes'", "selectivity": 0.0088},
+    {"table": "keyword", "predicate": "keyword IN ('hero','martial-arts','hand-to-hand-combat')", "selectivity": 0.0000224},
+    {"table": "name", "predicate": "gender = 'm'", "selectivity": 0.55},
+    {"table": "movie_info", "predicate": "info_type_id = it1_id AND info IN (6-set)", "selectivity": 0.005},
+    {"table": "movie_info_idx", "predicate": "info_type_id = it2_id", "selectivity": 0.0088},
+    {"table": "movie_keyword", "predicate": "keyword_id IN kw_ids", "selectivity": 0.0000224},
+    {"table": "cast_info", "predicate": "note IN writer-set", "selectivity": 0.03}
+  ],
+  "data_structures": {
+    "it1_id": "scalar int32",
+    "it2_id": "scalar int32",
+    "kw_ids": "std::array<int32_t,3> (linear membership; alternatively flat_hash_set<int32_t>)",
+    "writer_notes": "flat_hash_set<string_view> with length prefilter (lengths={6,8,13,9,15} approx by literal)",
+    "mi_info_set": "flat_hash_set<string_view> over 6 literals",
+    "m_code": "uint8 dict code",
+    "valid_persons": "bitset(4167491) prebuilt by linear scan of gender_bin",
+    "mk_offsets": "int32[2528314] from _idx/movie_keyword__movie_id__offsets.bin (mmap)",
+    "mi_idx_offsets": "int32[2528314] from _idx/movie_info_idx__movie_id__offsets.bin (mmap)",
+    "mi_offsets": "int32[2528314] from _idx/movie_info__movie_id__offsets.bin (mmap)",
+    "ci_offsets": "int32[2528314] from _idx/cast_info__movie_id__offsets.bin (mmap)",
+    "name_offsets": "int32[name_rows+1] dense PK string offsets (mmap)",
+    "aggregation": "4 running mins (string_view) held thread-local then reduced"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven over title driver",
+    "threads": "auto(nproc)",
+    "morsel_size": 32768,
+    "notes": "Per thread: thread-local running mins for (mi.info, mi_idx.info, n.name, t.title); final reduce across threads. All offset arrays mmapped read-only and shared."
+  },
+  "indexes": [
+    {"index": "movie_keyword__movie_id (offsets_only)", "purpose": "range probe by movie_id"},
+    {"index": "movie_info_idx__movie_id (offsets_only)", "purpose": "range probe by movie_id"},
+    {"index": "movie_info__movie_id (offsets_only)", "purpose": "range probe by movie_id"},
+    {"index": "cast_info__movie_id (offsets_only)", "purpose": "range probe by movie_id"},
+    {"index": "name.off (dense PK string offsets)", "purpose": "name string fetch by id"}
+  ],
+  "aggregation": "running_min_per_thread_then_global_reduce",
+  "output": {
+    "order_by": [],
+    "limit": 1,
+    "columns": [
+      "MIN(mi.info) AS movie_budget",
+      "MIN(mi_idx.info) AS movie_votes",
+      "MIN(n.name) AS male_writer",
+      "MIN(t.title) AS violent_movie_title"
+    ]
+  },
+  "execution_target": "cpp"
+}
