@@ -1,165 +1,110 @@
 {
   "query_id": "Q27c",
   "pipeline": [
-    "build_dim_sets",
-    "drive_sequel_keyword_csr",
+    "resolve_dims",
+    "build_filter_sets",
+    "drive_sequel_csr",
     "filter_title_year",
     "probe_movie_link",
     "probe_movie_companies",
     "probe_complete_cast",
     "probe_movie_info",
-    "aggregate_min"
+    "reduce_min"
   ],
-  "dim_builds": [
-    {
-      "name": "cast_id",
-      "source": "comp_cast_type",
-      "predicate": "kind = 'cast'",
-      "structure": "int32 scalar",
-      "expected_cardinality": 1
-    },
-    {
-      "name": "complete_prefix_set",
-      "source": "comp_cast_type",
-      "predicate": "memcmp(kind, 'complete', 8) == 0",
-      "structure": "bitset(4)",
-      "expected_cardinality": 2,
-      "notes": "LIKE 'complete%' is prefix only, not substring"
-    },
-    {
-      "name": "pl_code",
-      "source": "company_name.country_code dict",
-      "predicate": "resolve dict code for '[pl]'",
-      "structure": "int16 scalar"
-    },
-    {
-      "name": "cn_set",
-      "source": "company_name",
-      "predicate": "country_code != pl_code AND (name LIKE '%Film%' OR name LIKE '%Warner%')",
-      "structure": "bitset(234997)",
-      "expected_cardinality": 15000,
-      "notes": "substring scan over varlen name"
-    },
-    {
-      "name": "ct_id",
-      "source": "company_type",
-      "predicate": "kind = 'production companies'",
-      "structure": "int32 scalar",
-      "expected_cardinality": 1
-    },
-    {
-      "name": "sequel_kw_id",
-      "source": "keyword",
-      "predicate": "keyword = 'sequel'",
-      "structure": "int32 scalar",
-      "expected_cardinality": 1
-    },
-    {
-      "name": "lt_set",
-      "source": "link_type",
-      "predicate": "link LIKE '%follow%'",
-      "structure": "bitset(18)",
-      "expected_cardinality": 5
-    },
-    {
-      "name": "mi_info_set",
-      "source": "literal 9-string set",
-      "predicate": "info IN (Sweden,Norway,Germany,Denmark,Swedish,Denish,Norwegian,German,English)",
-      "structure": "small_string_hashset",
-      "expected_cardinality": 9,
-      "notes": "keep 'Denish' verbatim (benchmark typo)"
-    }
+  "dimension_resolution": [
+    {"name": "cast_id", "source": "comp_cast_type.kind == 'cast'", "type": "int32"},
+    {"name": "complete_prefix_set", "source": "comp_cast_type.kind starts_with 'complete' (memcmp s,\"complete\",8)", "type": "small_bitset(4)"},
+    {"name": "ct_id", "source": "company_type.kind == 'production companies'", "type": "int32"},
+    {"name": "sequel_kw_id", "source": "keyword.keyword == 'sequel'", "type": "int32"},
+    {"name": "pl_code", "source": "company_name.country_code dict lookup '[pl]'", "type": "int16"},
+    {"name": "lt_set", "source": "link_type.link contains 'follow' (substring)", "type": "small_bitset(18)"},
+    {"name": "cn_set", "source": "company_name where country_code != pl_code AND (name contains 'Film' OR 'Warner')", "type": "bitset(234997)"},
+    {"name": "cn_name_off", "source": "company_name.name varlen for MIN materialization", "type": "ptr"},
+    {"name": "mi_info_set", "source": "9-literal hash set {Sweden,Norway,Germany,Denmark,Swedish,Denish,Norwegian,German,English}", "type": "small_string_hashset"}
   ],
   "join_order": [
     {
-      "build": "sequel_kw_id (scalar)",
-      "probe": "movie_keyword via CSR keyword_id index",
+      "build": "sequel_kw_id rowids via movie_keyword__keyword_id CSR",
+      "probe": "title (year filter) -> ml -> mc -> cc -> mi",
       "type": "inner",
-      "strategy": "index_csr_enumeration",
-      "build_cardinality": 1,
-      "expected_output": 2800,
-      "notes": "Drive query from CSR rowids -> mk.movie_id -> candidate t_id"
-    },
-    {
-      "build": "candidate t_ids",
-      "probe": "title.production_year[t_id]",
-      "type": "inner",
-      "strategy": "direct_array_lookup",
+      "strategy": "driver_csr_nested_loop",
       "build_cardinality": 2800,
-      "notes": "Filter year BETWEEN 1950 AND 2010 in-place"
+      "notes": "sequel keyword has ~2.8k movies; drive entire pipeline from this small set"
     },
     {
-      "build": "lt_set (bitset 18)",
-      "probe": "movie_link via offsets_only index on movie_id",
+      "build": "lt_set (bitset over 18 link_type ids)",
+      "probe": "movie_link[t_id] via offsets",
       "type": "semi",
-      "strategy": "index_range_scan + bitset_probe",
-      "build_cardinality": 5,
-      "notes": "For each t_id, scan ml[lo..hi), check link_type_id in lt_set; capture matched ml_row for lt.link MIN later"
+      "strategy": "bitset_membership",
+      "build_cardinality": 18
     },
     {
-      "build": "cn_set (bitset 234997), ct_id",
-      "probe": "movie_companies via offsets_only index on movie_id",
-      "type": "semi",
-      "strategy": "index_range_scan + bitset_probe + scalar_eq",
-      "build_cardinality": 15000,
-      "notes": "Check note IS NULL (off[i]==off[i+1]), company_type_id == ct_id, company_id in cn_set; capture mc.company_id for cn.name MIN"
+      "build": "cn_set + ct_id + note IS NULL",
+      "probe": "movie_companies[t_id] via offsets",
+      "type": "inner",
+      "strategy": "bitset_membership + scalar eq + null check",
+      "build_cardinality": 234997,
+      "notes": "must capture cn_id to materialize MIN(cn.name)"
     },
     {
-      "build": "cast_id, complete_prefix_set",
-      "probe": "complete_cast via offsets_only index on movie_id",
+      "build": "cast_id + complete_prefix_set",
+      "probe": "complete_cast[t_id] via offsets",
       "type": "semi",
-      "strategy": "index_range_scan + scalar_eq + bitset_probe",
-      "build_cardinality": 2,
-      "notes": "subject_id == cast_id AND status_id in complete_prefix_set"
+      "strategy": "scalar_eq + small_bitset",
+      "build_cardinality": 4
     },
     {
-      "build": "mi_info_set (9 strings)",
-      "probe": "movie_info via offsets_only index on movie_id",
+      "build": "mi_info_set (9 literals)",
+      "probe": "movie_info[t_id] via offsets, info varlen",
       "type": "semi",
-      "strategy": "index_range_scan + string_hashset_probe",
+      "strategy": "hash_set_membership_on_varlen",
       "build_cardinality": 9,
-      "notes": "Check info IN set per row"
+      "notes": "EXISTS-style: stop at first matching mi row"
     }
   ],
   "filters": [
     {"table": "comp_cast_type", "predicate": "kind = 'cast'", "selectivity": 0.25},
-    {"table": "comp_cast_type", "predicate": "kind LIKE 'complete%'", "selectivity": 0.5},
-    {"table": "company_name", "predicate": "country_code != '[pl]' AND (name LIKE '%Film%' OR name LIKE '%Warner%')", "selectivity": 0.06},
+    {"table": "comp_cast_type", "predicate": "kind LIKE 'complete%' (prefix memcmp)", "selectivity": 0.5},
+    {"table": "company_name", "predicate": "country_code != '[pl]' AND (name LIKE '%Film%' OR name LIKE '%Warner%')", "selectivity": 0.05},
     {"table": "company_type", "predicate": "kind = 'production companies'", "selectivity": 0.25},
-    {"table": "keyword", "predicate": "keyword = 'sequel'", "selectivity": 7.5e-6},
-    {"table": "link_type", "predicate": "link LIKE '%follow%'", "selectivity": 0.28},
+    {"table": "keyword", "predicate": "keyword = 'sequel'", "selectivity": 7.45e-6},
+    {"table": "link_type", "predicate": "link LIKE '%follow%' (substring)", "selectivity": 0.4},
+    {"table": "movie_companies", "predicate": "note IS NULL", "selectivity": 0.5},
+    {"table": "movie_info", "predicate": "info IN (9 literals)", "selectivity": 0.05},
     {"table": "title", "predicate": "production_year BETWEEN 1950 AND 2010", "selectivity": 0.95},
-    {"table": "movie_companies", "predicate": "note IS NULL", "selectivity": 0.78},
-    {"table": "movie_info", "predicate": "info IN (9 country/language strings)", "selectivity": 0.02}
+    {"table": "movie_keyword", "predicate": "keyword_id = sequel_kw_id (driver via CSR)", "selectivity": 6e-4}
   ],
   "data_structures": {
-    "cast_id": "int32 scalar",
-    "complete_prefix_set": "bitset(4)",
-    "cn_set": "bitset(234997)",
-    "ct_id": "int32 scalar",
-    "sequel_kw_id": "int32 scalar",
-    "lt_set": "bitset(18)",
-    "mi_info_set": "compact_hash_set<string_view> (size 9)",
-    "candidate_t_ids": "flat_array<int32> (~2800)"
+    "cct_complete_prefix": "bitset(4)",
+    "lt_follow_set": "bitset(18)",
+    "cn_film_warner_set": "bitset(234997)",
+    "mi_info_literals": "static_string_hashset(9) with first-letter prefilter",
+    "mc_match_state": "per_t_id capture cn_id (int32) for MIN materialization",
+    "ml_match_state": "per_t_id capture lt_id (int32) for MIN materialization",
+    "title_match_state": "per_t_id capture t_id for MIN(t.title) materialization",
+    "global_min_reducer": "lexicographic compare of varlen via off+dat; tracked as (best_off, best_len) per output column"
   },
   "parallelism": {
-    "strategy": "single_threaded",
-    "threads": 1,
-    "notes": "Sequel keyword CSR yields ~2800 candidate movies; per-t_id work is tiny; thread sync overhead exceeds benefit"
+    "strategy": "morsel_driven over sequel rowids",
+    "morsel_size": 64,
+    "threads": "auto(nproc)",
+    "reduction": "per-thread local (min_cn_id, min_lt_id, min_t_id) ints; final pass resolves varlen MIN across thread-local candidate sets",
+    "notes": "Driver cardinality ~2800 is small but per-row work probes 5 CSR slices; parallel still worthwhile. Use atomic-free thread-local accumulators."
   },
   "indexes": [
-    {"index": "movie_keyword__keyword_id (CSR)", "purpose": "enumerate sequel movie_ids as driver"},
-    {"index": "movie_link__movie_id (offsets_only)", "purpose": "join_lookup per t_id"},
-    {"index": "movie_companies__movie_id (offsets_only)", "purpose": "join_lookup per t_id"},
-    {"index": "complete_cast__movie_id (offsets_only)", "purpose": "join_lookup per t_id"},
-    {"index": "movie_info__movie_id (offsets_only)", "purpose": "join_lookup per t_id"}
+    {"index": "movie_keyword__keyword_id", "purpose": "enumerate sequel movies (driver)"},
+    {"index": "movie_link__movie_id", "purpose": "per-t_id slice for ml probe"},
+    {"index": "movie_companies__movie_id", "purpose": "per-t_id slice for mc probe"},
+    {"index": "complete_cast__movie_id", "purpose": "per-t_id slice for cc probe"},
+    {"index": "movie_info__movie_id", "purpose": "per-t_id slice for mi probe"}
   ],
-  "aggregation": "scalar_min_3cols",
-  "output": {
-    "select": ["MIN(cn.name)", "MIN(lt.link)", "MIN(t.title)"],
-    "order_by": [],
-    "limit": 1,
-    "notes": "Maintain three running-min varlen strings; lookup via captured cn_id (mc.company_id), lt_id (ml.link_type_id), t_id"
+  "aggregation": "global_min_three_columns",
+  "min_materialization": {
+    "producing_company": "track winning cn_id across threads; final MIN over distinct cn_ids by comparing company_name varlen",
+    "link_type": "track winning lt_id across threads; final MIN over distinct lt_ids by comparing link_type varlen",
+    "complete_western_sequel": "track winning t_id across threads; final MIN over distinct t_ids by comparing title varlen",
+    "strategy": "Because each thread may see multiple candidate (cn_id, lt_id, t_id) per matching tuple, maintain a small thread-local set (or just compare-and-keep best id ordered by string lex). Final reduction: load varlen for ids, pick lex-min."
   },
+  "output": {"order_by": [], "limit": 1, "projection": ["MIN(cn.name)", "MIN(lt.link)", "MIN(t.title)"]},
   "execution_target": "cpp"
 }

@@ -1,108 +1,108 @@
 {
   "query_id": "Q33b",
   "pipeline": [
-    "resolve_dim_constants",
-    "build_cn1_nl_bitset",
-    "build_lt_ids_set",
-    "drive_movie_link_via_lt_csr",
-    "probe_title_t1_kind",
-    "probe_title_t2_kind_and_year",
-    "probe_mc1_for_nl_company",
-    "probe_mc2_for_any_company",
-    "probe_mi_idx1_rating",
-    "probe_mi_idx2_rating_lt_3p0",
+    "resolve_dim_dicts",
+    "build_cn1_nl_bitmap",
+    "resolve_lt_ids_like_follow",
+    "drive_movie_link_via_link_type_csr",
+    "filter_t1_kind_tv",
+    "filter_t2_kind_tv_year_2007",
+    "lookup_mc1_with_nl_company",
+    "lookup_mc2_any_company",
+    "lookup_mi_idx1_rating",
+    "lookup_mi_idx2_rating_lt_3_0",
     "aggregate_six_mins"
+  ],
+  "filters": [
+    {"table": "company_name", "predicate": "country_code = '[nl]'", "selectivity": 0.005, "notes": "resolve [nl] in country_code dict; build cn1_ids bitmap over 234997 ids"},
+    {"table": "info_type", "predicate": "info = 'rating'", "selectivity": 0.009, "notes": "single rating_id scalar (113 rows scan)"},
+    {"table": "kind_type", "predicate": "kind = 'tv series'", "selectivity": 0.14, "notes": "single tv_kind_id scalar (7 rows scan)"},
+    {"table": "link_type", "predicate": "link LIKE '%follow%'", "selectivity": 0.15, "notes": "memmem over 18 rows; expect 2-3 lt_ids; also retain text slices for MIN on first/second_company NOT needed (link text not projected)"},
+    {"table": "title (t1)", "predicate": "kind_id = tv_kind_id", "selectivity": 0.08},
+    {"table": "title (t2)", "predicate": "kind_id = tv_kind_id AND production_year = 2007", "selectivity": 0.005},
+    {"table": "movie_info_idx (mi_idx2)", "predicate": "info_type_id = rating_id AND info < '3.0' (lex)", "selectivity": 0.05, "notes": "lex compare: first byte<'3' OR (=='3' AND second<'.')"}
   ],
   "join_order": [
     {
-      "build": "link_type(link LIKE '%follow%')",
-      "probe": "movie_link via link_type CSR",
+      "build": "lt_ids (LIKE '%follow%')",
+      "probe": "movie_link via movie_link__link_type_id CSR",
       "type": "semi",
-      "strategy": "csr_index_drive",
+      "strategy": "csr_lookup",
       "build_cardinality": 3,
-      "notes": "Resolve 2-3 lt_ids via memmem over 18 link_type rows; iterate movie_link rowids per lt_id using movie_link__link_type_id CSR (~3k-6k rows total)"
+      "notes": "Driver. For each lt_id, iterate ml rowids; ~30k ml rows total, ~5k expected after lt filter"
     },
     {
-      "build": "ml rows (filtered)",
-      "probe": "title t1 (kind_id == tv_kind_id)",
-      "type": "semi",
-      "strategy": "direct_array_lookup",
-      "build_cardinality": 6000,
-      "notes": "For each ml row, dereference title.kind_id[t1_id-1]; reject if != tv_kind_id"
+      "build": "title (kind_id, production_year columns)",
+      "probe": "t1_id = ml.movie_id; t2_id = ml.linked_movie_id",
+      "type": "inner",
+      "strategy": "direct_array",
+      "build_cardinality": 2528312,
+      "notes": "title sorted by id; direct index title.kind_id[t1_id-1], title.kind_id[t2_id-1], title.production_year[t2_id-1]. Apply t2 year=2007 first (most selective), then t2 tv, then t1 tv."
     },
     {
-      "build": "ml rows (t1 ok)",
-      "probe": "title t2 (kind_id == tv_kind_id AND production_year == 2007)",
+      "build": "cn1_ids bitmap (nl companies)",
+      "probe": "movie_companies via movie_companies__movie_id offsets for t1_id",
       "type": "semi",
-      "strategy": "direct_array_lookup",
-      "build_cardinality": 2000,
-      "notes": "Direct lookup title.kind_id[t2_id-1] AND title.production_year[t2_id-1]; year=2007 very strict"
+      "strategy": "bitmap_probe",
+      "build_cardinality": 1500,
+      "notes": "Walk mc1 range for t1_id; require company_id bit set in cn1_ids bitmap. Capture cn1.name via dict offsets."
     },
     {
-      "build": "cn1_nl_bitset (company_name where country_code='[nl]')",
-      "probe": "movie_companies for t1_id (via movie_companies__movie_id offsets)",
-      "type": "semi",
-      "strategy": "offsets_then_bitset_probe",
-      "build_cardinality": 8000,
-      "notes": "Walk mc rows for t1_id; require company_id in nl bitset; capture cn1.name for MIN"
-    },
-    {
-      "build": "movie_companies for t2_id (any company)",
-      "probe": "movie_companies__movie_id offsets",
-      "type": "semi",
-      "strategy": "offsets_walk",
+      "build": "(none)",
+      "probe": "movie_companies via movie_companies__movie_id offsets for t2_id",
+      "type": "inner",
+      "strategy": "range_scan",
       "build_cardinality": 0,
-      "notes": "Need at least one mc row for t2; capture all company names for cn2 MIN"
+      "notes": "Walk mc2 range for t2_id; capture cn2.name (any company)."
     },
     {
-      "build": "mi_idx1: movie_info_idx for t1_id where info_type_id==rating_id",
-      "probe": "movie_info_idx__movie_id offsets",
+      "build": "rating_id scalar",
+      "probe": "movie_info_idx via movie_info_idx__movie_id offsets for t1_id",
       "type": "semi",
-      "strategy": "offsets_walk_with_predicate",
-      "build_cardinality": 0,
-      "notes": "Capture info for MIN(first_rating)"
+      "strategy": "range_scan_filter",
+      "build_cardinality": 1,
+      "notes": "Walk mi_idx1 range for t1_id; require info_type_id==rating_id; capture info for MIN."
     },
     {
-      "build": "mi_idx2: movie_info_idx for t2_id where info_type_id==rating_id AND info<'3.0' (lex)",
-      "probe": "movie_info_idx__movie_id offsets",
+      "build": "rating_id scalar + '3.0' lex bound",
+      "probe": "movie_info_idx via movie_info_idx__movie_id offsets for t2_id",
       "type": "semi",
-      "strategy": "offsets_walk_with_predicate",
-      "build_cardinality": 0,
-      "notes": "Lex compare via memcmp prefix; capture info for MIN(second_rating)"
+      "strategy": "range_scan_filter",
+      "build_cardinality": 1,
+      "notes": "Walk mi_idx2 range for t2_id; require info_type_id==rating_id AND info<'3.0' lex; capture info for MIN."
     }
   ],
-  "filters": [
-    {"table": "company_name (cn1)", "predicate": "country_code = '[nl]'", "selectivity": 0.005},
-    {"table": "info_type (it1, it2)", "predicate": "info = 'rating'", "selectivity": 0.0088},
-    {"table": "kind_type (kt1, kt2)", "predicate": "kind = 'tv series'", "selectivity": 0.143},
-    {"table": "link_type (lt)", "predicate": "link LIKE '%follow%'", "selectivity": 0.17},
-    {"table": "title (t1)", "predicate": "kind_id = tv_kind_id", "selectivity": 0.30},
-    {"table": "title (t2)", "predicate": "kind_id = tv_kind_id AND production_year = 2007", "selectivity": 0.012},
-    {"table": "movie_info_idx (mi_idx2)", "predicate": "info_type_id=rating AND info < '3.0' (lex)", "selectivity": 0.30}
-  ],
   "data_structures": {
-    "cn1_nl_bitset": "bitset(234998) of company_name ids with country_code=='[nl]'",
-    "lt_ids_set": "small int32 array (size 2-3) of matching link_type ids",
-    "lt_id_to_text": "per-lt_id pointer/length into link_type/link dat for MIN tracking (not needed - lt projection not in output)",
-    "cn1_id_to_name": "lazy lookup via company_name/name.{off,dat} on hit",
-    "title_kind_id": "raw int16 column - direct addressing by id-1",
-    "title_production_year": "raw int32 column - direct addressing by id-1",
-    "movie_companies_offsets": "int32 array (2528314) for movie_id ranges",
-    "movie_info_idx_offsets": "int32 array (2528314) for movie_id ranges",
-    "movie_link_link_type_csr": "offsets(20) + rowids(29997)",
-    "min_aggregator": "six string MIN trackers (compare via memcmp; store {len,offset}); finalize materializes from .dat"
+    "cn1_nl_bitmap": "bitset(234998) over company_name ids; ~1-2k bits set",
+    "lt_ids": "flat_array<int16> (small, ≤3 entries)",
+    "rating_id": "scalar int32",
+    "tv_kind_id": "scalar int32",
+    "tv_title_bitmap_optional": "skip; cheaper to dereference title.kind_id[id-1] directly per ml row",
+    "running_mins": "6 x (best_offset, best_length) pointers into varlen .dat regions; compare via memcmp"
   },
   "parallelism": {
-    "strategy": "morsel_driven over movie_link rowids matched by lt_ids",
+    "strategy": "morsel_driven over driver ml rowids",
     "threads": "auto(nproc)",
-    "notes": "Total drive set is ~3k-6k ml rows; partition by ranges of CSR rowids. Per-thread local MIN trackers, merged at end. Small workload but partitioning OK for L3 friendliness."
+    "notes": "Partition the ml rowids produced from movie_link__link_type_id CSR across 12 threads. Each thread maintains thread-local 6 MINs; final reduce at end."
   },
   "indexes": [
-    {"index": "movie_link__link_type_id (CSR)", "purpose": "drive ml rows by matching lt_ids"},
-    {"index": "movie_companies__movie_id (offsets_only)", "purpose": "join_lookup for mc1 and mc2"},
-    {"index": "movie_info_idx__movie_id (offsets_only)", "purpose": "join_lookup for mi_idx1 and mi_idx2"}
+    {"index": "movie_link__link_type_id (CSR)", "purpose": "driver: iterate ml rows for follow-like lt_ids"},
+    {"index": "title id identity", "purpose": "O(1) row dereference for kind_id, production_year, title"},
+    {"index": "movie_companies__movie_id (offsets_only)", "purpose": "mc1/mc2 range lookups"},
+    {"index": "movie_info_idx__movie_id (offsets_only)", "purpose": "mi_idx1/mi_idx2 range lookups"}
   ],
   "aggregation": "scalar_six_mins",
-  "output": {"order_by": [], "limit": 1},
+  "output": {
+    "projections": [
+      "MIN(cn1.name) AS first_company",
+      "MIN(cn2.name) AS second_company",
+      "MIN(mi_idx1.info) AS first_rating",
+      "MIN(mi_idx2.info) AS second_rating",
+      "MIN(t1.title) AS first_movie",
+      "MIN(t2.title) AS second_movie"
+    ],
+    "order_by": [],
+    "limit": 1
+  },
   "execution_target": "cpp"
 }

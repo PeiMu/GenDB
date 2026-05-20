@@ -1,4 +1,26 @@
 {
   "query_id": "Q29a",
-  "iterations": []
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 18.433333333333334,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 18.433333333333334,
+      "validation": "pass",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "data_loading": 0.27,
+        "build_chn_set": 7.38,
+        "build_cn_us_set": 0.44,
+        "scan_title_driver": 6.25,
+        "main_scan": 0.08,
+        "output": 0.06,
+        "total": 17.63
+      }
+    }
+  ]
 }

@@ -1,98 +1,72 @@
 {
   "query_id": "Q32a",
   "pipeline": [
-    "scan_keyword_resolve_kid",
-    "csr_lookup_movie_keyword_by_kid",
-    "for_each_t1_id_csr_lookup_movie_link",
-    "dereference_t2_id_lt_id",
-    "running_min_three_aggregates"
+    "resolve_keyword",
+    "csr_lookup_movie_keyword",
+    "offsets_lookup_movie_link",
+    "dereference_title_link_type",
+    "aggregate_min"
   ],
   "join_order": [
     {
-      "build": "keyword(filter keyword='10,000-mile-club')",
-      "probe": "movie_keyword via CSR movie_keyword__keyword_id",
+      "build": "keyword(keyword='10,000-mile-club')",
+      "probe": "movie_keyword",
       "type": "inner",
       "strategy": "csr_index_lookup",
       "build_cardinality": 1,
-      "notes": "Single k_id resolved by linear scan of keyword.{off,dat} with length-16 prefilter; then direct CSR slot fetch yields mk rows (expected <<100)."
+      "notes": "Resolve single k_id by scanning keyword.{off,dat} with length=16 prefilter; use movie_keyword__keyword_id CSR slot to fetch mk rowids directly."
     },
     {
-      "build": "mk.movie_id (t1_ids, small set)",
-      "probe": "movie_link via offsets_only movie_link__movie_id",
+      "build": "mk_rows -> t1_ids",
+      "probe": "movie_link",
       "type": "inner",
-      "strategy": "index_nested_loop",
+      "strategy": "offsets_only_index_lookup",
+      "build_cardinality": 10,
+      "notes": "For each t1_id from mk.movie_id, use movie_link__movie_id offsets to iterate ml rows (table sorted by movie_id)."
+    },
+    {
+      "build": "ml.linked_movie_id",
+      "probe": "title (t2)",
+      "type": "inner",
+      "strategy": "direct_array",
       "build_cardinality": 50,
-      "notes": "For each t1_id, fetch ml row range; ml fan-out is small (handful per movie)."
+      "notes": "title is dense PK; t2_id - 1 directly addresses title arrays. Same for t1_id - 1."
     },
     {
-      "build": "ml.linked_movie_id -> t2_id",
-      "probe": "title (dense PK)",
+      "build": "ml.link_type_id",
+      "probe": "link_type",
       "type": "inner",
       "strategy": "direct_array",
-      "build_cardinality": 200,
-      "notes": "Dense PK: title row = t2_id - 1; no index needed."
-    },
-    {
-      "build": "ml.link_type_id -> lt_id",
-      "probe": "link_type (dense PK, 18 rows)",
-      "type": "inner",
-      "strategy": "direct_array",
-      "build_cardinality": 18,
-      "notes": "Dense PK: link_type row = lt_id - 1; trivial dereference."
+      "build_cardinality": 50,
+      "notes": "link_type is dense PK (18 rows); lt_id - 1 addresses link_type.link directly."
     }
   ],
   "filters": [
-    {
-      "table": "keyword",
-      "predicate": "keyword = '10,000-mile-club'",
-      "selectivity": 7.45e-06,
-      "notes": "Exact match; expect exactly one keyword id. Length-16 prefilter via off[i+1]-off[i] == 16."
-    }
+    {"table": "keyword", "predicate": "keyword = '10,000-mile-club'", "selectivity": 7.45e-6, "notes": "Single matching row; length=16 prefilter via off[i+1]-off[i] then memcmp."}
   ],
   "data_structures": {
-    "keyword_filter": "linear_scan_with_length_prefilter",
-    "mk_lookup": "csr_index_movie_keyword__keyword_id (offsets+rowids, mmap)",
-    "ml_lookup": "offsets_only_index_movie_link__movie_id (mmap)",
-    "title_t1_t2": "direct_dense_pk_array (shared title/title.{off,dat})",
-    "link_type_lookup": "direct_dense_pk_array (link_type/link.{off,dat})",
-    "aggregation": "three_scalar_min (lt.link, t1.title, t2.title) - lexicographic compare on varlen slices"
+    "keyword_resolution": "scalar_int32 (single k_id)",
+    "mk_rowids": "csr_slice(int32) from movie_keyword__keyword_id",
+    "t1_ids": "small_vector<int32> (expected < 100)",
+    "ml_iteration": "offset_range_scan via movie_link__movie_id",
+    "aggregation": "three_scalar_minima (string_view for lt.link, t1.title, t2.title)"
   },
   "parallelism": {
     "strategy": "single_threaded",
     "threads": 1,
-    "notes": "Result set is tiny (≤ a few hundred ml rows after the very selective keyword filter). Threading overhead dominates."
+    "notes": "End-to-end cardinalities are tiny (single rare keyword -> ~10s of mk rows -> ~10s of ml rows). Parallel synchronization overhead dominates any benefit."
   },
   "indexes": [
-    {
-      "index": "movie_keyword__keyword_id",
-      "purpose": "join_lookup",
-      "files": "_idx/movie_keyword__keyword_id__offsets.bin, _idx/movie_keyword__keyword_id__rowids.bin"
-    },
-    {
-      "index": "movie_link__movie_id",
-      "purpose": "join_lookup",
-      "files": "_idx/movie_link__movie_id__offsets.bin (offsets_only; rowid = position)"
-    }
+    {"index": "movie_keyword__keyword_id (CSR)", "purpose": "direct mk rowids for given k_id"},
+    {"index": "movie_link__movie_id (offsets_only)", "purpose": "ml row range for each t1_id"}
   ],
-  "aggregation": "scalar_running_min_x3",
-  "output": {
-    "projection": ["MIN(lt.link) AS link_type", "MIN(t1.title) AS first_movie", "MIN(t2.title) AS second_movie"],
-    "order_by": [],
-    "limit": null
+  "aggregation": "scalar_min_three_columns",
+  "min_aggregation_details": {
+    "lt_link": "running min of string_view, materialize via link_type.{off,dat} at lt_id-1",
+    "t1_title": "running min of string_view, materialize via title.{off,dat} at t1_id-1",
+    "t2_title": "running min of string_view, materialize via title.{off,dat} at t2_id-1",
+    "notes": "Three independent MINs; varlen slices read only for candidates."
   },
-  "memory_files_to_mmap": [
-    "keyword/keyword.off",
-    "keyword/keyword.dat",
-    "movie_keyword/movie_id.bin",
-    "movie_link/linked_movie_id.bin",
-    "movie_link/link_type_id.bin",
-    "title/title.off",
-    "title/title.dat",
-    "link_type/link.off",
-    "link_type/link.dat",
-    "_idx/movie_keyword__keyword_id__offsets.bin",
-    "_idx/movie_keyword__keyword_id__rowids.bin",
-    "_idx/movie_link__movie_id__offsets.bin"
-  ],
+  "output": {"order_by": [], "limit": 1, "projection": ["MIN(lt.link)", "MIN(t1.title)", "MIN(t2.title)"]},
   "execution_target": "cpp"
 }

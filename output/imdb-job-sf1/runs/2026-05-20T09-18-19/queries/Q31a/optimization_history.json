@@ -1,4 +1,26 @@
 {
   "query_id": "Q31a",
-  "iterations": []
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 10.499999999999998,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 10.499999999999998,
+      "validation": "pass",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "data_loading": 0.2,
+        "resolve_dims": 0,
+        "scan_company_name_prefix": 0.73,
+        "drive_mc_csr_by_company": 0.36,
+        "main_scan": 5.64,
+        "output": 0.07,
+        "total": 10.41
+      }
+    }
+  ]
 }

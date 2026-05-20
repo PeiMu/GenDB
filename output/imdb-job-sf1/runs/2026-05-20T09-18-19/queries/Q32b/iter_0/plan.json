@@ -2,93 +2,78 @@
   "query_id": "Q32b",
   "pipeline": [
     "scan_keyword_resolve_kid",
-    "csr_lookup_mk_build_t1ids",
-    "linear_scan_movie_link_probe_t1ids",
-    "lookup_t2_title_and_lt_link",
-    "aggregate_min"
+    "csr_lookup_mk_to_t1ids",
+    "build_t1_hash_set",
+    "linear_scan_movie_link_probe_t1",
+    "dereference_t2_title_lt_link",
+    "min_aggregate"
   ],
   "join_order": [
     {
-      "build": "keyword(filtered: keyword='character-name-in-title')",
+      "build": "keyword(filtered keyword='character-name-in-title')",
       "probe": "movie_keyword via CSR movie_keyword__keyword_id[k_id]",
       "type": "inner",
       "strategy": "direct_csr_lookup",
       "build_cardinality": 1,
-      "notes": "Single k_id; CSR slot yields mk rows (likely 1e4-1e5)."
+      "notes": "Single k_id=117 resolved by linear scan of keyword.off/dat with length-23 prefilter. CSR slot yields ~41,840 mk rowids."
     },
     {
-      "build": "t1_ids = distinct mk.movie_id",
-      "probe": "movie_link (linear full scan of 29,997 rows)",
-      "type": "semi",
-      "strategy": "hash_set_probe",
-      "build_cardinality": 100000,
-      "notes": "Keyword is very common -> t1_ids large; ml is tiny (~30K). Linear ml scan + hash-set probe on ml.movie_id beats per-t1 range walk because most t1 ranges are empty but |t1_ids| >> |ml|."
+      "build": "t1_ids = distinct mk.movie_id from CSR slot (~41,819 ids)",
+      "probe": "movie_link (linear scan, 29,997 rows)",
+      "type": "inner",
+      "strategy": "hash_set_probe_linear_scan",
+      "build_cardinality": 41819,
+      "notes": "Empirical: probing 41,819 t1_ids into ml offsets only hits 540 nonempty ranges producing 4,388 rows. Linear scan of tiny 29,997-row ml is cheaper and cache-friendly (120KB movie_id col) than 41,819 random lookups into 10MB mloff array. Avoids per-t1 offset reads entirely."
     },
     {
-      "build": "ml surviving rows (linked_movie_id, link_type_id)",
-      "probe": "title[t2_id-1].title and link_type[lt_id-1].link",
+      "build": "ml surviving rows (~4,388)",
+      "probe": "title (direct array dereference t2_id-1)",
       "type": "inner",
       "strategy": "direct_array",
-      "build_cardinality": 30000,
-      "notes": "Dense PK direct dereference; no hash needed."
+      "build_cardinality": 4388,
+      "notes": "Dense PK lookup into title.{off,dat} for t2 string."
+    },
+    {
+      "build": "ml surviving rows",
+      "probe": "link_type (direct array dereference lt_id-1)",
+      "type": "inner",
+      "strategy": "direct_array",
+      "build_cardinality": 4388,
+      "notes": "link_type has only 18 rows; trivial direct deref."
     }
   ],
   "filters": [
     {
       "table": "keyword",
       "predicate": "keyword = 'character-name-in-title'",
-      "selectivity": 7.45e-06,
-      "notes": "Length-23 prefilter, then memcmp."
+      "selectivity": 7.45e-6,
+      "notes": "Length-23 prefilter via koff[i+1]-koff[i]==23 then memcmp. Single match (k_id=117)."
     }
   ],
   "data_structures": {
-    "kid_resolution": "scalar_int32 (single matching id)",
-    "t1_ids_set": "flat_hash_set<int32>(reserve ~150000)",
-    "mk_rowids_iter": "csr_slice (offsets[k_id], offsets[k_id+1])",
-    "ml_scan": "sequential_arrays(movie_id, linked_movie_id, link_type_id)",
-    "aggregation": "three_running_mins (lt.link as string_view, t1.title as string_view, t2.title as string_view)"
+    "keyword_scan": "sequential_scan with length prefilter on int64 keyword.off",
+    "t1_ids_set": "std::unordered_set<int32_t> reserved to 42000 (or absl::flat_hash_set). Built from CSR rowids→movie_id dereference. Size ~41,819 ints ≈ 168KB payload; hash table ~1MB.",
+    "ml_scan": "sequential mmap read of movie_link/movie_id.bin (120KB) probing t1_ids_set",
+    "title_lookup": "direct mmap of title/title.off (int64) + title/title.dat",
+    "lt_lookup": "direct mmap of link_type/link.off + link.dat (tiny)",
+    "aggregation": "three running MIN string variables (lt_link_min, t1_title_min, t2_title_min), compared via lex order on byte ranges; copy bytes to owning std::string only when a new minimum is found"
   },
   "parallelism": {
-    "strategy": "morsel_driven",
-    "threads": "auto(nproc)",
-    "morsel_targets": [
-      "keyword scan (134170 rows, single thread acceptable; 12-way split optional)",
-      "movie_link linear scan (29,997 rows, split into morsels of ~2500 rows across 12 threads)",
-      "MIN aggregation reduced via thread-local mins then global reduce on string_view (compare bytes)"
-    ],
-    "notes": "Building t1_ids: single-threaded build over CSR slice is fine (slot size << shared-set overhead). If slot very large (>500K), use 12 thread-local sets then merge."
+    "strategy": "single_threaded",
+    "threads": 1,
+    "notes": "Total work is tiny: 134K keyword scan + 42K hash set build + 30K ml linear scan + 4,388 string min comparisons. Thread spawn overhead would exceed kernel time. ml linear scan touches ~120KB; entire working set well under L2."
   },
   "indexes": [
     {
       "index": "movie_keyword__keyword_id (CSR)",
-      "purpose": "direct slot lookup for k_id -> mk rowids"
-    },
-    {
-      "index": "title PK (dense, row = id-1)",
-      "purpose": "direct dereference for t1.title and t2.title"
-    },
-    {
-      "index": "link_type PK (dense, row = id-1)",
-      "purpose": "direct dereference for lt.link"
+      "purpose": "join_lookup: O(1) access to all mk rowids for k_id=117"
     }
   ],
-  "aggregation": "scalar_three_mins",
+  "aggregation": "scalar_min_three_strings",
   "output": {
-    "projection": [
-      "MIN(lt.link) AS link_type",
-      "MIN(t1.title) AS first_movie",
-      "MIN(t2.title) AS second_movie"
-    ],
     "order_by": [],
-    "limit": 1
+    "limit": 1,
+    "projection": ["MIN(lt.link)", "MIN(t1.title)", "MIN(t2.title)"]
   },
-  "notes_for_codegen": [
-    "Resolve k_id by single scan of keyword/keyword.{off,dat}; break on first match (keyword is unique).",
-    "Build t1_ids by iterating CSR rowids[offsets[k_id]..offsets[k_id+1]) and inserting mk.movie_id[r] into hash set.",
-    "Also track MIN(t1.title) during this phase OR defer to after ml filter; defer is wrong (t1 must satisfy ml join too). Since join is INNER on ml, MIN(t1.title) is taken over t1_ids that appear as ml.movie_id. Compute during the ml linear scan: if t1_ids.contains(ml.movie_id[r]), update min_t1 with title[ml.movie_id[r]-1].",
-    "For each surviving ml row: update min_lt with link_type.link[ml.link_type_id[r]-1], update min_t2 with title[ml.linked_movie_id[r]-1].",
-    "String MIN: lexicographic byte compare on the varlen payload via offsets.",
-    "No NULL handling needed (all joins are equi-joins with non-null keys)."
-  ],
   "execution_target": "cpp"
 }

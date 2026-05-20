@@ -1,4 +1,27 @@
 {
   "query_id": "Q31c",
-  "iterations": []
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 8.14,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 8.14,
+      "validation": "pass",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "data_loading": 0.2,
+        "resolve_info_types": 0,
+        "resolve_keywords": 0.54,
+        "scan_company_name_prefix": 0.62,
+        "expand_movie_companies_by_company": 0.43,
+        "main_scan": 1.38,
+        "output": 0.19,
+        "total": 7.68
+      }
+    }
+  ]
 }

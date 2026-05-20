@@ -1,135 +1,129 @@
 {
   "query_id": "Q31c",
   "pipeline": [
-    "resolve_dims",
-    "scan_company_name_lionsgate",
-    "csr_lookup_movie_companies_by_company",
-    "build_movie_set",
-    "probe_movie_keyword",
-    "probe_movie_info",
-    "probe_movie_info_idx",
-    "probe_cast_info_writers",
-    "lookup_name_title",
+    "resolve_info_types",
+    "resolve_keywords",
+    "scan_company_name_prefix",
+    "expand_movie_companies_by_company",
+    "probe_movie_keyword_semi",
+    "probe_movie_info_filter_capture",
+    "probe_movie_info_idx_filter_capture",
+    "probe_cast_info_filter_capture_name",
+    "capture_title",
     "aggregate_min"
   ],
   "join_order": [
     {
       "build": "info_type(info='genres')",
-      "probe": "scalar",
+      "probe": "info_type",
       "type": "inner",
-      "strategy": "scalar_resolve",
+      "strategy": "scan_resolve_single_id",
       "build_cardinality": 1,
-      "notes": "Resolve it1_id once; small dim"
+      "notes": "Resolve it1_id; small dim (113 rows)"
     },
     {
       "build": "info_type(info='votes')",
-      "probe": "scalar",
+      "probe": "info_type",
       "type": "inner",
-      "strategy": "scalar_resolve",
+      "strategy": "scan_resolve_single_id",
       "build_cardinality": 1,
-      "notes": "Resolve it2_id once"
+      "notes": "Resolve it2_id"
     },
     {
       "build": "keyword(keyword IN 7-set)",
-      "probe": "scalar",
+      "probe": "keyword",
       "type": "inner",
-      "strategy": "small_array",
+      "strategy": "scan_resolve_to_bitset",
       "build_cardinality": 7,
-      "notes": "Resolve k_ids into bitset(134170)"
+      "notes": "Build k_id_set as small flat_array (<=7 ids); used for membership test"
     },
     {
       "build": "company_name(name LIKE 'Lionsgate%')",
-      "probe": "scalar",
+      "probe": "company_name",
       "type": "inner",
-      "strategy": "prefix_scan_memcmp",
+      "strategy": "prefix_memcmp_scan",
       "build_cardinality": 30,
-      "notes": "Few Lionsgate company ids; collect cn_ids"
+      "notes": "memcmp first 9 bytes; expected ~tens of company ids"
     },
     {
       "build": "cn_ids",
-      "probe": "movie_companies (via CSR by company_id)",
+      "probe": "movie_companies via company_id CSR",
       "type": "inner",
       "strategy": "csr_index_lookup",
       "build_cardinality": 30,
-      "notes": "Use movie_companies__company_id CSR; union mv_ids into bitset(2528312)"
+      "notes": "Use movie_companies__company_id CSR (offsets+rowids) to expand cn_ids → mc rows → movie_ids; dedup into mv_set (hash_set)"
     },
     {
-      "build": "mv_set (bitset over title.id)",
-      "probe": "movie_keyword",
+      "build": "mv_set",
+      "probe": "movie_keyword via movie_id offsets",
       "type": "semi",
-      "strategy": "offsets_index_filter",
-      "build_cardinality": 50000,
-      "notes": "For each mv in mv_set, walk movie_keyword offsets; require keyword_id ∈ k_bitset; semi-prune mv_set"
+      "strategy": "offsets_only_index_probe",
+      "build_cardinality": 5000,
+      "notes": "For each mv in mv_set, scan mk rows [off[mv], off[mv+1]); require keyword_id ∈ k_id_set (linear scan of <=7 ids)"
     },
     {
-      "build": "mv_set (pruned)",
-      "probe": "movie_info",
+      "build": "mv_set ∩ mk_filter",
+      "probe": "movie_info via movie_id offsets",
       "type": "inner",
-      "strategy": "offsets_index_filter_capture",
-      "build_cardinality": 30000,
-      "notes": "Walk mi offsets; require info_type_id==it1_id AND info ∈ 6-set; capture mi.info for MIN"
+      "strategy": "offsets_only_index_probe",
+      "build_cardinality": 5000,
+      "notes": "Scan mi rows for mv; require info_type_id==it1_id AND info ∈ {Horror,Action,Sci-Fi,Thriller,Crime,War}; capture info varlen for MIN(mi.info)"
     },
     {
-      "build": "mv_set (pruned)",
-      "probe": "movie_info_idx",
+      "build": "mv survivors",
+      "probe": "movie_info_idx via movie_id offsets",
       "type": "inner",
-      "strategy": "offsets_index_filter_capture",
-      "build_cardinality": 20000,
-      "notes": "Walk mi_idx offsets; require info_type_id==it2_id; capture mi_idx.info for MIN"
+      "strategy": "offsets_only_index_probe",
+      "build_cardinality": 5000,
+      "notes": "Scan mi_idx rows for mv; require info_type_id==it2_id; capture info varlen for MIN(mi_idx.info)"
     },
     {
-      "build": "mv_set (pruned)",
-      "probe": "cast_info",
+      "build": "mv survivors",
+      "probe": "cast_info via movie_id offsets",
       "type": "inner",
-      "strategy": "offsets_index_filter_capture",
-      "build_cardinality": 20000,
-      "notes": "Walk ci offsets; require note ∈ 5-writer-set; for surviving ci capture name.name at pid for MIN"
+      "strategy": "offsets_only_index_probe",
+      "build_cardinality": 5000,
+      "notes": "Scan ci rows for mv; require note ∈ 5-set writer; lookup name varlen at name/name.{off,dat}[person_id-1] for MIN(n.name)"
     },
     {
-      "build": "ci.person_id",
-      "probe": "name",
+      "build": "mv survivors",
+      "probe": "title.title",
       "type": "inner",
-      "strategy": "direct_offset_lookup",
-      "build_cardinality": 1,
-      "notes": "name sorted by id; access via varlen off/dat at pid"
-    },
-    {
-      "build": "mv",
-      "probe": "title",
-      "type": "inner",
-      "strategy": "direct_offset_lookup",
-      "build_cardinality": 1,
-      "notes": "title sorted by id; access title.title varlen via mv"
+      "strategy": "direct_offsets_lookup",
+      "build_cardinality": 5000,
+      "notes": "title.id is identity; load title varlen at offsets[mv] for MIN(t.title)"
     }
   ],
   "filters": [
     {"table": "company_name", "predicate": "name LIKE 'Lionsgate%'", "selectivity": 0.00013},
-    {"table": "info_type", "predicate": "info='genres'", "selectivity": 0.0088},
-    {"table": "info_type", "predicate": "info='votes'", "selectivity": 0.0088},
-    {"table": "keyword", "predicate": "keyword IN (7 literals)", "selectivity": 0.000052},
-    {"table": "movie_info", "predicate": "info_type_id=it1_id AND info IN (Horror,Action,Sci-Fi,Thriller,Crime,War)", "selectivity": 0.04},
-    {"table": "movie_info_idx", "predicate": "info_type_id=it2_id", "selectivity": 0.5},
-    {"table": "cast_info", "predicate": "note IN (5 writer-notes)", "selectivity": 0.02}
+    {"table": "info_type", "predicate": "info='genres'", "selectivity": 0.0089},
+    {"table": "info_type", "predicate": "info='votes'", "selectivity": 0.0089},
+    {"table": "keyword", "predicate": "keyword IN 7-set", "selectivity": 0.000052},
+    {"table": "cast_info", "predicate": "note IN 5-writer-set", "selectivity": 0.03},
+    {"table": "movie_info", "predicate": "info_type_id=it1_id AND info IN 6-set", "selectivity": 0.02},
+    {"table": "movie_info_idx", "predicate": "info_type_id=it2_id", "selectivity": 0.35}
   ],
   "data_structures": {
-    "k_ids": "bitset(134170)",
-    "cn_ids": "flat_array<int32>",
-    "mv_set": "bitset(2528312)",
-    "mi_info_set": "flat_array<const char*> (6 entries, memcmp by length-bucket)",
-    "ci_note_set": "flat_array<const char*> (5 entries, memcmp by length-bucket)",
-    "min_aggregates": "4x scalar_min (varlen: track best (ptr,len) using lex compare)"
+    "it1_id": "int32_scalar",
+    "it2_id": "int32_scalar",
+    "k_id_set": "flat_array_int32 (<=7)",
+    "writer_note_set": "flat_array_strings (5 literals) with memcmp",
+    "genre_info_set": "flat_array_strings (6 literals) with memcmp",
+    "cn_ids": "flat_array_int32 (~30)",
+    "mv_set": "hash_set<int32> (pre-sized 8192)",
+    "min_aggregators": "4x running_min_varlen (compare via memcmp; copy on improvement)"
   },
   "parallelism": {
     "strategy": "morsel_driven",
     "threads": "auto(nproc)",
-    "notes": "Parallelize over mv_set bitset chunks after building mv_set; each thread maintains local min and reduces at end. Dim resolution and cn->mv collection serial (tiny)."
+    "notes": "Parallelize over mv_set entries (per-movie work); thread-local MIN aggregators reduced at end"
   },
   "indexes": [
-    {"index": "movie_companies__company_id (CSR)", "purpose": "join_lookup: cn_id -> mc rows -> movie_id"},
-    {"index": "movie_keyword__movie_id (offsets_only)", "purpose": "join_lookup: mv -> mk rows"},
-    {"index": "movie_info__movie_id (offsets_only)", "purpose": "join_lookup: mv -> mi rows"},
-    {"index": "movie_info_idx__movie_id (offsets_only)", "purpose": "join_lookup: mv -> mi_idx rows"},
-    {"index": "cast_info__movie_id (offsets_only)", "purpose": "join_lookup: mv -> ci rows"}
+    {"index": "movie_companies__company_id", "purpose": "csr_expand_company_to_movies"},
+    {"index": "movie_keyword__movie_id", "purpose": "offsets_only_probe"},
+    {"index": "movie_info__movie_id", "purpose": "offsets_only_probe"},
+    {"index": "movie_info_idx__movie_id", "purpose": "offsets_only_probe"},
+    {"index": "cast_info__movie_id", "purpose": "offsets_only_probe"}
   ],
   "aggregation": "scalar_min_4way",
   "output": {"order_by": [], "limit": 1},

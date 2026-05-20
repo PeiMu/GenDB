@@ -2,153 +2,137 @@
   "query_id": "Q29c",
   "pipeline": [
     "resolve_dim_codes",
-    "drive_movie_keyword_csr_by_cam_kw_id",
-    "filter_title_year_2000_2010",
-    "probe_complete_cast_subject_cast_status_verified",
-    "probe_movie_companies_company_in_us_set",
-    "probe_movie_info_release_dates_like",
-    "probe_cast_info_actress_voice_notes",
-    "lazy_name_gender_f_and_name_like_An",
-    "exists_aka_name_person_id",
-    "exists_person_info_with_it3_trivia",
-    "lazy_char_name_for_min",
-    "aggregate_min_three_columns"
-  ],
-  "dimension_resolution": [
-    {"table": "comp_cast_type", "filter": "kind='cast'", "output": "cast_id (scalar)"},
-    {"table": "comp_cast_type", "filter": "kind='complete+verified'", "output": "verified_id (scalar)"},
-    {"table": "info_type", "filter": "info='release dates'", "output": "it_id (scalar)"},
-    {"table": "info_type", "filter": "info='trivia'", "output": "it3_id (scalar)"},
-    {"table": "role_type", "filter": "role='actress'", "output": "actress_id (scalar)"},
-    {"table": "keyword", "filter": "keyword='computer-animation'", "output": "cam_kw_id (scalar)"},
-    {"table": "company_name", "filter": "country_code='[us]'", "output": "cn_us_set (hash_set<int32>, ~84843 rows)"},
-    {"table": "name", "filter": "resolve gender dict code", "output": "f_code (uint8)"}
+    "build_cn_us_set",
+    "drive_movies_via_keyword_csr",
+    "filter_title_year",
+    "probe_complete_cast",
+    "probe_movie_companies_us",
+    "probe_movie_info_release_like",
+    "probe_cast_info_actress_voice",
+    "lazy_name_gender_filter",
+    "existence_aka_name",
+    "existence_person_info_trivia",
+    "lazy_project_chn_name",
+    "aggregate_min3"
   ],
   "join_order": [
     {
-      "step": 1,
-      "driver": "movie_keyword via cam_kw_id CSR",
-      "index": "movie_keyword__keyword_id (offsets+rowids)",
-      "output": "movies M (~few thousand)",
-      "strategy": "csr_range_scan"
+      "build": "keyword(cam_kw_id)",
+      "probe": "movie_keyword(via CSR keyword_id)",
+      "type": "inner",
+      "strategy": "csr_index_lookup",
+      "build_cardinality": 1,
+      "notes": "Drive from keyword='computer-animation' via movie_keyword__keyword_id CSR; expect ~few thousand candidate movies"
     },
     {
-      "step": 2,
-      "build": "title.production_year (random access by t_id)",
-      "probe": "M",
-      "type": "inner",
+      "build": "candidate_movies",
+      "probe": "title.production_year",
+      "type": "semi",
       "strategy": "direct_array_lookup",
-      "predicate": "production_year BETWEEN 2000 AND 2010"
+      "build_cardinality": 5000,
+      "notes": "Per movie t_id, check production_year BETWEEN 2000 AND 2010"
     },
     {
-      "step": 3,
-      "build": "complete_cast (per-movie via offsets_only)",
-      "probe": "surviving t_id",
+      "build": "cct1_id, cct2_id",
+      "probe": "complete_cast(via offsets_only on movie_id)",
       "type": "semi",
-      "strategy": "index_range_scan",
-      "predicate": "subject_id==cast_id AND status_id==verified_id"
+      "strategy": "index_nested_loop",
+      "build_cardinality": 2,
+      "notes": "Existence: any cc row with subject==cast_id AND status==verified_id"
     },
     {
-      "step": 4,
-      "build": "movie_companies (per-movie via offsets_only)",
-      "probe": "surviving t_id",
+      "build": "cn_us_set (~80k company ids)",
+      "probe": "movie_companies(via offsets_only on movie_id)",
       "type": "semi",
-      "strategy": "index_range_scan + hash_set probe",
-      "predicate": "company_id IN cn_us_set"
+      "strategy": "bitset_membership",
+      "build_cardinality": 84843,
+      "notes": "bitset(234997) over cn.id for company_name.country_code='[us]'"
     },
     {
-      "step": 5,
-      "build": "movie_info (per-movie via offsets_only)",
-      "probe": "surviving t_id",
+      "build": "it_id (release dates)",
+      "probe": "movie_info(via offsets_only on movie_id)",
       "type": "semi",
-      "strategy": "index_range_scan",
-      "predicate": "info_type_id==it_id AND info IS NOT NULL AND (info LIKE 'Japan:%200%' OR info LIKE 'USA:%200%')",
-      "notes": "prefix compare 'Japan:'/'USA:' then memmem '200'"
+      "strategy": "index_nested_loop_with_predicate",
+      "build_cardinality": 1,
+      "notes": "Per-movie slice; filter info_type_id==it_id AND info LIKE 'Japan:%200%' OR 'USA:%200%' (prefix + memmem '200'); skip empty entries"
     },
     {
-      "step": 6,
-      "build": "cast_info (per-movie via offsets_only)",
-      "probe": "surviving t_id",
+      "build": "actress_id + note_4_set",
+      "probe": "cast_info(via offsets_only on movie_id)",
       "type": "inner",
-      "strategy": "index_range_scan",
-      "predicate": "role_id==actress_id AND note IN 4-literal voice set AND person_role_id != NULL_INT",
-      "outputs": ["person_id", "person_role_id"]
+      "strategy": "index_nested_loop_with_predicate",
+      "build_cardinality": 4,
+      "notes": "Per-movie slice; filter role_id==actress_id AND note ∈ {(voice),(voice: Japanese version),(voice) (uncredited),(voice: English version)}; keep person_role_id (skip NULL_INT) and person_id"
     },
     {
-      "step": 7,
-      "build": "name (random access by person_id)",
-      "probe": "ci.person_id",
-      "type": "inner",
-      "strategy": "lazy_per_candidate",
-      "predicate": "gender==f_code AND name LIKE '%An%' (memmem)"
-    },
-    {
-      "step": 8,
-      "build": "aka_name__person_id offsets_only",
-      "probe": "surviving person_id",
+      "build": "f_code",
+      "probe": "name(gender, name) by ci.person_id (lazy)",
       "type": "semi",
-      "strategy": "offsets_existence_check",
-      "predicate": "off[p+1] > off[p]"
+      "strategy": "direct_array_lookup_lazy",
+      "build_cardinality": 1,
+      "notes": "Lazy per-candidate: gender==f_code AND name contains 'An' (memmem)"
     },
     {
-      "step": 9,
-      "build": "person_info__person_id offsets_only",
-      "probe": "surviving person_id",
+      "build": "person_id",
+      "probe": "aka_name(via offsets_only on person_id)",
       "type": "semi",
-      "strategy": "index_range_scan_with_predicate",
-      "predicate": "any row in slice has info_type_id==it3_id"
+      "strategy": "index_existence_check",
+      "build_cardinality": 1,
+      "notes": "off[p+1]>off[p]"
     },
     {
-      "step": 10,
-      "build": "char_name (random access by id)",
-      "probe": "surviving person_role_id",
+      "build": "it3_id (trivia)",
+      "probe": "person_info(via offsets_only on person_id)",
+      "type": "semi",
+      "strategy": "index_nested_loop_with_predicate",
+      "build_cardinality": 1,
+      "notes": "Per-person slice; existence of any pi row with info_type_id==it3_id"
+    },
+    {
+      "build": "person_role_id",
+      "probe": "char_name.name",
       "type": "inner",
-      "strategy": "lazy_projection_for_min",
-      "predicate": "no filter; fetch name for MIN"
+      "strategy": "direct_array_lookup_lazy",
+      "build_cardinality": 1,
+      "notes": "Lazy fetch chn.name only for surviving rows, for MIN(chn.name)"
     }
   ],
   "filters": [
-    {"table": "title", "predicate": "production_year BETWEEN 2000 AND 2010", "selectivity": 0.18},
-    {"table": "complete_cast", "predicate": "subject_id==cast_id AND status_id==verified_id", "selectivity": 0.5},
-    {"table": "movie_companies", "predicate": "company_id IN cn_us_set", "selectivity": 0.36},
-    {"table": "movie_info", "predicate": "info_type_id==it_id AND (LIKE Japan:%200% OR LIKE USA:%200%)", "selectivity": 0.001},
-    {"table": "cast_info", "predicate": "role_id==actress AND note IN voice4 AND person_role_id NOT NULL", "selectivity": 0.001},
-    {"table": "name", "predicate": "gender=f AND name LIKE '%An%'", "selectivity": 0.05},
-    {"table": "movie_info", "predicate": "info IS NOT NULL", "selectivity": 0.99}
+    {"table": "comp_cast_type", "predicate": "kind='cast'", "selectivity": 0.25},
+    {"table": "comp_cast_type", "predicate": "kind='complete+verified'", "selectivity": 0.25},
+    {"table": "info_type", "predicate": "info='release dates'", "selectivity": 0.009},
+    {"table": "info_type", "predicate": "info='trivia'", "selectivity": 0.009},
+    {"table": "keyword", "predicate": "keyword='computer-animation'", "selectivity": 7.5e-6},
+    {"table": "role_type", "predicate": "role='actress'", "selectivity": 0.083},
+    {"table": "company_name", "predicate": "country_code='[us]'", "selectivity": 0.36},
+    {"table": "name", "predicate": "gender='f' AND name LIKE '%An%'", "selectivity": 0.10},
+    {"table": "title", "predicate": "production_year BETWEEN 2000 AND 2010", "selectivity": 0.20},
+    {"table": "movie_info", "predicate": "info_type_id=it_id AND (info LIKE 'Japan:%200%' OR 'USA:%200%') AND info NOT NULL", "selectivity": 0.005},
+    {"table": "cast_info", "predicate": "role_id=actress_id AND note IN 4-set AND person_role_id IS NOT NULL", "selectivity": 0.005}
   ],
   "data_structures": {
-    "cn_us_set": "hash_set<int32> pre_sized(~85000)",
-    "ci_notes_set": "4-literal compare (inline strcmp or small switch)",
-    "movie_keyword_index": "CSR (offsets + rowids)",
-    "per_movie_probes": "offsets_only indexes on cc, mc, mi, ci",
-    "per_person_probes": "offsets_only indexes on aka_name, person_info",
-    "aggregation": "3 scalar MIN registers (varlen string compare; keep best offset/len)"
+    "dim_codes": "scalar_ids (cct1_cast_id, cct2_verified_id, it_id, it3_id, cam_kw_id, actress_id, f_code, us_code)",
+    "cn_us_set": "bitset(234997) over cn.id where country_code='[us]'",
+    "ci_note_set": "tiny_array<string_view,4> + per-row equality scan (or pre-built 4-way length-bucketed compare)",
+    "candidate_movies": "stream from CSR (no materialization)",
+    "person_seen_set": "absl::flat_hash_set<int32> (dedupe persons across ci rows; small)",
+    "aggregation": "scalar MIN over 3 string columns (chn.name, n.name, t.title) via lazy offset+memcmp comparison"
   },
   "parallelism": {
-    "strategy": "morsel_driven over driver movies (mk CSR slice)",
+    "strategy": "morsel_driven over CSR(cam_kw_id) movie range",
     "threads": "auto(nproc)",
-    "notes": "Each thread takes a contiguous chunk of [lo,hi) over mk rowids; thread-local MIN registers merged at the end"
+    "notes": "Partition rowids[lo..hi) of movie_keyword CSR into morsels; each thread accumulates 3 local MIN strings; merge at end."
   },
   "indexes": [
-    {"index": "movie_keyword__keyword_id", "purpose": "driver: enumerate movies for cam_kw_id"},
-    {"index": "complete_cast__movie_id", "purpose": "per-movie semi-join on cc"},
-    {"index": "movie_companies__movie_id", "purpose": "per-movie semi-join on mc"},
-    {"index": "movie_info__movie_id", "purpose": "per-movie semi-join on mi"},
-    {"index": "cast_info__movie_id", "purpose": "per-movie inner join on ci"},
-    {"index": "aka_name__person_id", "purpose": "per-person existence on an"},
-    {"index": "person_info__person_id", "purpose": "per-person existence on pi with it3 predicate"}
+    {"index": "movie_keyword__keyword_id", "purpose": "drive_movies_from_keyword"},
+    {"index": "complete_cast__movie_id", "purpose": "per_movie_cc_slice"},
+    {"index": "movie_companies__movie_id", "purpose": "per_movie_mc_slice"},
+    {"index": "movie_info__movie_id", "purpose": "per_movie_mi_slice"},
+    {"index": "cast_info__movie_id", "purpose": "per_movie_ci_slice"},
+    {"index": "aka_name__person_id", "purpose": "existence_check"},
+    {"index": "person_info__person_id", "purpose": "per_person_pi_slice_trivia_existence"}
   ],
-  "aggregation": "scalar_min_three (varlen MIN by lex compare; thread-local then merge)",
-  "output": {
-    "columns": ["MIN(chn.name) AS voiced_char", "MIN(n.name) AS voicing_actress", "MIN(t.title) AS voiced_animation"],
-    "order_by": [],
-    "limit": 1
-  },
-  "lazy_evaluation_notes": [
-    "Defer name.name LIKE '%An%' until after gender check.",
-    "Defer char_name.name read until ci row survives all filters; only needed for MIN update.",
-    "Defer title.title read until movie passes all probes; only needed for MIN update.",
-    "Short-circuit per-movie probes in cheapest-first order: cc, mc, mi, ci."
-  ],
+  "aggregation": "scalar_min_3_strings",
+  "output": {"order_by": [], "limit": 1, "projection": ["MIN(chn.name)", "MIN(n.name)", "MIN(t.title)"]},
   "execution_target": "cpp"
 }

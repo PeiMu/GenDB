@@ -1,101 +1,121 @@
 {
   "query_id": "Q20a",
   "pipeline": [
-    "resolve_dim_ids",
-    "build_chn_bitset",
-    "build_movie_set_from_keywords",
-    "scan_complete_cast_filter",
-    "probe_title_filter_and_ci_role",
-    "aggregate_min_title"
+    "resolve_dims",
+    "build_chn_set",
+    "scan_cc_collect_movies",
+    "filter_movies_by_keyword",
+    "filter_movies_by_title",
+    "probe_cast_info_for_chn",
+    "min_title"
   ],
-  "dimension_resolution": [
-    {"table": "comp_cast_type", "predicate": "kind = 'cast'", "result": "cct1_id (scalar int32)", "method": "scan_4_rows"},
-    {"table": "comp_cast_type", "predicate": "kind LIKE '%complete%'", "result": "cct2_ids (small vector<int32>, expect {3,4})", "method": "scan_4_rows"},
-    {"table": "kind_type", "predicate": "kind = 'movie'", "result": "kt_movie (scalar int32)", "method": "scan_7_rows"},
-    {"table": "keyword", "predicate": "keyword IN (8 literals)", "result": "K_ids (small vector<int32>, expect 8)", "method": "scan_134K_rows_once"}
-  ],
-  "filters": [
-    {"table": "char_name", "predicate": "name NOT LIKE '%Sherlock%' AND (name LIKE '%Tony%Stark%' OR name LIKE '%Iron%Man%')", "selectivity": 0.0000095, "expected_rows": 30, "method": "memmem_two_pointer_scan_3.14M_varlen"},
-    {"table": "title", "predicate": "kind_id = kt_movie AND production_year > 1950 AND production_year != INT32_MIN", "selectivity": 0.43, "method": "per_mv_lookup_dense_pk"},
-    {"table": "complete_cast", "predicate": "subject_id = cct1_id AND status_id IN cct2_ids", "selectivity": 0.636, "expected_rows": 85941, "method": "direct_scan_135K_no_index"},
-    {"table": "movie_keyword", "predicate": "keyword_id IN K_ids", "expected_movies": 29863, "method": "csr_walk_movie_keyword__keyword_id"}
+  "dim_resolution": [
+    {
+      "table": "comp_cast_type",
+      "scan": "kind.off + kind.dat (4 rows)",
+      "outputs": [
+        "cct1_id := id where kind == 'cast'",
+        "cct2_ids := set of ids where kind contains 'complete' (likely {3,4})"
+      ]
+    },
+    {
+      "table": "kind_type",
+      "scan": "kind.off + kind.dat (7 rows)",
+      "outputs": ["kt_movie := id where kind == 'movie'"]
+    },
+    {
+      "table": "keyword",
+      "scan": "keyword.off + keyword.dat (134170 rows)",
+      "outputs": [
+        "K_ids := set of ids matching one of 8 IN-list literals ('superhero','sequel','second-part','marvel-comics','based-on-comic','tv-special','fight','violence')"
+      ]
+    },
+    {
+      "table": "char_name",
+      "scan": "name.off + name.dat (3,140,339 rows)",
+      "filter": "NOT memmem('Sherlock') AND (two_pointer('Tony','Stark') OR two_pointer('Iron','Man'))",
+      "outputs": ["CHN := vector<bool> sized (3140339+1), set true at matching chn.id"]
+    }
   ],
   "join_order": [
     {
-      "step": 1,
-      "build": "K_ids (8 ints)",
-      "probe": "movie_keyword via _idx/movie_keyword__keyword_id (CSR)",
+      "build": "cct1_id + cct2_ids set",
+      "probe": "complete_cast (135086 rows, direct scan)",
       "type": "inner",
+      "strategy": "direct_scan_filter",
+      "build_cardinality": 4,
+      "notes": "Scan cc once; collect M_cc := { movie_id where subject_id==cct1_id AND status_id ∈ cct2_ids }. cct2_ids small (~2), store as scalar compare or 4-bit mask."
+    },
+    {
+      "build": "K_ids (8 keyword ids)",
+      "probe": "movie_keyword via _idx/movie_keyword__keyword_id CSR",
+      "type": "semi",
       "strategy": "csr_walk",
       "build_cardinality": 8,
-      "output": "M = hash_set<int32> of distinct mk.movie_id, expect 29863",
-      "notes": "Drive from keyword side; 8 CSR ranges read into hash_set to dedupe"
+      "notes": "For each kid in K_ids: walk CSR slice mkk_off[kid]..mkk_off[kid+1]; gather mk.movie_id. Union into M_kw bitset over title row-space (size 2528313)."
     },
     {
-      "step": 2,
-      "build": "scan complete_cast(135K) with cct1/cct2 filter",
-      "probe": "in-memory hash_set",
+      "build": "M_cc ∩ M_kw (movies passing complete_cast + keyword)",
+      "probe": "title columns (kind_id, production_year, title)",
       "type": "inner",
-      "strategy": "direct_scan_to_hash_set",
-      "build_cardinality": 85941,
-      "output": "CCM = hash_set<int32> of cc.movie_id passing cct filter",
-      "notes": "Plan guide notes direct scan is cheaper than CSR walks given only 135K rows; cct1_id is scalar and cct2_ids has size 2"
+      "strategy": "direct_array_lookup",
+      "build_cardinality": "small (intersected)",
+      "notes": "For each candidate mv: check title.kind_id[mv-1]==kt_movie AND title.production_year[mv-1] > 1950 AND != INT32_MIN."
     },
     {
-      "step": 3,
-      "build": "CHN_list (30 char_name ids) -> vector<bool>(3140340) bitset",
-      "probe": "cast_info.person_role_id via _idx/cast_info__movie_id offsets",
+      "build": "CHN (vector<bool> over char_name id space)",
+      "probe": "cast_info via _idx/cast_info__movie_id offsets (per candidate mv)",
       "type": "semi",
-      "strategy": "bitset_probe_per_mv_range",
-      "build_cardinality": 30,
-      "notes": "Per surviving movie, walk ci range [off[mv-1], off[mv]) and short-circuit on first role in CHN bitset. Expected ~100K ci rows scanned total (only 4578 movies enter step). Bitset chosen over hash_set because chn.id is dense and 3.14MB bitset fits in L3 working set well enough; O(1) probe with no hashing."
-    },
-    {
-      "step": 4,
-      "build": "M ∩ CCM (filtered by title) -> ~3 final movies",
-      "probe": "title.title varlen for MIN",
-      "type": "inner",
-      "strategy": "scalar_min_aggregation",
-      "build_cardinality": 3
+      "strategy": "index_nested_loop",
+      "build_cardinality": "small (Tony/Iron char names, ~10s-100s)",
+      "notes": "For each surviving mv: lo=ci_mid_off[mv-1], hi=ci_mid_off[mv]; for r in [lo,hi): if person_role_id[r] != INT32_MIN AND CHN[person_role_id[r]] -> hit. n is dense and unfiltered, so no n probe needed."
     }
   ],
+  "filters": [
+    {"table": "comp_cast_type", "predicate": "kind = 'cast'", "selectivity": 0.25},
+    {"table": "comp_cast_type", "predicate": "kind LIKE '%complete%'", "selectivity": 0.5},
+    {"table": "kind_type", "predicate": "kind = 'movie'", "selectivity": 0.14},
+    {"table": "keyword", "predicate": "keyword IN (8 literals)", "selectivity": 6e-5},
+    {"table": "char_name", "predicate": "name NOT LIKE '%Sherlock%' AND (LIKE '%Tony%Stark%' OR LIKE '%Iron%Man%')", "selectivity": 1e-5},
+    {"table": "title", "predicate": "production_year > 1950 AND != INT32_MIN AND kind_id == kt_movie", "selectivity": 0.6},
+    {"table": "complete_cast", "predicate": "subject_id==cct1_id AND status_id ∈ cct2_ids", "selectivity": 0.4}
+  ],
   "data_structures": {
-    "K_ids": "std::vector<int32_t> (size 8)",
-    "cct2_ids": "std::vector<int32_t> (size 2)",
-    "M": "std::unordered_set<int32_t> reserved for ~30K",
-    "CCM": "std::unordered_set<int32_t> reserved for ~86K",
-    "CHN_bitset": "std::vector<bool> sized 3140340+1 (~393KB), dense by chn.id",
-    "min_title_buf": "std::string holding current MIN(title) candidate"
+    "cct2_ids": "small flat_array<int32_t> (<=2 entries) or 4-bit mask over comp_cast_type id space",
+    "K_ids": "flat_array<int32_t> (size <=8)",
+    "CHN": "vector<bool> sized char_name_max_id+1 (~3.14M bits ≈ 0.4 MB)",
+    "M_cc": "vector<bool> sized title_max_id+1 (~2.5M bits ≈ 0.3 MB) OR sorted vector<int32_t> of distinct movie_ids from cc scan",
+    "M_kw": "vector<bool> sized title_max_id+1 (~2.5M bits ≈ 0.3 MB), accumulate by ORing across 8 keyword slices",
+    "candidate_movies": "iteration loop intersects M_cc and M_kw on the fly",
+    "aggregation": "scalar: best_title (std::string_view) and best_mv (int32_t)"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "details": [
+      "char_name LIKE scan: parallel chunked over name.off ranges, each thread sets bits in CHN (independent bit positions; use atomic-free per-thread bitsets then OR-reduce, or chunked disjoint id ranges so bits are non-overlapping).",
+      "complete_cast scan (135K): single-threaded; trivial.",
+      "movie_keyword keyword_id CSR slices: parallel over 8 K_ids, each writes M_kw bits in disjoint movie space — use per-thread bitsets + OR-reduce.",
+      "Candidate movie probe loop (filter + cast_info range scan): morsel-driven over candidate mv list; each thread maintains a local (min_title_view, min_mv); final reduction picks the min."
+    ]
   },
   "indexes": [
-    {"index": "_idx/movie_keyword__keyword_id__{offsets,rowids}.bin", "purpose": "drive_from_keyword_ids_into_movie_ids"},
-    {"index": "_idx/cast_info__movie_id__offsets.bin", "purpose": "per_movie_range_for_person_role_id_probe"},
-    {"index": "title/kind_id.bin + title/production_year.bin", "purpose": "per_mv_filter_lookups (dense PK, no index needed)"},
-    {"index": "title/title.{off,dat}", "purpose": "fetch_title_for_MIN_only_on_final_~3_rows"}
+    {"index": "movie_keyword__keyword_id (CSR)", "purpose": "join_lookup: keyword -> movie_keyword rows"},
+    {"index": "complete_cast__movie_id (offsets_only)", "purpose": "not used; direct scan of 135K rows is cheaper"},
+    {"index": "cast_info__movie_id (offsets_only)", "purpose": "join_lookup: movie -> cast_info row range for chn probe"}
   ],
-  "skipped_joins": [
-    {"join": "n.id = ci.person_id", "reason": "name table has no filter predicate in Q20a and n is dense PK; referential integrity assumed — join is redundant"}
-  ],
-  "parallelism": {
-    "strategy": "single_threaded",
-    "threads": 1,
-    "rationale": "Final probe touches only ~4578 movies and ~100K ci rows; thread overhead exceeds benefit. char_name LIKE scan over 3.14M varlen rows is the heaviest step but completes in <100ms single-threaded."
-  },
-  "aggregation": "scalar_min_over_~3_titles",
+  "aggregation": "scalar_min",
   "output": {
-    "projection": ["MIN(t.title) AS complete_downey_ironman_movie"],
+    "select": ["MIN(t.title) AS complete_downey_ironman_movie"],
     "order_by": [],
-    "limit": null
+    "limit": 1
   },
-  "cardinality_estimates_empirical": {
-    "K_ids_resolved": 8,
-    "CHN_after_like": 30,
-    "M_movies_from_keywords": 29863,
-    "M_after_title_filter": 12823,
-    "CCM_movies": 85941,
-    "M_intersect_CCM_after_title": 4578,
-    "ci_rows_scanned_in_probe": 100996,
-    "final_movies_matched": 3
+  "memory_budget": {
+    "CHN_bitset_bytes": 392543,
+    "M_cc_bitset_bytes": 316040,
+    "M_kw_bitset_bytes": 316040,
+    "per_thread_bitsets_bytes": "~1MB * 12 threads",
+    "total_resident_mb": "<50 MB beyond mmapped columns"
   },
   "execution_target": "cpp"
 }

@@ -1,4 +1,43 @@
 {
   "query_id": "Q24a",
-  "iterations": []
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 52.72666666666667,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 52.72666666666667,
+      "validation": "pass",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "data_loading": 0.22,
+        "dim_resolve": 0.04,
+        "prepass_persons": 21.3,
+        "main_scan": 23.1,
+        "output": 0.09,
+        "total": 49.95
+      }
+    },
+    {
+      "iteration": 1,
+      "improved": true,
+      "categories": [],
+      "timing_ms": 10.483333333333333,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 10.483333333333333,
+      "validation": "pass",
+      "strategy": "",
+      "operation_timings": {
+        "data_loading": 0.21,
+        "dim_resolve": 0.04,
+        "prepass_persons": 3.39,
+        "main_scan": 1.46,
+        "output": 0.08,
+        "total": 10.28
+      }
+    }
+  ]
 }

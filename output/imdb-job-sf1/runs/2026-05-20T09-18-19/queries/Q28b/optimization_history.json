@@ -1,4 +1,24 @@
 {
   "query_id": "Q28b",
-  "iterations": []
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 8.53,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 8.53,
+      "validation": "pass",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "data_loading": 0.28,
+        "dim_resolution": 1.41,
+        "main_scan": 2.78,
+        "output": 0.21,
+        "total": 7.64
+      }
+    }
+  ]
 }

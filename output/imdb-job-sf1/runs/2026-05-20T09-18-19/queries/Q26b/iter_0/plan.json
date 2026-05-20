@@ -2,108 +2,136 @@
   "query_id": "Q26b",
   "pipeline": [
     "build_dim_sets",
-    "scan_title_filter",
-    "semi_join_movie_keyword",
-    "semi_join_complete_cast",
-    "semi_join_movie_info_idx",
-    "semi_join_cast_info",
+    "scan_title_filter(year>2005, kind_id==movie)",
+    "probe_movie_keyword(kw_set)",
+    "probe_complete_cast(cct1_id, cct2_set)",
+    "probe_movie_info_idx(it2_id, info>'8.0')",
+    "probe_cast_info(chn_set)",
     "aggregate_min"
   ],
-  "dim_resolutions": [
-    {"name": "cast_fk", "table": "comp_cast_type", "predicate": "kind == 'cast'", "convention": "FK = dim_index + 1", "expected_value": 1},
-    {"name": "complete_status_set", "table": "comp_cast_type", "predicate": "kind LIKE '%complete%'", "convention": "FK = dim_index + 1", "expected_size": 2, "expected_values": [3, 4]},
-    {"name": "it2_fk", "table": "info_type", "predicate": "info == 'rating'", "convention": "FK = dim_index + 1", "expected_value": 101},
-    {"name": "movie_kind_fk", "table": "kind_type", "predicate": "kind == 'movie'", "convention": "FK = dim_index + 1", "expected_value": 1},
-    {"name": "kw_set", "table": "keyword", "predicate": "keyword IN ('superhero','marvel-comics','based-on-comic','fight')", "convention": "FK = dim_index + 1", "expected_size": 4},
-    {"name": "chn_set", "table": "char_name", "predicate": "name NOT NULL AND (memmem(name,'man') OR memmem(name,'Man'))", "convention": "FK = dim_index + 1", "expected_size": 180152, "notes": "5.74% of 3140339 char_names; substring via memmem on .off+.dat"}
-  ],
   "filters": [
-    {"table": "title", "predicate": "kind_id == movie_kind_fk AND production_year != NULL_INT AND production_year > 2005", "selectivity": 0.0855, "estimated_output": 216282},
-    {"table": "movie_keyword", "predicate": "keyword_id IN kw_set", "join_selectivity_per_title": 0.0076},
-    {"table": "complete_cast", "predicate": "subject_id == cast_fk AND status_id IN complete_status_set", "join_selectivity": 0.318},
-    {"table": "movie_info_idx", "predicate": "info_type_id == it2_fk AND string_view(info) > '8.0'", "join_selectivity": 0.017},
-    {"table": "cast_info", "predicate": "person_role_id != NULL_INT AND person_role_id IN chn_set", "join_selectivity": 0.778}
+    {"table": "comp_cast_type", "predicate": "kind == 'cast'", "selectivity": 0.25, "notes": "resolves single cct1_id"},
+    {"table": "comp_cast_type", "predicate": "kind LIKE '%complete%'", "selectivity": 0.5, "notes": "small int set (likely 1-2 ids)"},
+    {"table": "info_type", "predicate": "info == 'rating'", "selectivity": 0.009, "notes": "resolves single it2_id"},
+    {"table": "kind_type", "predicate": "kind == 'movie'", "selectivity": 0.14, "notes": "resolves single movie_kind_id"},
+    {"table": "keyword", "predicate": "keyword IN (4 vals)", "selectivity": 3.0e-5, "notes": "kw_set size = 4"},
+    {"table": "char_name", "predicate": "name NOT NULL AND (name LIKE '%man%' OR name LIKE '%Man%')", "selectivity": 0.03, "notes": "memmem on .dat via .off ranges; ~94k ids"},
+    {"table": "title", "predicate": "production_year > 2005 AND kind_id == movie_kind_id", "selectivity": 0.25, "notes": "driver filter"},
+    {"table": "movie_info_idx", "predicate": "info_type_id == it2_id AND string_view(info) > '8.0'", "selectivity": 0.05, "notes": "applied during probe"}
   ],
   "join_order": [
     {
-      "build": "title(filtered)",
-      "probe": "title rows drive pipeline",
-      "type": "driver",
-      "strategy": "scan_filter",
-      "build_cardinality": 216282,
-      "notes": "Sequential scan title.kind_id and title.production_year; emit t_id when match"
-    },
-    {
-      "build": "kw_set (hash_set int32, n=4)",
-      "probe": "movie_keyword via offsets_only index per t_id",
-      "type": "semi",
-      "strategy": "index_nested_loop + hash_set",
-      "build_cardinality": 4,
-      "expected_survivors": 1653,
-      "notes": "FIRST semi-join: highly selective (~0.76% per title). For 4 elements, hash_set lookup or linear scan; use small hash_set. Break on first match."
-    },
-    {
-      "build": "{cast_fk=1, complete_status_set={3,4}}",
-      "probe": "complete_cast via offsets_only index per surviving t_id",
-      "type": "semi",
-      "strategy": "index_nested_loop + scalar_compares",
-      "build_cardinality": 3,
-      "expected_survivors": 526,
-      "notes": "Only ~1653 t_ids reach here; cc has avg ~0.5 rows per movie. Inline 2-3 element comparisons; break on first match."
-    },
-    {
-      "build": "{it2_fk=101, '8.0' string}",
-      "probe": "movie_info_idx via offsets_only index per surviving t_id",
-      "type": "semi",
-      "strategy": "index_nested_loop + string_compare",
+      "build": "comp_cast_type(kind=='cast')",
+      "probe": "scalar",
+      "type": "scalar_lookup",
+      "strategy": "scan_and_match",
       "build_cardinality": 1,
-      "expected_survivors": 9,
-      "notes": "Filter info_type_id==101 AND lexicographic string_view(info) > '8.0' (varlen via .off+.dat). Project mi_idx.info string_view for MIN aggregation."
+      "notes": "Single int32 cct1_id"
     },
     {
-      "build": "chn_set (~180K int32 ids)",
-      "probe": "cast_info via offsets_only index per surviving t_id",
+      "build": "comp_cast_type(kind LIKE '%complete%')",
+      "probe": "scalar_set",
+      "type": "scalar_lookup",
+      "strategy": "scan_and_match",
+      "build_cardinality": 2,
+      "notes": "Small int set cct2_set (bitset of 4 slots)"
+    },
+    {
+      "build": "info_type(info=='rating')",
+      "probe": "scalar",
+      "type": "scalar_lookup",
+      "strategy": "scan_and_match",
+      "build_cardinality": 1
+    },
+    {
+      "build": "kind_type(kind=='movie')",
+      "probe": "scalar",
+      "type": "scalar_lookup",
+      "strategy": "scan_and_match",
+      "build_cardinality": 1
+    },
+    {
+      "build": "keyword(IN 4)",
+      "probe": "movie_keyword.keyword_id",
       "type": "semi",
-      "strategy": "index_nested_loop + hash_set or bitset",
-      "build_cardinality": 180152,
-      "expected_survivors": 7,
-      "notes": "Skip NULL_INT person_role_id (sentinel INT32_MIN). Test membership in chn_set; break on first match. Project the matching chn_id for chn.name MIN lookup."
+      "strategy": "flat_array_membership",
+      "build_cardinality": 4,
+      "notes": "4-element int32 array; linear scan or unrolled check faster than hash"
+    },
+    {
+      "build": "char_name(name LIKE '%man%|%Man%' AND NOT NULL)",
+      "probe": "cast_info.person_role_id",
+      "type": "semi",
+      "strategy": "bitset",
+      "build_cardinality": 94000,
+      "notes": "bitset over 3140339 ids; O(1) membership; built once parallel"
+    },
+    {
+      "build": "title(year>2005, kind_id==movie)",
+      "probe": "driver_scan",
+      "type": "driver",
+      "strategy": "parallel_scan",
+      "build_cardinality": 630000,
+      "notes": "Driver loop; emit t_id for each matching title; parallelized morsel"
+    },
+    {
+      "build": "title_id",
+      "probe": "movie_keyword via offsets index",
+      "type": "semi",
+      "strategy": "index_nested_loop + kw_set_check",
+      "build_cardinality": 1,
+      "notes": "per-t probe; very selective ~0.02% rows match any of 4 keywords; emit first match"
+    },
+    {
+      "build": "title_id",
+      "probe": "complete_cast via offsets index",
+      "type": "semi",
+      "strategy": "index_nested_loop + subject==cct1 + status in cct2_set",
+      "build_cardinality": 1,
+      "notes": "per-t probe with offsets index; ~135k total cc rows"
+    },
+    {
+      "build": "title_id",
+      "probe": "movie_info_idx via offsets index",
+      "type": "inner",
+      "strategy": "index_nested_loop + info_type+value check",
+      "build_cardinality": 1,
+      "notes": "per-t probe; filter info_type_id==it2_id AND info>'8.0'; project rating string"
+    },
+    {
+      "build": "chn_set bitset",
+      "probe": "cast_info via offsets index",
+      "type": "semi",
+      "strategy": "index_nested_loop + bitset_lookup",
+      "build_cardinality": 94000,
+      "notes": "per-t probe of cast_info; skip NULL_INT person_role_id; bitset[chn_id] check; emit MIN(chn.name)"
     }
   ],
   "data_structures": {
-    "kw_set": "absl::flat_hash_set<int32_t> or std::array<int32_t,4> linear scan (n=4)",
-    "complete_status_set": "inline 2-value comparison (FKs 3 and 4) or std::array<int32_t,2>",
-    "chn_set": "std::bitset/std::vector<bool>(3140340) indexed by FK; ~393KB fits L2 cache, O(1) lookup, dense PK FK = dim_index+1 so use fk-1 or fk as index directly with size 3140340",
-    "title_driver": "morsel-driven parallel scan over [0, 2528312)",
-    "mi_idx_info_for_min": "string_view captured for MIN aggregation",
-    "min_aggregation": "per-thread {min_chn_name, min_mi_info, min_t_title} as std::string_view or buffered std::string; final reduction across threads"
+    "cct1_id": "int32 scalar",
+    "cct2_set": "small int32 array (size<=4) checked by direct compare",
+    "it2_id": "int32 scalar",
+    "movie_kind_id": "int32 scalar",
+    "kw_set": "flat int32 array (size=4) for unrolled membership test",
+    "chn_set": "bitset(3140352 bits, ~393KB) over char_name ids",
+    "indexes": "preloaded offsets arrays (length 2528314 int32 each) for cc, mi_idx, mk, ci",
+    "title_driver": "sequential int32 scan with branchless year+kind filter",
+    "aggregation": "3 scalar MIN buffers per-thread (string_view char_name, string_view info, string_view title) merged at end"
   },
   "parallelism": {
-    "strategy": "morsel_driven",
+    "strategy": "morsel_driven over title id ranges",
     "threads": "auto(nproc)",
     "morsel_size": 65536,
-    "scope": "parallel scan of title table; each thread does full pipeline per surviving t_id and maintains thread-local MIN trio; reduce at end",
-    "notes": "Dim sets built once on main thread before parallel region; chn_set bitset is read-only and shared."
+    "notes": "12 cores; each thread maintains local 3-way MIN strings; reduce at end"
   },
   "indexes": [
-    {"index": "movie_keyword__movie_id__offsets", "purpose": "range probe by t_id"},
-    {"index": "complete_cast__movie_id__offsets", "purpose": "range probe by t_id"},
-    {"index": "movie_info_idx__movie_id__offsets", "purpose": "range probe by t_id"},
-    {"index": "cast_info__movie_id__offsets", "purpose": "range probe by t_id"}
+    {"index": "movie_keyword__movie_id offsets", "purpose": "per-t mk row range"},
+    {"index": "complete_cast__movie_id offsets", "purpose": "per-t cc row range"},
+    {"index": "movie_info_idx__movie_id offsets", "purpose": "per-t mi_idx row range"},
+    {"index": "cast_info__movie_id offsets", "purpose": "per-t ci row range"}
   ],
-  "aggregation": "min_scalar",
-  "output": {
-    "projections": [
-      {"alias": "character_name", "expr": "MIN(char_name.name[chn_id])"},
-      {"alias": "rating", "expr": "MIN(movie_info_idx.info string)"},
-      {"alias": "complete_hero_movie", "expr": "MIN(title.title[t_id])"}
-    ],
-    "order_by": [],
-    "limit": 1
-  },
-  "fk_convention_note": "All FKs in fact tables are 1-indexed against 0-indexed dim arrays (FK = dim_index + 1). Confirmed empirically: title.kind_id values 1..7, complete_cast.subject_id values 1..2, mi_idx.info_type_id values include 101.",
-  "null_sentinels": {
-    "int32_null": "INT32_MIN (used for title.production_year, cast_info.person_role_id, complete_cast.movie_id)"
-  },
+  "aggregation": "scalar_min (3 string_view fields, no grouping)",
+  "probe_order_rationale": "mk first (kw_set IN 4 is the most selective ~0.02% per movie), then cc (semi-join cuts most non-complete movies), then mi_idx (filters by rating>'8.0', also projects rating), then ci with chn_set bitset (largest table; only touched if all prior matched).",
+  "output": {"order_by": [], "limit": null, "projection": ["MIN(chn.name) AS character_name", "MIN(mi_idx.info) AS rating", "MIN(t.title) AS complete_hero_movie"]},
   "execution_target": "cpp"
 }

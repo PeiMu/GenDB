@@ -4,117 +4,110 @@
     "resolve_dims",
     "scan_title_driver",
     "probe_mk_semi",
-    "probe_mi_idx_semi_and_min",
+    "probe_mi_idx_capture_min",
     "probe_mi_semi",
-    "probe_mc_join_cn",
+    "probe_mc_capture_cn_min",
     "aggregate_min"
   ],
   "dim_resolution": [
     {
       "table": "company_name",
-      "action": "scan country_code dict to find us_code; build bitset of cn_id with country_code != 0 AND != us_code; also keep direct pointer to name.off/name.dat for MIN projection",
-      "structure": "bitset(234997) for non-us cn_ids",
-      "output": "non_us_cn_bitset, us_code"
+      "action": "dict scan country_code, find code for '[us]' as us_code; build flat_hash_set<int32_t> non_us_cn_ids by scanning country_code.bin where code != 0 && code != us_code. Also keep id->name_offset mapping (id is dense identity, use offsets array directly).",
+      "output": "non_us_cn_ids (~230k ids), cn_name_off/dat for projection"
     },
     {
       "table": "info_type",
-      "action": "scan info varlen twice for 'countries' (it1_id) and 'rating' (it2_id)",
-      "output": "it1_id (int32), it2_id (int32)"
+      "action": "single scan over info.off/info.dat: capture it1_id where info=='countries' and it2_id where info=='rating'",
+      "output": "it1_id, it2_id (int32 scalars)"
     },
     {
       "table": "keyword",
-      "action": "scan keyword.off/.dat for {murder, murder-in-title, blood, violence}; collect kw_ids",
-      "structure": "flat_hash_set<int32_t> kw_ids (size ~4)",
-      "output": "kw_ids"
+      "action": "scan keyword.off/keyword.dat for 4 literals ('murder','murder-in-title','blood','violence'); build flat_hash_set<int32_t> kw_ids",
+      "output": "kw_ids (size <= 4)"
     },
     {
       "table": "kind_type",
-      "action": "scan kind for {movie, episode}; build kt_ids",
-      "structure": "flat_hash_set<int32_t> kt_ids (size 2)",
-      "output": "kt_ids"
+      "action": "scan kind.off/kind.dat for 'movie','episode'; build flat_hash_set<int32_t> kt_ids",
+      "output": "kt_ids (size 2)"
+    },
+    {
+      "table": "company_type",
+      "action": "no predicate; skip (ct.id present on mc.company_type_id is guaranteed valid; trivial join)",
+      "output": "none"
     }
   ],
   "filters": [
-    {"table": "title", "predicate": "production_year > 2009 AND production_year != INT32_MIN", "selectivity": 0.07},
-    {"table": "title", "predicate": "kt_ids.contains(kind_id)", "selectivity": 0.95},
-    {"table": "company_name", "predicate": "country_code != 0 AND country_code != us_code", "selectivity": 0.5},
-    {"table": "movie_keyword", "predicate": "kw_ids.contains(keyword_id)", "selectivity": 0.0003},
-    {"table": "movie_info_idx", "predicate": "info_type_id == it2_id AND info < '7.0' (memcmp)", "selectivity": 0.2},
+    {"table": "title", "predicate": "production_year > 2009 AND production_year != INT32_MIN", "selectivity": 0.10},
+    {"table": "title", "predicate": "kt_ids.contains(kind_id)", "selectivity": 0.80},
+    {"table": "movie_keyword", "predicate": "kw_ids.contains(keyword_id)", "selectivity": 0.0009},
+    {"table": "movie_info_idx", "predicate": "info_type_id == it2_id AND memcmp(info,'7.0') < 0", "selectivity": 0.07},
     {"table": "movie_info", "predicate": "info_type_id == it1_id AND info IN {Germany,German,USA,American}", "selectivity": 0.02},
-    {"table": "movie_companies", "predicate": "note non-empty AND NOT memmem(note,'(USA)') AND memmem(note,'(200')", "selectivity": 0.05}
+    {"table": "movie_companies", "predicate": "note non-empty AND NOT memmem(note,'(USA)') AND memmem(note,'(200') AND non_us_cn_ids.contains(company_id)", "selectivity": 0.02},
+    {"table": "company_name", "predicate": "country_code != 0 AND country_code != us_code", "selectivity": 0.98}
   ],
-  "driver": {
-    "table": "title",
-    "iterate": "row v = 1..2528312",
-    "early_filters": ["production_year > 2009 (skip INT32_MIN)", "kt_ids.contains(kind_id)"],
-    "expected_survivors": "~150000"
-  },
   "join_order": [
     {
-      "build": "kw_ids (size 4)",
-      "probe": "movie_keyword via movie_keyword__movie_id offsets[v..v+1]",
+      "build": "title (filtered: production_year>2009, kt_ids match)",
+      "probe": "movie_keyword via _idx/movie_keyword__movie_id__offsets.bin",
       "type": "semi",
-      "strategy": "offsets_index_scan + small_hash_set_probe",
-      "build_cardinality": 4,
-      "notes": "Cheapest semi-join first; mk has ~4.5M rows but kw_ids selectivity is very high; semi-break on first match"
+      "strategy": "offset_index_scan + flat_hash_set probe on keyword_id",
+      "build_cardinality": 200000,
+      "notes": "Use offsets_only index; for each surviving title, iterate mk rows and check kw_ids. Bail on first match."
     },
     {
-      "build": "{it2_id, '7.0'}",
-      "probe": "movie_info_idx via movie_info_idx__movie_id offsets[v..v+1]",
-      "type": "semi_with_min_projection",
-      "strategy": "offsets_index_scan + scalar_eq + memcmp",
-      "build_cardinality": 1,
-      "notes": "Must collect MIN(mi_idx.info) over all matching rows; do not break early — track running min within and across rows"
+      "build": "title rows that have qualifying mk",
+      "probe": "movie_info_idx via _idx/movie_info_idx__movie_id__offsets.bin",
+      "type": "semi+capture",
+      "strategy": "offset_index_scan with info_type_id == it2_id and string < '7.0'",
+      "build_cardinality": 5000,
+      "notes": "Must find >=1 satisfying row; capture mi_idx.info for running MIN."
     },
     {
-      "build": "{it1_id, 4-string set}",
-      "probe": "movie_info via movie_info__movie_id offsets[v..v+1]",
+      "build": "survivors",
+      "probe": "movie_info via _idx/movie_info__movie_id__offsets.bin",
       "type": "semi",
-      "strategy": "offsets_index_scan + scalar_eq + 4-way string compare",
-      "build_cardinality": 4,
-      "notes": "Semi-break on first qualifying row"
+      "strategy": "offset_index_scan with info_type_id == it1_id and info_set.contains",
+      "build_cardinality": 2000,
+      "notes": "Bail on first match."
     },
     {
-      "build": "non_us_cn_bitset (234997 bits)",
-      "probe": "movie_companies via movie_companies__movie_id offsets[v..v+1]",
-      "type": "inner_with_min_projection",
-      "strategy": "offsets_index_scan + note_memmem_filters + bitset_lookup_for_company_id",
-      "build_cardinality": 234997,
-      "notes": "Check note LIKE filters (two memmem), then test non_us_cn_bitset[company_id]. ct join is trivial (any ct.id 1..4 matches). Track running MIN(cn.name) by indexing name.off/name.dat at company_id. Must find at least one match for v to qualify."
+      "build": "survivors",
+      "probe": "movie_companies via _idx/movie_companies__movie_id__offsets.bin",
+      "type": "semi+capture",
+      "strategy": "offset_index_scan with two memmem on note and non_us_cn_ids probe",
+      "build_cardinality": 500,
+      "notes": "For each qualifying mc row, capture cn.name (via cn id->name lookup) and update running MINs."
     }
   ],
   "data_structures": {
-    "non_us_cn_bitset": "bitset(234997)",
-    "kw_ids": "flat_hash_set<int32_t> (size 4) or sorted small array with linear scan",
-    "kt_ids": "flat_hash_set<int32_t> (size 2) or 2-branch compare",
-    "mi_info_set": "flat_hash_set<string_view> (size 4) or hand-rolled 4-way memcmp",
-    "running_min": "three string_view holders (best_cn_name, best_mi_idx_info, best_t_title) compared via lex order across surviving v"
+    "non_us_cn_ids": "flat_hash_set<int32_t> (~230k entries)",
+    "kw_ids": "flat_hash_set<int32_t> (size 4)",
+    "kt_ids": "flat_hash_set<int32_t> (size 2)",
+    "mi_info_set": "flat_hash_set<string_view> of {Germany,German,USA,American}",
+    "running_min": "three string_view-style minimums (cn.name, mi_idx.info, t.title), each thread-local then reduced"
   },
-  "indexes": [
-    {"index": "movie_keyword__movie_id", "purpose": "join_lookup: title.id -> mk row range"},
-    {"index": "movie_info_idx__movie_id", "purpose": "join_lookup: title.id -> mi_idx row range"},
-    {"index": "movie_info__movie_id", "purpose": "join_lookup: title.id -> mi row range"},
-    {"index": "movie_companies__movie_id", "purpose": "join_lookup: title.id -> mc row range"}
-  ],
   "parallelism": {
-    "strategy": "morsel_driven over title row range",
+    "strategy": "morsel_driven over title id range",
     "threads": "auto(nproc)",
     "morsel_size": 32768,
-    "reduction": "per-thread running mins (3 string_views), final reduce by lex-min"
+    "reduction": "thread-local running MINs reduced at end via lex compare"
   },
-  "aggregation": "scalar_running_min (no group-by)",
-  "output": {
-    "projections": ["MIN(cn.name) AS movie_company", "MIN(mi_idx.info) AS rating", "MIN(t.title) AS western_violent_movie"],
-    "order_by": [],
-    "limit": 1
-  },
+  "indexes": [
+    {"index": "movie_keyword__movie_id", "purpose": "join_lookup"},
+    {"index": "movie_info_idx__movie_id", "purpose": "join_lookup"},
+    {"index": "movie_info__movie_id", "purpose": "join_lookup"},
+    {"index": "movie_companies__movie_id", "purpose": "join_lookup"}
+  ],
+  "aggregation": "scalar_min (3 running minimums, no group key)",
+  "output": {"order_by": [], "limit": 1, "projection": ["MIN(cn.name)", "MIN(mi_idx.info)", "MIN(t.title)"]},
   "execution_target": "cpp",
-  "notes": [
-    "Same shape as Q22a; only the production_year cutoff tightens from >2008 to >2009 — fewer driver survivors.",
-    "Probe ordering: mk (cheapest filter, semi-break) -> mi_idx (must enumerate for MIN) -> mi (semi-break) -> mc (must enumerate for cn MIN).",
-    "All semi-join probes break on first qualifying row to minimize work.",
-    "For mi_idx and mc, the row must produce at least one match AND we must scan all matches to update running MIN projections — do not break early on these.",
-    "Resolve us_code via dict scan once; encode company_name.country_code filter as a 234997-bit bitset (~29 KB, fits L1).",
-    "No external hash join: all dim sides are tiny (sets of size ≤4) or single-bit lookups."
+  "evaluation_order_per_title": [
+    "1. title.production_year > 2009 (cheap int filter; skips ~90% of titles, tighter than Q22a's >2008)",
+    "2. kt_ids.contains(kind_id) (cheap int probe)",
+    "3. mk range scan -> kw_ids.contains(keyword_id) (cheapest fact, ~1.8 rows/title avg)",
+    "4. mi_idx range scan -> info_type_id==it2_id and string < '7.0' (capture info for MIN)",
+    "5. mi range scan -> info_type_id==it1_id and info IN set",
+    "6. mc range scan -> note memmem checks + non_us_cn_ids.contains(company_id) (capture cn.name for MIN)",
+    "7. Update running MINs"
   ]
 }

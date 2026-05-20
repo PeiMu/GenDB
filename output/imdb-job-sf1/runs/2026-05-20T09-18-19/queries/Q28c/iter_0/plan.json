@@ -11,138 +11,102 @@
     "aggregate_min"
   ],
   "dim_resolution": [
-    {
-      "name": "cast_id",
-      "source": "comp_cast_type.kind == 'cast'",
-      "type": "scalar_int32"
-    },
-    {
-      "name": "complete_id",
-      "source": "comp_cast_type.kind == 'complete'",
-      "type": "scalar_int32"
-    },
-    {
-      "name": "us_code",
-      "source": "company_name.country_code dict lookup '[us]'",
-      "type": "scalar_dict_code"
-    },
-    {
-      "name": "cn_set",
-      "source": "company_name where country_code != us_code (dict code 0 NULL matches)",
-      "type": "bitset(234997)",
-      "expected_size": 134000
-    },
-    {
-      "name": "it1_id",
-      "source": "info_type.info == 'countries'",
-      "type": "scalar_int32"
-    },
-    {
-      "name": "it2_id",
-      "source": "info_type.info == 'rating'",
-      "type": "scalar_int32"
-    },
-    {
-      "name": "kw_set",
-      "source": "keyword.keyword IN ('murder','murder-in-title','blood','violence')",
-      "type": "bitset(134170)",
-      "expected_size": 4
-    },
-    {
-      "name": "kt_set",
-      "source": "kind_type.kind IN ('movie','episode')",
-      "type": "scalar_int32_pair",
-      "expected_size": 2
-    },
-    {
-      "name": "mi_info_set",
-      "source": "10 literal strings",
-      "type": "string_hash_set",
-      "expected_size": 10
-    }
+    {"table": "comp_cast_type", "extract": ["cast_id (kind='cast')", "complete_id (kind='complete')"], "strategy": "linear_scan"},
+    {"table": "company_name", "extract": "us_code from country_code dict; cn_set = bitset of ids where code != us_code (NULL=code 0 included)", "strategy": "dict_lookup + bitset(234997)"},
+    {"table": "info_type", "extract": ["it1_id (info='countries')", "it2_id (info='rating')"], "strategy": "linear_scan"},
+    {"table": "keyword", "extract": "kw_set = ids where keyword IN ('murder','murder-in-title','blood','violence')", "strategy": "linear_scan + hash_set(int32)"},
+    {"table": "kind_type", "extract": "kt_set = ids where kind IN ('movie','episode')", "strategy": "linear_scan + small_array(2)"}
   ],
   "join_order": [
     {
-      "build": "title(year>2005 AND kind_id in kt_set)",
-      "probe": "per t_id pipeline",
-      "type": "driver",
-      "strategy": "parallel_scan_title",
-      "build_cardinality": 1100000,
-      "notes": "driver scan parallel by morsel; produces t_id list"
+      "build": "title (filter: production_year>2005 AND kind_id IN kt_set)",
+      "probe": "driver",
+      "type": "inner",
+      "strategy": "parallel_scan",
+      "build_cardinality": 700000,
+      "notes": "Driver. Emit t_id list with title offsets cached for MIN."
     },
     {
-      "build": "movie_keyword via offsets[t_id]",
-      "probe": "filter keyword_id in kw_set",
+      "build": "movie_keyword (filter: keyword_id IN kw_set)",
+      "probe": "title via movie_keyword__movie_id offsets",
       "type": "semi",
-      "strategy": "index_nested_loop + bitset(kw_set)",
-      "build_cardinality": 4,
-      "notes": "highly selective; eliminates most t_ids fast"
+      "strategy": "index_nested_loop",
+      "build_cardinality": 4523930,
+      "notes": "Use offsets[t_id..t_id+1]; check keyword_id in kw_set (4-element). Most selective; keeps ~few % of titles."
     },
     {
-      "build": "complete_cast via offsets[t_id]",
-      "probe": "subject_id==cast_id AND status_id==complete_id",
+      "build": "complete_cast (filter: subject_id==cast_id AND status_id==complete_id)",
+      "probe": "surviving t_ids via complete_cast__movie_id offsets",
       "type": "semi",
-      "strategy": "index_nested_loop + scalar_eq",
-      "build_cardinality": 2,
-      "notes": "very selective; cc has ~135k rows total"
+      "strategy": "index_nested_loop",
+      "build_cardinality": 135086,
+      "notes": "Very selective equality on both subject and status."
     },
     {
-      "build": "movie_info_idx via offsets[t_id]",
-      "probe": "info_type_id==it2_id AND lex(info) < '8.5'",
+      "build": "movie_info_idx (filter: info_type_id==it2_id AND lex(info)<'8.5')",
+      "probe": "surviving t_ids via movie_info_idx__movie_id offsets",
       "type": "inner",
       "strategy": "index_nested_loop",
-      "build_cardinality": 1,
-      "notes": "captures min(rating); use lexicographic string compare"
+      "build_cardinality": 1380035,
+      "notes": "Need MIN(info), so project info value. Inner join (must exist)."
     },
     {
-      "build": "movie_companies via offsets[t_id]",
-      "probe": "company_id in cn_set AND note NOT LIKE %(USA)% AND note LIKE %(200%)%",
+      "build": "movie_companies (filter: company_id IN cn_set AND note NOT LIKE '%(USA)%' AND note LIKE '%(200%)%')",
+      "probe": "surviving t_ids via movie_companies__movie_id offsets",
       "type": "inner",
-      "strategy": "index_nested_loop + bitset_lookup + substring_scan",
-      "build_cardinality": 1,
-      "notes": "captures cn.name via cn_id->name lookup; substring search on note"
+      "strategy": "index_nested_loop",
+      "build_cardinality": 2609129,
+      "notes": "Need MIN(cn.name) -> for each surviving mc row look up cn.name via company_id. Filter note with manual substring scan (avoid regex)."
     },
     {
-      "build": "movie_info via offsets[t_id]",
-      "probe": "info_type_id==it1_id AND info in mi_info_set",
+      "build": "movie_info (filter: info_type_id==it1_id AND info IN 10-literal set)",
+      "probe": "surviving t_ids via movie_info__movie_id offsets",
       "type": "semi",
-      "strategy": "index_nested_loop + hashset_lookup",
-      "build_cardinality": 1,
-      "notes": "last to check (largest table); pruned set by prior probes"
+      "strategy": "index_nested_loop",
+      "build_cardinality": 14835720,
+      "notes": "Last because largest table; semi-join (no projection). 10-literal hashset on info."
     }
   ],
   "filters": [
-    {"table": "title", "predicate": "production_year > 2005", "selectivity": 0.43},
-    {"table": "title", "predicate": "kind_id in kt_set", "selectivity": 0.95},
-    {"table": "movie_keyword", "predicate": "keyword_id in kw_set", "selectivity": 0.001},
-    {"table": "complete_cast", "predicate": "subject_id==cast_id AND status_id==complete_id", "selectivity": 0.25},
+    {"table": "title", "predicate": "production_year > 2005", "selectivity": 0.35},
+    {"table": "title", "predicate": "kind_id IN kt_set", "selectivity": 0.95},
+    {"table": "movie_keyword", "predicate": "keyword_id IN kw_set (4 kws)", "selectivity": 0.0005},
+    {"table": "complete_cast", "predicate": "subject_id==cast_id AND status_id==complete_id", "selectivity": 0.05},
     {"table": "movie_info_idx", "predicate": "info_type_id==it2_id AND info<'8.5'", "selectivity": 0.4},
-    {"table": "movie_companies", "predicate": "company_id in cn_set AND note matches", "selectivity": 0.02},
-    {"table": "movie_info", "predicate": "info_type_id==it1_id AND info in set", "selectivity": 0.01}
+    {"table": "movie_companies", "predicate": "company_id IN cn_set AND note NOT LIKE '%(USA)%' AND note LIKE '%(200%)%'", "selectivity": 0.02},
+    {"table": "movie_info", "predicate": "info_type_id==it1_id AND info IN 10-set", "selectivity": 0.01},
+    {"table": "company_name", "predicate": "country_code != '[us]'", "selectivity": 0.85}
   ],
   "data_structures": {
-    "cn_set": "bitset(234997)",
-    "kw_set": "bitset(134170)",
-    "mi_info_set": "flat_hash_set<string_view> (10 entries)",
-    "cn_name_lookup": "direct_array via company_name.name offsets",
-    "title_lookup": "direct_array via title.title offsets",
-    "mi_idx_info_lookup": "direct_array via movie_info_idx.info offsets",
-    "aggregation": "3x atomic_min (movie_company,rating,title)"
+    "cn_set": "bitset(234997) — fast membership for mc.company_id probe",
+    "kw_set": "small flat array (4 ints), linear scan",
+    "kt_set": "small flat array (2 ints), linear scan",
+    "mi_info_set": "robin_hood::unordered_flat_set<string_view> of 10 literals; compare against mi.info bytes",
+    "cn_name_offsets": "direct array access via cn.name.off/.dat by company_id (id == row index assumption verified by sort order)",
+    "title_cache": "vector<int32_t> t_ids (filtered driver)",
+    "aggregation": "3 atomic_min<string_view> slots (movie_company, rating, complete_euro_dark_movie); reduce per-thread locals at end"
   },
   "parallelism": {
     "strategy": "morsel_driven",
     "threads": "auto(nproc)",
-    "morsel_size": 16384,
-    "notes": "Parallelize title driver scan; each thread carries thread-local MIN and merges at end"
+    "morsel": "title block-aligned (block size 100000); each thread keeps thread-local MIN trio; merge at end"
   },
   "indexes": [
-    {"index": "movie_keyword__movie_id", "purpose": "join_lookup"},
-    {"index": "complete_cast__movie_id", "purpose": "join_lookup"},
-    {"index": "movie_info_idx__movie_id", "purpose": "join_lookup"},
-    {"index": "movie_companies__movie_id", "purpose": "join_lookup"},
-    {"index": "movie_info__movie_id", "purpose": "join_lookup"}
+    {"index": "movie_keyword__movie_id", "purpose": "join_lookup (offsets_only)"},
+    {"index": "complete_cast__movie_id", "purpose": "join_lookup (offsets_only)"},
+    {"index": "movie_info_idx__movie_id", "purpose": "join_lookup (offsets_only)"},
+    {"index": "movie_companies__movie_id", "purpose": "join_lookup (offsets_only)"},
+    {"index": "movie_info__movie_id", "purpose": "join_lookup (offsets_only)"}
   ],
   "aggregation": "scalar_min_3way",
   "output": {"order_by": [], "limit": 1},
-  "execution_target": "cpp"
+  "execution_target": "cpp",
+  "notes_for_codegen": [
+    "Build all dim sets ONCE before parallel region.",
+    "For LIKE: scan note bytes manually; reject if contains '(USA)', require substring matching '(200' followed by any char then ')'.",
+    "Per t_id: short-circuit as soon as any required semi-probe fails. Order: mk -> cc -> mi_idx (collect best info) -> mc (collect best cn.name) -> mi.",
+    "For mi_idx & mc & mi probes: use offsets to bound row range; iterate compact loops.",
+    "Thread-local MIN: keep current best string_view (pointer+len into .dat) to avoid copies; final reduction compares lexicographically.",
+    "NULL country_code (dict code 0) satisfies != '[us]'."
+  ]
 }

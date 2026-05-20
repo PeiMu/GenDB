@@ -165,15 +165,46 @@ output/imdb-job-sf1/
 
 ## Verifying Results
 
+**Verify all queries at once:**
+
 ```bash
-# Correctness check against ground truth (no --tpch or --financial flag for JOB)
+# Verify correctness of all binaries in the latest run against ground truth
+bash verify_correctness.sh
+
+# Or specify a particular run
+bash verify_correctness.sh output/imdb-job-sf1/runs/2026-05-20T09-18-19
+```
+
+**Verify a single query manually:**
+
+```bash
+# Run the binary
+./output/imdb-job-sf1/runs/latest/queries/Q1a/iter_0/q1a \
+  output/imdb-job-sf1/storage /tmp/q1a_out
+
+# Compare against ground truth (tool expects directories of CSVs)
 python3 src/gendb/tools/compare_results.py \
   benchmarks/imdb-job/query_results \
-  output/imdb-job-sf1/Q1a/best/results
+  /tmp/q1a_out
 
 # Timing breakdown
-cat output/imdb-job-sf1/Q1a/best/execution_results.json
+cat output/imdb-job-sf1/runs/latest/queries/Q1a/iter_0/execution_results.json
 ```
+
+## Benchmarking Performance
+
+```bash
+# Default: 5 warmup, 10 measured runs (uses latest run)
+bash benchmark_queries.sh
+
+# Custom warmup and runs
+bash benchmark_queries.sh --warmup 3 --runs 20
+
+# Specify a particular run
+bash benchmark_queries.sh output/imdb-job-sf1/runs/2026-05-20T09-18-19 --warmup 5 --runs 10
+```
+
+The script first verifies correctness of all binaries, then benchmarks only the passing ones with hyperfine. Results are saved to `output/imdb-job-sf1/benchmark_results/individual/<QID>.json`.
 
 ## What We Changed for JOB
 

@@ -4,7 +4,7 @@
     "resolve_dims",
     "build_cn_set",
     "build_lt_set",
-    "drive_movie_keyword_sequel",
+    "driver_movie_keyword_csr_sequel",
     "filter_title_year",
     "probe_movie_link",
     "probe_movie_companies",
@@ -13,98 +13,97 @@
     "aggregate_min"
   ],
   "dim_resolution": [
-    {"name": "cct1_set", "table": "comp_cast_type", "predicate": "kind IN ('cast','crew')", "structure": "uint8_flags[5]", "expected_size": 2},
-    {"name": "complete_id", "table": "comp_cast_type", "predicate": "kind = 'complete'", "structure": "scalar_int32"},
-    {"name": "ct_id", "table": "company_type", "predicate": "kind = 'production companies'", "structure": "scalar_int32"},
-    {"name": "sequel_kw_id", "table": "keyword", "predicate": "keyword = 'sequel'", "structure": "scalar_int32"},
-    {"name": "pl_code", "table": "company_name", "predicate": "country_code dict lookup for '[pl]'", "structure": "scalar_int16"},
-    {"name": "lt_set", "table": "link_type", "predicate": "link LIKE '%follow%' (memmem)", "structure": "uint8_flags[19]", "expected_size": 2},
-    {"name": "cn_set", "table": "company_name", "predicate": "(name LIKE '%Film%' OR name LIKE '%Warner%') AND country_code != pl_code", "structure": "bitset(234998)", "expected_size": 17000, "notes": "scan 235k rows once; memmem for both literals; reject pl_code"},
-    {"name": "mi_info_set", "table": "movie_info", "predicate": "info IN ('Sweden','Germany','Swedish','German')", "structure": "inline_string_compare with len<=7 prefilter"}
+    {"dim": "comp_cast_type.kind", "build": "scan 4 rows; cct1_set = {id : kind IN ('cast','crew')}; complete_id = id where kind='complete'"},
+    {"dim": "company_type.kind", "build": "scan 4 rows; ct_id = id where kind='production companies'"},
+    {"dim": "keyword.keyword", "build": "scan 134170 rows; sequel_kw_id = id where keyword='sequel' (varlen equality via off+dat)"},
+    {"dim": "link_type.link", "build": "scan 18 rows; lt_set = {id : memmem(link,'follow')}"},
+    {"dim": "company_name.country_code.dict", "build": "resolve pl_code from dict (code for '[pl]')"},
+    {"dim": "company_name", "build": "scan 234997 rows; cn_set bitset(234998) of ids where country_code != pl_code AND (memmem(name,'Film') OR memmem(name,'Warner'))"},
+    {"dim": "mi_info_literals", "build": "hashset/inline switch over {'Sweden','Germany','Swedish','German'} with length prefilter (<=7)"}
   ],
   "join_order": [
     {
-      "step": 1,
-      "driver": "movie_keyword__keyword_id CSR at sequel_kw_id",
-      "produces": "candidate t_ids (sequel movies)",
-      "expected_cardinality": 2000,
-      "strategy": "csr_lookup",
-      "notes": "lo=off[sequel_kw_id]; hi=off[sequel_kw_id+1]; t_id = mk_movie_id[rowids[k]]; dedupe via small hashset since same movie may have multiple keyword rows (unlikely but possible)"
+      "build": "movie_keyword__keyword_id CSR[sequel_kw_id]",
+      "probe": "title (range yields t_id directly)",
+      "type": "semi",
+      "strategy": "csr_lookup_driver",
+      "build_cardinality": 2000,
+      "notes": "Most selective entry. lo=off[sequel_kw_id]; hi=off[sequel_kw_id+1]; iterate rowids -> mk_movie_id -> t_id"
     },
     {
-      "step": 2,
-      "filter": "title.production_year BETWEEN 1950 AND 2000",
-      "selectivity": 0.6,
+      "build": "t.production_year[t_id-1]",
+      "probe": "candidate t_id stream",
+      "type": "filter",
       "strategy": "direct_array_lookup",
-      "notes": "row = t_id - 1; year_arr[row]"
+      "build_cardinality": 0,
+      "notes": "year BETWEEN 1950 AND 2000; ~60% pass"
     },
     {
-      "step": 3,
-      "probe": "movie_link via movie_link__movie_id offsets",
-      "build": "lt_set (small flag array)",
+      "build": "lt_set + movie_link__movie_id offsets",
+      "probe": "movie_link range for t_id",
       "type": "semi",
-      "strategy": "index_range_scan",
-      "notes": "any row in [off[t_id], off[t_id+1]) with link_type_id in lt_set; capture matched ml_row for lt.link MIN later"
+      "strategy": "range_scan_with_set_probe",
+      "build_cardinality": 18,
+      "notes": "Need at least one ml row with link_type_id in lt_set; remember matching link_type_id for MIN(lt.link)"
     },
     {
-      "step": 4,
-      "probe": "movie_companies via movie_companies__movie_id offsets",
-      "build": "cn_set bitset + ct_id scalar",
+      "build": "cn_set bitset + ct_id + mc.note NULL test",
+      "probe": "movie_companies range for t_id",
       "type": "semi",
-      "strategy": "index_range_scan",
-      "notes": "filter company_type_id==ct_id && cn_set[company_id] && note off[r]==off[r+1]; capture matched cn ids for MIN(cn.name)"
+      "strategy": "range_scan_bitset_probe",
+      "build_cardinality": 234997,
+      "notes": "Need one mc row with company_type_id==ct_id && company_id in cn_set && note IS NULL (off[r]==off[r+1]); remember matching company_id for MIN(cn.name)"
     },
     {
-      "step": 5,
-      "probe": "complete_cast via complete_cast__movie_id offsets",
       "build": "cct1_set + complete_id",
+      "probe": "complete_cast range for t_id",
       "type": "semi",
-      "strategy": "index_range_scan",
-      "notes": "any row with subject_id in cct1_set && status_id == complete_id"
+      "strategy": "range_scan_small_set_probe",
+      "build_cardinality": 4,
+      "notes": "Need cc row with subject_id in cct1_set AND status_id==complete_id"
     },
     {
-      "step": 6,
-      "probe": "movie_info via movie_info__movie_id offsets",
-      "build": "mi_info_set (4 literals)",
+      "build": "mi info literal set",
+      "probe": "movie_info range for t_id",
       "type": "semi",
-      "strategy": "index_range_scan",
-      "notes": "any row with info in {Sweden,Germany,Swedish,German}; length prefilter <=7"
+      "strategy": "range_scan_varlen_probe",
+      "build_cardinality": 4,
+      "notes": "Need mi row with info in {Sweden,Germany,Swedish,German}; length<=7 prefilter then memcmp"
     }
   ],
   "filters": [
-    {"table": "keyword", "predicate": "keyword='sequel'", "selectivity": "scalar"},
-    {"table": "title", "predicate": "production_year BETWEEN 1950 AND 2000", "selectivity": 0.6},
-    {"table": "company_name", "predicate": "name LIKE '%Film%' OR LIKE '%Warner%' AND country_code!=pl_code", "selectivity": 0.07},
-    {"table": "link_type", "predicate": "link LIKE '%follow%'", "selectivity": 0.11},
-    {"table": "movie_companies", "predicate": "note IS NULL", "selectivity": 0.6},
-    {"table": "movie_info", "predicate": "info IN literal_set", "selectivity": 0.0005}
+    {"table": "cct1", "predicate": "kind IN ('cast','crew')", "selectivity": 0.5},
+    {"table": "cct2", "predicate": "kind='complete'", "selectivity": 0.25},
+    {"table": "cn", "predicate": "country_code != '[pl]' AND (name LIKE '%Film%' OR name LIKE '%Warner%')", "selectivity": 0.05},
+    {"table": "ct", "predicate": "kind='production companies'", "selectivity": 0.25},
+    {"table": "k", "predicate": "keyword='sequel'", "selectivity": 7.45e-06},
+    {"table": "lt", "predicate": "link LIKE '%follow%'", "selectivity": 0.3},
+    {"table": "mc", "predicate": "note IS NULL", "selectivity": 0.6},
+    {"table": "mi", "predicate": "info IN ('Sweden','Germany','Swedish','German')", "selectivity": 0.0005},
+    {"table": "t", "predicate": "production_year BETWEEN 1950 AND 2000", "selectivity": 0.6}
   ],
   "data_structures": {
-    "cn_set": "bitset(234998)",
-    "lt_set": "uint8_flags[19]",
-    "cct1_set": "uint8_flags[5]",
-    "mi_info_set": "inline string compare (4 short literals)",
-    "candidate_t_ids": "vector<int32_t> from CSR driver (small ~2000)",
-    "min_aggregates": "three int32 row tracking (best_cn_row, best_lt_row, best_t_row) updated by comparing string_view ordering"
+    "cct1_set": "tiny_array<int32>(<=2) with inline check",
+    "cn_set": "bitset(234998) over company_name id space",
+    "lt_set": "tiny_array<int32>(<=4) with inline check",
+    "mi_info_set": "inline switch / 4-entry varlen compare with length prefilter",
+    "driver": "movie_keyword__keyword_id CSR (precomputed)",
+    "aggregation": "scalar MIN reducers (3): min_cn_id (track id, materialize name at end), min_lt_id (track id, materialize at end), min_t_id (track id, materialize at end). Compare ids only when monotonic-by-id is not guaranteed; safer: compare actual varlen strings using string_view memcmp."
   },
+  "min_aggregation_notes": "Maintain three per-thread MIN reducers over varlen string_views (memcmp lex order): producing_company from cn.name (where cn.id matched), link_type from lt.link (where lt.id matched), complete_western_sequel from t.title (where t.id matched). Merge across threads at end.",
   "parallelism": {
-    "strategy": "single_threaded",
-    "threads": 1,
-    "notes": "Driver cardinality ~2000 sequel movies; per-candidate work is small index range probes. Threading overhead would dominate. Parallelize only the cn_set build scan if needed (235k rows is cheap single-threaded ~few ms)."
+    "strategy": "partition_parallel over CSR rowid range [lo,hi)",
+    "threads": "auto(nproc)",
+    "notes": "Driver cardinality is small (~hundreds-thousands). Use dynamic chunking with chunk_size ~= max(1, (hi-lo)/(threads*4)). Each thread has local MIN reducers; merge under mutex at end."
   },
   "indexes": [
-    {"index": "movie_keyword__keyword_id", "purpose": "driver: iterate sequel movies"},
-    {"index": "movie_link__movie_id", "purpose": "join_lookup ml by t_id"},
-    {"index": "movie_companies__movie_id", "purpose": "join_lookup mc by t_id"},
-    {"index": "complete_cast__movie_id", "purpose": "join_lookup cc by t_id"},
-    {"index": "movie_info__movie_id", "purpose": "join_lookup mi by t_id"}
+    {"index": "movie_keyword__keyword_id", "purpose": "driver_csr_lookup"},
+    {"index": "movie_link__movie_id", "purpose": "range_probe"},
+    {"index": "movie_companies__movie_id", "purpose": "range_probe"},
+    {"index": "complete_cast__movie_id", "purpose": "range_probe"},
+    {"index": "movie_info__movie_id", "purpose": "range_probe"}
   ],
-  "aggregation": "scalar_min_three_strings",
-  "min_tracking": {
-    "producing_company": "track min cn.name string_view across surviving mc rows (resolve via cn.name.off/.dat at matched company_id)",
-    "link_type": "track min lt.link string_view across surviving ml rows (lt.link is tiny, 18 rows; just track min lt_id encountered then resolve once at end)",
-    "complete_western_sequel": "track min t.title string_view across surviving t_ids"
-  },
-  "output": {"order_by": [], "limit": 1, "scalar_result": true},
+  "aggregation": "scalar_min_reducers",
+  "output": {"select": ["MIN(cn.name) AS producing_company", "MIN(lt.link) AS link_type", "MIN(t.title) AS complete_western_sequel"], "limit": 1},
   "execution_target": "cpp"
 }

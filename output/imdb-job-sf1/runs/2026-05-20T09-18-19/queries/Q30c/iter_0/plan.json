@@ -1,145 +1,89 @@
 {
   "query_id": "Q30c",
   "pipeline": [
-    "resolve_dim_ids",
-    "scan_complete_cast_filter",
-    "collect_mv_distinct",
-    "probe_mk_keyword",
-    "probe_mi_genre",
-    "probe_ci_writer_male",
-    "probe_mi_idx_votes",
+    "resolve_dim_constants",
+    "scan_complete_cast_driver",
+    "collect_distinct_movie_ids",
+    "per_movie_probe_mk_mi_miidx_ci",
     "min_aggregate"
   ],
   "dim_resolution": [
-    {
-      "table": "comp_cast_type",
-      "outputs": [
-        {"name": "cct1_id", "predicate": "kind = 'cast'", "rowid_basis": "0-based row index"},
-        {"name": "cct2_id", "predicate": "kind = 'complete+verified'", "rowid_basis": "0-based row index"}
-      ],
-      "method": "linear scan kind.off/kind.dat (rows=4); store row index i; complete_cast.subject_id/status_id are 1-based ids, so compare against (i+1)"
-    },
-    {
-      "table": "info_type",
-      "outputs": [
-        {"name": "it1_id", "predicate": "info = 'genres'"},
-        {"name": "it2_id", "predicate": "info = 'votes'"}
-      ],
-      "method": "linear scan info.off/info.dat (rows=113); compare child info_type_id against (i+1)"
-    },
-    {
-      "table": "keyword",
-      "output": "k_ids (flat_hash_set<int32_t>, 7 elements)",
-      "predicate": "keyword IN ('murder','violence','blood','gore','death','female-nudity','hospital')",
-      "method": "linear scan keyword.off/keyword.dat (rows=134170); push back (i+1) on match"
-    },
-    {
-      "table": "name.gender dict",
-      "output": "m_code (int8)",
-      "method": "scan gender.dict.off/dat (~2 entries); locate 'm'"
-    }
+    {"table": "comp_cast_type", "column": "kind", "literal": "cast", "out": "cct1_id", "method": "linear_scan_varlen"},
+    {"table": "comp_cast_type", "column": "kind", "literal": "complete+verified", "out": "cct2_id", "method": "linear_scan_varlen"},
+    {"table": "info_type", "column": "info", "literal": "genres", "out": "it1_id", "method": "linear_scan_varlen"},
+    {"table": "info_type", "column": "info", "literal": "votes", "out": "it2_id", "method": "linear_scan_varlen"},
+    {"table": "name", "column": "gender", "literal": "m", "out": "m_code", "method": "dict_lookup"},
+    {"table": "keyword", "column": "keyword", "literals": ["murder","violence","blood","gore","death","female-nudity","hospital"], "out": "k_ids_set", "method": "linear_scan_collect"}
   ],
-  "driver": {
-    "table": "complete_cast",
-    "rows": 135086,
-    "filter": "subject_id == cct1_id AND status_id == cct2_id",
-    "output": "vector<int32_t> mv_list (distinct movie_ids, ~17879)",
-    "dedup": "unordered_set<int32_t> seen; insert before push_back",
-    "parallel": false,
-    "notes": "Single sequential scan of complete_cast (135K rows). Dedup distinct mv set sized ~17879."
-  },
   "join_order": [
     {
-      "build": "k_ids set (7 ints)",
-      "probe": "movie_keyword via offsets[mv]",
+      "build": "complete_cast(filtered subject_id==cct1_id AND status_id==cct2_id)",
+      "probe": "self",
+      "type": "scan",
+      "strategy": "linear_scan",
+      "build_cardinality": 10000,
+      "notes": "Driver: complete_cast is smallest fact (135K). Filter and collect distinct movie_ids into flat set."
+    },
+    {
+      "build": "mv_set (driver distinct)",
+      "probe": "movie_keyword via offsets index",
       "type": "semi",
       "strategy": "index_nested_loop",
-      "build_cardinality": 7,
-      "selectivity_per_mv": 0.078,
-      "notes": "Most selective per-mv probe — run first. For each mv, scan slot [mkoff[mv], mkoff[mv+1]); break on first keyword_id in k_ids."
+      "build_cardinality": 10000,
+      "notes": "For each mv in driver, scan mk rows via _idx/movie_keyword__movie_id__offsets.bin; check any keyword_id in k_ids_set (hash_set int32)."
     },
     {
-      "build": "genre_set flat_hash_set<string_view> {Horror,Action,Sci-Fi,Thriller,Crime,War}",
-      "probe": "movie_info via offsets[mv]",
-      "type": "semi+project_min",
+      "build": "mv survivors after mk semi-join",
+      "probe": "movie_info via offsets index",
+      "type": "inner",
       "strategy": "index_nested_loop",
-      "build_cardinality": 6,
-      "selectivity_per_mv": 0.109,
-      "notes": "For each mv slot, scan rows; if info_type_id==it1_id AND info in genre_set: capture info string_view for MIN(mi.info); track local min and continue scanning to find smallest genre string for this movie? No — for MIN aggregation we only need one matching row to exist (qualifies movie), and we MIN across qualifying values. So MIN is over the matched info strings. Keep running global min."
+      "build_cardinality": 5000,
+      "notes": "For each mv, scan mi rows; require info_type_id==it1_id AND info in 6-genre set (flat_hash_set<string_view>). Track MIN(info)."
     },
     {
-      "build": "note_set flat_hash_set<string_view> (5 writer notes) + gender array",
-      "probe": "cast_info via offsets[mv]; deref person_id -> name.gender[pid-1]",
-      "type": "semi+project_min",
+      "build": "mv survivors",
+      "probe": "movie_info_idx via offsets index",
+      "type": "inner",
       "strategy": "index_nested_loop",
-      "build_cardinality": 5,
-      "selectivity_per_mv": 0.292,
-      "notes": "For each mv slot in cast_info, check note ∈ note_set (length prefilter [6..15]); if match, fetch pid, check gender[pid-1]==m_code; on success capture name.name via name.name.off/dat[pid-1] for MIN."
+      "build_cardinality": 5000,
+      "notes": "For each mv, scan mi_idx rows; require info_type_id==it2_id. Track MIN(info)."
     },
     {
-      "build": "scalar it2_id",
-      "probe": "movie_info_idx via offsets[mv]",
-      "type": "semi+project_min",
+      "build": "mv survivors",
+      "probe": "cast_info via offsets index",
+      "type": "inner",
       "strategy": "index_nested_loop",
-      "build_cardinality": 1,
-      "selectivity_per_mv": 0.848,
-      "notes": "For each mv slot in mi_idx, find any row with info_type_id==it2_id; capture mi_idx.info string for MIN. Least selective — run last."
+      "build_cardinality": 5000,
+      "notes": "For each mv, scan ci rows; require note in 5-writer-set (flat_hash_set<string_view> with length prefilter 6-15). For each match, get person_id, check name.gender[pid-1]==m_code; track MIN(name.name)."
     }
   ],
   "filters": [
-    {"table": "comp_cast_type", "predicate": "kind='cast'", "selectivity": 0.25, "result": "cct1_id"},
-    {"table": "comp_cast_type", "predicate": "kind='complete+verified'", "selectivity": 0.25, "result": "cct2_id"},
-    {"table": "info_type", "predicate": "info='genres'", "selectivity": 0.009, "result": "it1_id"},
-    {"table": "info_type", "predicate": "info='votes'", "selectivity": 0.009, "result": "it2_id"},
-    {"table": "keyword", "predicate": "keyword IN (7 literals)", "selectivity": 5.2e-5, "result": "k_ids[7]"},
-    {"table": "complete_cast", "predicate": "subject_id==cct1_id AND status_id==cct2_id", "selectivity": 0.13, "result_rows": "~17879 distinct mv"},
-    {"table": "movie_keyword (probe)", "predicate": "keyword_id IN k_ids", "selectivity_per_mv": 0.078},
-    {"table": "movie_info (probe)", "predicate": "info_type_id==it1_id AND info IN genre_set", "selectivity_per_mv": 0.109},
-    {"table": "cast_info (probe)", "predicate": "note IN writer_notes AND name.gender[pid-1]==m_code", "selectivity_per_mv": 0.292},
-    {"table": "movie_info_idx (probe)", "predicate": "info_type_id==it2_id", "selectivity_per_mv": 0.848}
+    {"table": "complete_cast", "predicate": "subject_id==cct1_id AND status_id==cct2_id", "selectivity": 0.08},
+    {"table": "movie_keyword", "predicate": "keyword_id IN k_ids (per-mv any)", "selectivity": 0.5},
+    {"table": "movie_info", "predicate": "info_type_id==it1_id AND info IN 6-genre-set", "selectivity": 0.05},
+    {"table": "movie_info_idx", "predicate": "info_type_id==it2_id", "selectivity": 0.5},
+    {"table": "cast_info", "predicate": "note IN 5-writer-set", "selectivity": 0.02},
+    {"table": "name", "predicate": "gender==m_code", "selectivity": 0.65}
   ],
   "data_structures": {
-    "k_ids": "flat_hash_set<int32_t> (7 elements)",
-    "genre_set": "flat_hash_set<std::string_view> (6 elements, length prefilter min=3 max=8)",
-    "note_set": "flat_hash_set<std::string_view> (5 elements, length prefilter min=8 max=15)",
-    "mv_seen": "absl::flat_hash_set<int32_t> capacity 32768",
-    "mv_list": "std::vector<int32_t> reserve(20000)",
-    "agg_state": "per-thread {min_mi_info, min_mi_idx_info, min_name, min_title} as std::string_view + owning buffer not needed (mmap-backed)"
+    "k_ids_set": "flat_hash_set<int32_t> (size 7)",
+    "mi_genre_set": "flat_hash_set<string_view> (size 6, length prefilter 3-8)",
+    "ci_note_set": "flat_hash_set<string_view> (size 5, length prefilter 6-15)",
+    "mv_driver_set": "std::vector<int32_t> sorted+unique (~10K)",
+    "min_aggregates": "4 std::string_view running minima (mi.info, mi_idx.info, name.name, title.title)"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven_over_mv_set",
+    "threads": "auto(nproc)",
+    "notes": "Partition mv_driver_set across 12 threads; each thread maintains local 4 MIN, merge at end."
   },
   "indexes": [
-    {"index": "_idx/complete_cast__movie_id__offsets.bin", "purpose": "not used as parent index — driver is full scan of complete_cast columns"},
-    {"index": "_idx/movie_keyword__movie_id__offsets.bin", "purpose": "offsets_only lookup per mv"},
-    {"index": "_idx/movie_info__movie_id__offsets.bin", "purpose": "offsets_only lookup per mv"},
-    {"index": "_idx/movie_info_idx__movie_id__offsets.bin", "purpose": "offsets_only lookup per mv"},
-    {"index": "_idx/cast_info__movie_id__offsets.bin", "purpose": "offsets_only lookup per mv"}
+    {"index": "_idx/movie_keyword__movie_id__offsets.bin", "purpose": "join_lookup mk by movie_id"},
+    {"index": "_idx/movie_info__movie_id__offsets.bin", "purpose": "join_lookup mi by movie_id"},
+    {"index": "_idx/movie_info_idx__movie_id__offsets.bin", "purpose": "join_lookup mi_idx by movie_id"},
+    {"index": "_idx/cast_info__movie_id__offsets.bin", "purpose": "join_lookup ci by movie_id"}
   ],
-  "parallelism": {
-    "strategy": "morsel_driven over mv_list",
-    "threads": "auto(nproc)",
-    "morsel_size": 64,
-    "notes": "Driver scan of complete_cast is single-threaded (135K rows, fast). Per-mv probe loop is parallelised; each thread maintains local MIN strings and merges under a single mutex at end."
-  },
-  "aggregation": {
-    "strategy": "scalar_min_four_strings",
-    "outputs": [
-      {"alias": "movie_budget", "expr": "MIN(mi.info)", "source": "movie_info.info matched rows"},
-      {"alias": "movie_votes", "expr": "MIN(mi_idx.info)", "source": "movie_info_idx.info matched rows"},
-      {"alias": "writer", "expr": "MIN(n.name)", "source": "name.name for qualifying writer-pid"},
-      {"alias": "complete_violent_movie", "expr": "MIN(t.title)", "source": "title.title[mv]"}
-    ],
-    "min_semantics": "lexicographic on raw bytes; only update if mv qualifies on all four semi-join predicates (mk, mi, ci, mi_idx). MIN values may come from different mvs since aggregates are unrelated.",
-    "qualification_rule": "Per IMDB-JOB semantics: a row in the cartesian product contributes to MIN. Therefore only mvs satisfying all semi-joins contribute; for those mvs, every qualifying (mi_row × ci_writer_male_row × mi_idx_row) combination contributes — but for MIN we can simply track the min over ALL qualifying mi.info strings for qualifying mvs, and similarly for mi_idx.info, n.name (over all qualifying writer-male persons of qualifying mvs), and t.title (over qualifying mvs)."
-  },
-  "memory_estimate": {
-    "mv_set": "~80KB",
-    "mmap_pages_touched": "complete_cast(3 cols × 135K × 4B = ~1.6MB), per-mv probes across mk/mi/mii/ci slot ranges + name.gender(4MB) + name.name.off/dat (sparse)",
-    "fits_in_l3": "working set dominated by mv probes; random access into ci/mi/mi_idx; HDD prefetch helps via sequential slot access within a movie"
-  },
-  "output": {
-    "order_by": [],
-    "limit": 1,
-    "projection": ["movie_budget", "movie_votes", "writer", "complete_violent_movie"],
-    "note": "Single result row of MINs"
-  },
+  "aggregation": "scalar_min_4way",
+  "output": {"order_by": [], "limit": 1, "projection": ["MIN(mi.info)", "MIN(mi_idx.info)", "MIN(n.name)", "MIN(t.title)"]},
   "execution_target": "cpp"
 }

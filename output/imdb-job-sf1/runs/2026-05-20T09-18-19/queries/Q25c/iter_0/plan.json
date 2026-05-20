@@ -1,117 +1,135 @@
 {
   "query_id": "Q25c",
   "pipeline": [
-    "resolve_dims",
-    "build_valid_persons_bitset",
+    "prepass_resolve_dims",
+    "prepass_valid_persons_bitset",
     "driver_scan_title",
-    "per_movie_fact_probes_ordered_cheap_first",
-    "min_aggregation"
+    "fact_probe_mk",
+    "fact_probe_mi_idx",
+    "fact_probe_mi",
+    "fact_probe_ci",
+    "fetch_name",
+    "min_aggregate"
   ],
-  "dim_resolution": [
+  "prepass": [
     {
-      "table": "info_type",
-      "scan": "single pass over 113 rows",
-      "outputs": ["it1_id (info='genres')", "it2_id (info='votes')"]
+      "name": "it1_id",
+      "source": "info_type",
+      "predicate": "info = 'genres'",
+      "output": "int32 scalar"
     },
     {
-      "table": "keyword",
-      "scan": "single pass over 134170 rows",
-      "filter": "keyword IN ('murder','violence','blood','gore','death','female-nudity','hospital')",
-      "output": "kw_ids: flat_hash_set<int32_t> (cardinality ~7)"
+      "name": "it2_id",
+      "source": "info_type",
+      "predicate": "info = 'votes'",
+      "output": "int32 scalar"
     },
     {
-      "table": "name",
-      "scan": "single pass over 4167491 rows",
-      "filter": "gender_bin[i] == m_code",
-      "output": "valid_persons: bitset(4167491)",
-      "notes": "Resolve m_code from gender dict first."
+      "name": "kw_ids",
+      "source": "keyword",
+      "predicate": "keyword IN ('hero','martial-arts','hand-to-hand-combat')",
+      "output": "flat_hash_set<int32> (3 ids)"
+    },
+    {
+      "name": "m_code",
+      "source": "name.gender.dict",
+      "predicate": "dict entry == 'm'",
+      "output": "int8 scalar"
+    },
+    {
+      "name": "valid_persons",
+      "source": "name",
+      "predicate": "gender_bin[i] == m_code",
+      "output": "bitset(4167491)"
     }
   ],
   "join_order": [
     {
-      "build": "title (driver, no predicate)",
-      "probe": "movie_keyword via movie_keyword__movie_id offsets",
+      "build": "kw_ids (3)",
+      "probe": "movie_keyword (range on mk__movie_id offsets for movie v)",
       "type": "semi",
-      "strategy": "index_nested_loop + early_exit",
-      "build_cardinality": 2528312,
-      "predicate": "kw_ids.contains(keyword_id)",
-      "notes": "Most selective (~7/134170). Fail fast: if no match across mk range for movie, skip movie entirely."
+      "strategy": "hash_set_lookup",
+      "build_cardinality": 3,
+      "notes": "Highest selectivity gate (3/134170). Use offsets_only index; early-fail per v."
     },
     {
-      "build": "movies surviving mk",
-      "probe": "movie_info_idx via movie_info_idx__movie_id offsets",
+      "build": "it2_id scalar",
+      "probe": "movie_info_idx (range on mi_idx__movie_id offsets)",
       "type": "semi",
-      "strategy": "index_nested_loop + early_exit",
-      "predicate": "info_type_id == it2_id",
-      "notes": "Per-movie typically 1-2 rows; filter is single int compare."
+      "strategy": "scalar_eq",
+      "build_cardinality": 1,
+      "notes": "votes info_type filter."
     },
     {
-      "build": "movies surviving mk+mi_idx",
-      "probe": "movie_info via movie_info__movie_id offsets",
+      "build": "{it1_id, mi_info_set}",
+      "probe": "movie_info (range on mi__movie_id offsets)",
       "type": "semi",
-      "strategy": "index_nested_loop + early_exit",
-      "predicate": "info_type_id == it1_id AND info IN {'Horror','Action','Sci-Fi','Thriller','Crime','War'}",
-      "notes": "2-stage: cheap int compare on info_type_id, then string match. Use flat_hash_set<string_view> with length prefilter for 6 literals."
+      "strategy": "scalar_eq + flat_hash_set<string_view>(2)",
+      "build_cardinality": 2,
+      "notes": "info_type_id == it1_id AND info ∈ {'Horror','Thriller'}; 2-element set via memcmp."
     },
     {
-      "build": "movies surviving mk+mi_idx+mi",
-      "probe": "cast_info via cast_info__movie_id offsets",
+      "build": "{writer_notes_set, valid_persons}",
+      "probe": "cast_info (range on ci__movie_id offsets)",
       "type": "semi",
-      "strategy": "index_nested_loop + early_exit",
-      "predicate": "note IN writer-set (5 literals) AND valid_persons[person_id-1]",
-      "notes": "Largest fact (36M rows) probed last and only for survivors. Note check via flat_hash_set<string_view> with length prefilter."
+      "strategy": "flat_hash_set<string_view>(5) + bitset_probe",
+      "build_cardinality": 5,
+      "notes": "note ∈ writer-set (length prefilter) AND valid_persons[person_id-1]."
+    },
+    {
+      "build": "name dense PK offsets",
+      "probe": "ci.person_id (only after match)",
+      "type": "inner",
+      "strategy": "direct_array_lookup",
+      "build_cardinality": 4167491,
+      "notes": "Resolve n.name only when computing MIN candidates."
     }
   ],
   "filters": [
-    {"table": "info_type", "predicate": "info='genres'", "selectivity": 0.0088},
-    {"table": "info_type", "predicate": "info='votes'", "selectivity": 0.0088},
-    {"table": "keyword", "predicate": "keyword IN (7 literals)", "selectivity": 0.000052},
-    {"table": "name", "predicate": "gender='m'", "selectivity": 0.55},
-    {"table": "movie_info", "predicate": "info_type_id=it1_id AND info IN {6 genres}", "selectivity": 0.02},
-    {"table": "movie_info_idx", "predicate": "info_type_id=it2_id", "selectivity": 0.5},
-    {"table": "movie_keyword", "predicate": "keyword_id IN kw_ids", "selectivity": 0.00005},
-    {"table": "cast_info", "predicate": "note IN writer-set AND valid_persons[person_id]", "selectivity": 0.02}
+    {"table": "info_type", "predicate": "info = 'genres'", "selectivity": 0.0088},
+    {"table": "info_type", "predicate": "info = 'votes'", "selectivity": 0.0088},
+    {"table": "keyword", "predicate": "keyword IN (3 lits)", "selectivity": 2.24e-5},
+    {"table": "name", "predicate": "gender = 'm'", "selectivity": 0.55},
+    {"table": "movie_keyword", "predicate": "keyword_id ∈ kw_ids", "selectivity": 3e-5},
+    {"table": "movie_info_idx", "predicate": "info_type_id = it2_id", "selectivity": 0.18},
+    {"table": "movie_info", "predicate": "info_type_id = it1_id AND info ∈ {Horror,Thriller}", "selectivity": 0.01},
+    {"table": "cast_info", "predicate": "note ∈ writer-set AND valid_persons[pid-1]", "selectivity": 0.02}
   ],
   "data_structures": {
-    "it1_id": "int32 scalar",
-    "it2_id": "int32 scalar",
-    "kw_ids": "flat_hash_set<int32_t> (~7 entries)",
-    "valid_persons": "std::vector<uint64_t> bitset sized for name rows (4167491)",
-    "writer_notes": "flat_hash_set<string_view> with length prefilter (5 entries)",
-    "mi_info_set": "flat_hash_set<string_view> with length prefilter (6 entries)",
-    "mk_offsets": "mmap int32[2528314] (movie_keyword__movie_id__offsets.bin)",
-    "mi_idx_offsets": "mmap int32[2528314] (movie_info_idx__movie_id__offsets.bin)",
-    "mi_offsets": "mmap int32[2528314] (movie_info__movie_id__offsets.bin)",
-    "ci_offsets": "mmap int32[2528314] (cast_info__movie_id__offsets.bin)",
-    "per_thread_mins": "struct { string mi_info; string mi_idx_info; string n_name; string t_title; }"
+    "kw_ids": "flat_hash_set<int32> (3 entries)",
+    "mi_info_set": "flat_hash_set<string_view> (2 entries: 'Horror','Thriller')",
+    "writer_notes_set": "flat_hash_set<string_view> (5 entries) + length prefilter",
+    "valid_persons": "std::vector<uint64_t> bitset sized 4167491",
+    "mk_index": "offsets_only int32[2528314] (movie_keyword__movie_id)",
+    "mi_idx_index": "offsets_only int32[2528314] (movie_info_idx__movie_id)",
+    "mi_index": "offsets_only int32[2528314] (movie_info__movie_id)",
+    "ci_index": "offsets_only int32[2528314] (cast_info__movie_id)",
+    "name_pk_offsets": "name.off (dense PK direct index)",
+    "aggregation": "4 scalar running MINs (string_view-compared, materialized on update)"
   },
   "parallelism": {
-    "strategy": "morsel_driven over title id range [1..2528312]",
-    "threads": "auto(nproc) = 12",
-    "morsel_size": 8192,
-    "merge": "final reduce of 4 string mins across threads"
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "morsel": "title v-range slices (e.g., 16K-row chunks)",
+    "reduction": "per-thread local 4-MIN structs, final merge"
   },
   "indexes": [
-    {"index": "movie_keyword__movie_id__offsets", "purpose": "per-movie mk range scan"},
-    {"index": "movie_info_idx__movie_id__offsets", "purpose": "per-movie mi_idx range scan"},
-    {"index": "movie_info__movie_id__offsets", "purpose": "per-movie mi range scan"},
-    {"index": "cast_info__movie_id__offsets", "purpose": "per-movie ci range scan"},
-    {"index": "name.off (dense PK by id)", "purpose": "fetch name.name for MIN(n.name)"}
+    {"index": "movie_keyword__movie_id", "purpose": "join_lookup (per-v range)"},
+    {"index": "movie_info_idx__movie_id", "purpose": "join_lookup (per-v range)"},
+    {"index": "movie_info__movie_id", "purpose": "join_lookup (per-v range)"},
+    {"index": "cast_info__movie_id", "purpose": "join_lookup (per-v range)"},
+    {"index": "name.off (dense PK)", "purpose": "direct fetch of n.name"}
   ],
-  "aggregation": "scalar_min_4_strings",
-  "min_projection": {
-    "movie_budget": "MIN(mi.info) — track lex-min across qualifying mi rows for surviving movies",
-    "movie_votes": "MIN(mi_idx.info) — track lex-min across qualifying mi_idx rows",
-    "male_writer": "MIN(n.name) — track lex-min across qualifying ci.person_id name lookups",
-    "violent_movie_title": "MIN(t.title) — track lex-min across surviving titles"
-  },
+  "aggregation": "scalar_min_4cols",
+  "execution_notes": [
+    "Driver: scan title v = 1..2528312 (no predicate).",
+    "Per v: short-circuit in cheapest-first order: mk → mi_idx → mi → ci.",
+    "If any fact yields zero satisfying row, skip v (continue).",
+    "Update MINs only when ALL four facts have ≥1 match for v.",
+    "MIN(mi.info), MIN(mi_idx.info): track the lexicographically smallest qualifying value seen so far across all qualifying (v, row).",
+    "MIN(n.name): resolved via name.off[person_id-1] dense lookup.",
+    "MIN(t.title): updated from t.title[v] when v qualifies."
+  ],
   "output": {"order_by": [], "limit": 1},
-  "execution_target": "cpp",
-  "notes": [
-    "Driver = title (no predicate); all 2528312 movies enter the loop but most die at mk probe (kw_ids selectivity ~5e-5).",
-    "Fact probe order chosen by cheapest+most-selective first: mk → mi_idx → mi → ci.",
-    "All fact probes use index_nested_loop with offsets — no hash join build; cache-friendly sequential scans within per-movie ranges.",
-    "Early exit per fact: once one qualifying row is found, we have semi-match BUT must still scan all rows for MIN projection of that fact's projected column (mi.info, mi_idx.info, ci → n.name). So semi-exit only after fact has been fully scanned to update running min.",
-    "Important: for MIN correctness we cannot early-exit on first qualifying row per fact for the projected column — must scan full per-movie range for mi, mi_idx, ci. Early-exit applies to gating (whether movie survives), tracked by a boolean."
-  ]
+  "execution_target": "cpp"
 }

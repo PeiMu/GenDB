@@ -2,138 +2,110 @@
   "query_id": "Q25b",
   "pipeline": [
     "resolve_dims",
-    "prepass_valid_persons",
-    "scan_title_driver",
-    "per_survivor_fact_joins",
-    "running_min_aggregation"
+    "build_valid_persons_bitset",
+    "scan_title_driver_filtered",
+    "per_survivor_fact_probes",
+    "aggregate_min"
   ],
   "dim_resolution": [
     {
-      "step": "scan info_type twice",
+      "step": "info_type_scan",
+      "table": "info_type",
       "outputs": ["it1_id (info='genres')", "it2_id (info='votes')"],
-      "cardinality": 113,
-      "structure": "scalar int32"
+      "strategy": "single_pass_scan",
+      "cardinality": 113
     },
     {
-      "step": "scan keyword",
-      "outputs": ["kw_ids ∈ {'murder','blood','gore','death','female-nudity'}"],
-      "cardinality": 134170,
-      "expected_matches": 5,
-      "structure": "small flat_array<int32> (linear scan, 5 elements)"
+      "step": "keyword_scan",
+      "table": "keyword",
+      "outputs": ["kw_ids (3 ids from IN-set)"],
+      "strategy": "single_pass_scan_collect_into_small_sorted_array",
+      "cardinality": 134170
     },
     {
-      "step": "resolve gender dict",
-      "outputs": ["m_code (uint8 dict code for 'm')"],
-      "structure": "scalar uint8"
+      "step": "gender_dict_resolve",
+      "table": "name",
+      "outputs": ["m_code (dict code for 'm')"],
+      "strategy": "dict_lookup_in_gender.dict"
     },
     {
-      "step": "prepass name → valid_persons",
-      "input": "name.gender == m_code",
+      "step": "build_valid_persons",
+      "table": "name",
+      "outputs": ["valid_persons: bitset(4167491)"],
+      "strategy": "parallel_scan_gender_codes_equal_to_m_code",
       "cardinality_in": 4167491,
-      "cardinality_out": 2200000,
-      "structure": "bitset(4167491) indexed by name.id-1",
-      "parallel": true
-    }
-  ],
-  "join_order": [
-    {
-      "build": "title (driver after filters)",
-      "probe": "—",
-      "type": "driver",
-      "strategy": "parallel_scan",
-      "filters": [
-        "production_year > 2010",
-        "title.dat[off[v-1]] == 'M' (single-byte prefix; Q25b template is 'M%')",
-        "title length > 0 (skip NULL)"
-      ],
-      "build_cardinality_pre_filter": 2528312,
-      "build_cardinality_post_filter": 80000,
-      "notes": "Drive on title id v; year filter + single-byte prefix memcmp."
-    },
-    {
-      "build": "movie_keyword via offsets_only",
-      "probe": "mk rows for movie_id=v",
-      "type": "semi",
-      "strategy": "index_nested_loop",
-      "predicate": "kw_ids.contains(mk.keyword_id) via linear scan of 5-element array",
-      "notes": "Cheapest fact: tiny dim set; prune most surviving titles fast."
-    },
-    {
-      "build": "movie_info_idx via offsets_only",
-      "probe": "mi_idx rows for movie_id=v",
-      "type": "inner",
-      "strategy": "index_nested_loop",
-      "predicate": "info_type_id == it2_id",
-      "projection": "track running MIN(mi_idx.info) per matching row",
-      "notes": "Small fact; single info_type_id equality."
-    },
-    {
-      "build": "movie_info via offsets_only",
-      "probe": "mi rows for movie_id=v",
-      "type": "inner",
-      "strategy": "index_nested_loop",
-      "predicate": "info_type_id == it1_id AND info == 'Horror' (Q25b template single literal; runtime plan supports IN-set)",
-      "projection": "track running MIN(mi.info)",
-      "notes": "Larger fact but cheap inner-loop with two equality checks."
-    },
-    {
-      "build": "cast_info via offsets_only",
-      "probe": "ci rows for movie_id=v",
-      "type": "inner",
-      "strategy": "index_nested_loop",
-      "predicate": "note ∈ writer-set AND valid_persons[ci.person_id-1]",
-      "projection": "fetch n.name via direct PK index, track MIN(n.name)",
-      "notes": "Largest fact, kept last; note filter is a hashed/inlined 5-string set test on dict codes."
+      "selectivity": 0.55,
+      "notes": "Bit set on (id-1) when gender code == m_code"
     }
   ],
   "filters": [
-    {"table": "title", "predicate": "production_year > 2010", "selectivity": 0.18},
-    {"table": "title", "predicate": "title LIKE 'M%' (single-byte)", "selectivity": 0.07},
-    {"table": "name", "predicate": "gender = 'm'", "selectivity": 0.53},
-    {"table": "info_type", "predicate": "info = 'genres'", "selectivity": 0.009},
-    {"table": "info_type", "predicate": "info = 'votes'", "selectivity": 0.009},
-    {"table": "keyword", "predicate": "keyword ∈ 5-set", "selectivity": 3.7e-5},
-    {"table": "movie_info", "predicate": "info_type_id=it1 AND info='Horror'", "selectivity": 0.003},
-    {"table": "movie_info_idx", "predicate": "info_type_id=it2", "selectivity": 0.5},
-    {"table": "cast_info", "predicate": "note ∈ writer-set", "selectivity": 0.06}
+    {"table": "title", "predicate": "production_year > 2010", "selectivity": 0.25},
+    {"table": "title", "predicate": "title LIKE 'Vampire%' (multi-byte memcmp on first 7 bytes)", "selectivity": 0.00005, "notes": "Parameterized: prefix length varies; read first N bytes of title.dat at title.off[v-1]; skip empty/NULL titles"},
+    {"table": "name", "predicate": "gender = 'm'", "selectivity": 0.55},
+    {"table": "cast_info", "predicate": "note IN writer-set (5 values)", "selectivity": 0.04},
+    {"table": "movie_info", "predicate": "info_type_id == it1_id AND info IN 6-set (Q25b)", "selectivity": 0.01},
+    {"table": "movie_info_idx", "predicate": "info_type_id == it2_id", "selectivity": 0.5},
+    {"table": "movie_keyword", "predicate": "keyword_id IN kw_ids (3 ids)", "selectivity": 0.00002}
+  ],
+  "join_order": [
+    {
+      "build": "title(filtered: year>2010 AND title prefix match)",
+      "probe": "movie_keyword via offsets_only(movie_keyword__movie_id)",
+      "type": "semi",
+      "strategy": "index_nested_loop_with_small_array_membership",
+      "build_cardinality": 130,
+      "notes": "Cheapest fact probe first: kw_ids has 3 entries — linear scan or sorted-3 membership check. Most title survivors die here."
+    },
+    {
+      "build": "title∩mk_survivors",
+      "probe": "movie_info_idx via offsets_only(movie_info_idx__movie_id)",
+      "type": "semi",
+      "strategy": "index_nested_loop_filter_info_type_id_eq_it2_id",
+      "build_cardinality": 30,
+      "notes": "Project mi_idx.info for MIN agg while scanning matched rows"
+    },
+    {
+      "build": "title∩mk∩mi_idx",
+      "probe": "movie_info via offsets_only(movie_info__movie_id)",
+      "type": "semi",
+      "strategy": "index_nested_loop_filter_info_type_id_eq_it1_id_AND_info_in_set",
+      "build_cardinality": 20,
+      "notes": "Project mi.info for MIN agg. info IN-set membership via small hash_set or sorted-array"
+    },
+    {
+      "build": "title∩mk∩mi_idx∩mi",
+      "probe": "cast_info via offsets_only(cast_info__movie_id)",
+      "type": "inner",
+      "strategy": "index_nested_loop_filter_note_in_writerset_AND_valid_persons[person_id-1]",
+      "build_cardinality": 10,
+      "notes": "Apply note IN-set then bitset test; on success fetch n.name via direct index for MIN agg"
+    }
   ],
   "data_structures": {
     "it1_id": "int32 scalar",
     "it2_id": "int32 scalar",
-    "kw_ids": "flat_array<int32> (size ≤ 5, linear scan)",
-    "writer_note_set": "inline 5-entry switch on dict code if note dict-encoded, else 5 std::string_view comparisons",
-    "valid_persons": "bitset(name_rows) indexed by name.id-1",
-    "title_offsets": "mmap title.off (uint32)",
-    "fact_indexes": "mmap int32 offsets arrays (movie_info / movie_info_idx / movie_keyword / cast_info)",
-    "running_mins": "4 std::string_view scalars (mi.info, mi_idx.info, n.name, t.title) protected by per-thread locals then reduced"
+    "kw_ids": "sorted int32[3] (linear scan membership)",
+    "m_code": "int8/int16 dict code",
+    "valid_persons": "bitset(4167491) ~512KB",
+    "writer_notes": "small flat_array<string_view>[5] with first-byte hash or linear strcmp",
+    "mi_info_set": "small sorted_array<string_view>[6] (Q25b template) — implement as generic IN-set membership",
+    "title_prefix": "const byte[] prefix from parameter; memcmp first N bytes",
+    "aggregation": "4 scalar MIN slots: (mi_info_min, mi_idx_info_min, n_name_min, t_title_min) as std::string"
   },
   "parallelism": {
-    "strategy": "morsel_driven",
-    "driver": "title scan partitioned by id range across threads",
+    "strategy": "morsel_driven_over_title_driver",
     "threads": "auto(nproc)",
-    "thread_locals": "per-thread mins for the 4 MIN aggregates; final reduce at end",
-    "prepass_parallel": "valid_persons bitset built with parallel scan over name table"
+    "morsel_size": 100000,
+    "notes": "Each thread maintains thread-local 4 MIN strings; final reduction across threads. valid_persons bitset built in parallel before driver phase."
   },
   "indexes": [
-    {"index": "movie_info__movie_id (offsets_only)", "purpose": "join_lookup"},
-    {"index": "movie_info_idx__movie_id (offsets_only)", "purpose": "join_lookup"},
     {"index": "movie_keyword__movie_id (offsets_only)", "purpose": "join_lookup"},
+    {"index": "movie_info_idx__movie_id (offsets_only)", "purpose": "join_lookup"},
+    {"index": "movie_info__movie_id (offsets_only)", "purpose": "join_lookup"},
     {"index": "cast_info__movie_id (offsets_only)", "purpose": "join_lookup"},
-    {"index": "name dense PK", "purpose": "direct fetch of n.name"}
+    {"index": "name.id dense-PK direct (id-1)", "purpose": "person_id -> gender/name fetch"}
   ],
-  "aggregation": "scalar_min_reduce",
-  "output": {
-    "projections": [
-      "MIN(mi.info) AS movie_budget",
-      "MIN(mi_idx.info) AS movie_votes",
-      "MIN(n.name) AS male_writer",
-      "MIN(t.title) AS violent_movie_title"
-    ],
-    "order_by": [],
-    "limit": 1
-  },
-  "min_semantics": {
-    "note": "Only emit/update MINs when a full witness exists for the surviving title (i.e. at least one mk match, one mi_idx match, one mi match, one ci match with valid male writer). Update strategy: for each (title v) that passes all four fact joins with at least one row each, update title-min once and walk mi/mi_idx/ci matches updating their respective mins; n.name updated per matching ci row."
-  },
+  "aggregation": "scalar_min_4_slots",
+  "output": {"order_by": [], "limit": 1, "projection": ["MIN(mi.info)", "MIN(mi_idx.info)", "MIN(n.name)", "MIN(t.title)"]},
   "execution_target": "cpp"
 }
