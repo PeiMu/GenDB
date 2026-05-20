@@ -6,9 +6,7 @@
 - g++ with C++17 and OpenMP support
 - Python 3 with venv
 - IMDB CSV data at `/home/pei/Project/benchmarks/imdb_job-postgres/csv/` (~3.7 GB)
-- One of:
-  - Claude Code CLI with active subscription (for `claude-code` provider)
-  - GLM API key from Zhipu AI (for `glm` provider)
+- Claude Code CLI with active subscription
 
 ## Directory Layout
 
@@ -38,13 +36,16 @@ const q = parseQueryFile(readFileSync('benchmarks/imdb-job/queries.sql', 'utf-8'
 console.log(q.length, 'queries:', q[0].id, '...', q[q.length-1].id);
 "
 
-# Confirm providers are registered
+# Confirm provider is registered
 node -e "
 import('./src/gendb/providers/index.mjs').then(m =>
   console.log('Providers:', m.getAvailableProviders())
 );
 "
-# Expected: [ 'claude', 'codex', 'claude-code', 'glm' ]
+# Expected: [ 'claude', 'codex', 'claude-code' ]
+
+# Confirm Claude Code CLI is authenticated
+claude --version
 ```
 
 ## Step 1: Generate Ground Truth
@@ -64,55 +65,40 @@ Expected output: 113 CSV files in `benchmarks/imdb-job/query_results/`, all quer
 
 ## Step 2: Run GenDB Pipeline
 
-### Option A: Claude Code CLI Provider
-
-Uses your existing Claude Code subscription. No API key needed.
+Close other Claude Code sessions (IDE extensions, terminal sessions) first — the spawned agents share your subscription's rate limit.
 
 ```bash
-# Full run (all 113 queries)
+# Conservative first run (1 query at a time, fewer iterations)
 node src/gendb/orchestrator.mjs \
   --benchmark imdb-job \
   --sf 1 \
-  --agent-provider claude-code
+  --agent-provider claude-code \
+  --max-concurrent 1 \
+  --max-iterations 2
 
-# Conservative first run (lower concurrency, fewer optimization iterations)
+# Once validated, scale up slightly
 node src/gendb/orchestrator.mjs \
   --benchmark imdb-job \
   --sf 1 \
   --agent-provider claude-code \
   --max-concurrent 2 \
   --max-iterations 3
-```
-
-### Option B: GLM Provider
-
-Requires a GLM API key from [Zhipu AI](https://open.bigmodel.cn/).
-
-```bash
-export GLM_API_KEY=your_key_here
 
 # Full run
 node src/gendb/orchestrator.mjs \
   --benchmark imdb-job \
   --sf 1 \
-  --agent-provider glm
-
-# With specific model
-node src/gendb/orchestrator.mjs \
-  --benchmark imdb-job \
-  --sf 1 \
-  --agent-provider glm \
-  --model glm-5.1
+  --agent-provider claude-code
 ```
 
 ### Common Options
 
 ```
 --max-iterations N        Max optimization iterations per query (default: 5)
---max-concurrent N        Max parallel query optimization (default: 22)
+--max-concurrent N        Max parallel query optimization (default: 22, recommend 1–3 for claude-code)
 --stall-threshold N       Stop after N non-improving iterations (default: 5)
 --optimization-target X   "hot" (avg of repeated runs) or "cold" (single run)
---model M                 Override model for all agents
+--model M                 Override model for all agents (opus, sonnet, haiku)
 --reoptimize <id|all>     Force re-optimization of specific or all queries
 ```
 
@@ -169,11 +155,11 @@ cat output/imdb-job-sf1/Q1a/best/execution_results.json
 
 ## Troubleshooting
 
-### Claude Code provider: "Not logged in"
+### "Not logged in"
 Run `claude auth` to authenticate your Claude Code CLI.
 
-### GLM provider: rate limiting
-The provider auto-retries on 429 responses with a 5s backoff. If persistent, reduce `--max-concurrent` to 1–2.
+### Rate limiting
+The `claude-code` provider spawns `claude -p` subprocesses that share your subscription's rate limit. Keep `--max-concurrent` at 1–3. Close other Claude Code sessions before running.
 
 ### Storage Designer timeout
 Data ingestion for 3.7 GB of IMDB data takes time. The storage designer has a 45-minute timeout. If it fails, re-run — Phase 1 artifacts are persisted and reused on subsequent runs.

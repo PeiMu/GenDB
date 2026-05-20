@@ -2472,7 +2472,7 @@ async function executeQuery(query, iterDir, cppPath, gendbDir, groundTruthDir, r
       const compareArgs = [COMPARE_TOOL_PATH, groundTruthDir, resultsDir];
       if (targetBenchmark === "tpc-h") {
         compareArgs.push("--tpch");
-      } else {
+      } else if (targetBenchmark === "sec-edgar") {
         compareArgs.push("--financial");
       }
       const valOutput = await runProcess("python3", compareArgs, { cwd: iterDir, timeout: 60000 });
