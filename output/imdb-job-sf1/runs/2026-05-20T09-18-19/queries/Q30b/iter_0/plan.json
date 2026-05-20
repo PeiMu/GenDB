@@ -1,0 +1,156 @@
+{
+  "query_id": "Q30b",
+  "pipeline": [
+    "resolve_dims",
+    "scan_title_driver",
+    "probe_complete_cast",
+    "probe_movie_keyword",
+    "probe_movie_info",
+    "probe_movie_info_idx",
+    "probe_cast_info_writers",
+    "aggregate_min"
+  ],
+  "dim_resolution": [
+    {
+      "table": "comp_cast_type",
+      "filter": "kind IN ('cast','crew')",
+      "output": "cct1_ids (small int32 set, expected size 2)",
+      "structure": "flat_array<int32>"
+    },
+    {
+      "table": "comp_cast_type",
+      "filter": "kind='complete+verified'",
+      "output": "cct2_id (scalar int32)",
+      "structure": "scalar"
+    },
+    {
+      "table": "info_type",
+      "filter": "info='genres'",
+      "output": "it1_id (scalar int32)",
+      "structure": "scalar"
+    },
+    {
+      "table": "info_type",
+      "filter": "info='votes'",
+      "output": "it2_id (scalar int32)",
+      "structure": "scalar"
+    },
+    {
+      "table": "keyword",
+      "filter": "keyword IN ('murder','violence','blood','gore','death','female-nudity','hospital')",
+      "output": "k_ids (int32 set, expected ~7)",
+      "structure": "flat_array<int32> + small hash_set<int32>"
+    },
+    {
+      "table": "name",
+      "filter": "gender = 'm' (resolve dict code first)",
+      "output": "m_code (int8) — used per-row probe via name.gender.bin",
+      "structure": "scalar dict code"
+    }
+  ],
+  "driver": {
+    "table": "title",
+    "scan_order": "row order (i in [0, 2528312))",
+    "filters": [
+      {
+        "predicate": "production_year[i] > 2000 (skip INT32_MIN nulls)",
+        "selectivity": 0.4
+      },
+      {
+        "predicate": "title LIKE '%Freddy%' OR title LIKE '%Jason%' OR title LIKE 'Saw%'",
+        "selectivity": 0.0003,
+        "implementation": "length-prefilter then memmem for Freddy/Jason; memcmp first 3 bytes for Saw"
+      }
+    ],
+    "expected_survivors": 300,
+    "notes": "Title-LIKE is extremely selective; combined survivors expected in the low hundreds. Drives all downstream probes."
+  },
+  "join_order": [
+    {
+      "build": "title_driver_set (mv list, ~300)",
+      "probe": "complete_cast (offsets[mv]..offsets[mv+1])",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "predicate": "subject_id IN cct1_ids AND status_id == cct2_id",
+      "build_cardinality": 300,
+      "notes": "Use complete_cast__movie_id offsets_only index; semi-join — first match suffices."
+    },
+    {
+      "build": "surviving mv after cc",
+      "probe": "movie_keyword (offsets[mv]..offsets[mv+1])",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "predicate": "keyword_id IN k_ids",
+      "build_cardinality": 200,
+      "notes": "Use movie_keyword__movie_id offsets_only; k_ids is tiny (≤7), do linear membership."
+    },
+    {
+      "build": "surviving mv after mk",
+      "probe": "movie_info (offsets[mv]..offsets[mv+1])",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "predicate": "info_type_id == it1_id AND info IN {'Horror','Thriller'}",
+      "build_cardinality": 100,
+      "notes": "Collect mi.info into running MIN; require at least one match."
+    },
+    {
+      "build": "surviving mv after mi",
+      "probe": "movie_info_idx (offsets[mv]..offsets[mv+1])",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "predicate": "info_type_id == it2_id",
+      "build_cardinality": 50,
+      "notes": "Collect mi_idx.info into running MIN; require ≥1 match."
+    },
+    {
+      "build": "surviving mv after mi_idx",
+      "probe": "cast_info (offsets[mv]..offsets[mv+1])",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "predicate": "note IN writer_set AND name.gender[pid-1] == m_code",
+      "build_cardinality": 50,
+      "notes": "Per row: equality-check note against 5 writer strings (use length+first-byte prefilter, then memcmp); fetch pid; check gender; capture n.name for MIN."
+    }
+  ],
+  "filters": [
+    {"table": "title", "predicate": "production_year > 2000", "selectivity": 0.4},
+    {"table": "title", "predicate": "title LIKE Freddy|Jason|Saw", "selectivity": 0.0003},
+    {"table": "complete_cast", "predicate": "subject_id IN cct1 AND status_id == cct2", "selectivity": 0.05},
+    {"table": "movie_keyword", "predicate": "keyword_id IN k_ids", "selectivity": 0.02},
+    {"table": "movie_info", "predicate": "info_type_id == it1_id AND info IN {Horror,Thriller}", "selectivity": 0.01},
+    {"table": "movie_info_idx", "predicate": "info_type_id == it2_id", "selectivity": 0.5},
+    {"table": "cast_info", "predicate": "note IN writer_set", "selectivity": 0.02},
+    {"table": "name", "predicate": "gender = m", "selectivity": 0.55}
+  ],
+  "data_structures": {
+    "cct1_ids": "flat_array<int32>[2] (linear scan)",
+    "cct2_id": "scalar int32",
+    "it1_id": "scalar int32",
+    "it2_id": "scalar int32",
+    "k_ids": "flat_array<int32>[≤7] (linear scan)",
+    "writer_notes": "flat_array<string_view>[5] (length+memcmp linear scan)",
+    "title_driver": "implicit row stream (no materialization needed beyond per-iteration MIN candidate)",
+    "min_aggregators": "4 × string_view running min (movie_budget, movie_votes, writer, complete_gore_movie)"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven over title row range",
+    "threads": "auto(nproc)",
+    "morsel_size": 65536,
+    "reduction": "per-thread local min, final merge across threads",
+    "notes": "Driver scan dominates cost; LIKE+probes per surviving mv are cheap. Parallelize the title scan; each thread independently performs cascade of index probes and updates thread-local mins."
+  },
+  "indexes": [
+    {"index": "complete_cast__movie_id__offsets", "purpose": "per-mv range lookup"},
+    {"index": "movie_keyword__movie_id__offsets", "purpose": "per-mv range lookup"},
+    {"index": "movie_info__movie_id__offsets", "purpose": "per-mv range lookup"},
+    {"index": "movie_info_idx__movie_id__offsets", "purpose": "per-mv range lookup"},
+    {"index": "cast_info__movie_id__offsets", "purpose": "per-mv range lookup"}
+  ],
+  "aggregation": "scalar_min (4 string mins, thread-local then merged)",
+  "output": {
+    "columns": ["movie_budget", "movie_votes", "writer", "complete_gore_movie"],
+    "order_by": [],
+    "limit": 1
+  },
+  "execution_target": "cpp"
+}

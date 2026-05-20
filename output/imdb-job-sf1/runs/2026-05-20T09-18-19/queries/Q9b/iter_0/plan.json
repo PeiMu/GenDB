@@ -1,0 +1,101 @@
+{
+  "query_id": "Q9b",
+  "pipeline": [
+    "resolve_dict_codes",
+    "scan_name_filter",
+    "for_each_pid_probe_cast_info_csr",
+    "filter_ci_role_and_note_and_person_role",
+    "lookup_title_year",
+    "probe_movie_companies_range",
+    "filter_mc_note_and_company_country",
+    "lookup_char_name",
+    "scan_aka_name_range",
+    "min_aggregation"
+  ],
+  "join_order": [
+    {
+      "build": "name(gender=f AND name LIKE '%Angel%')",
+      "probe": "cast_info via CSR on person_id",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 300,
+      "notes": "Tight predicate; expected low hundreds of pids. Drives the entire pipeline."
+    },
+    {
+      "build": "filtered ci rows (role_id=actress, note='(voice)', person_role_id!=INT32_MIN)",
+      "probe": "title via dense-PK deref on movie_id",
+      "type": "inner",
+      "strategy": "direct_array",
+      "build_cardinality": 5000,
+      "notes": "title.production_year[movie_id-1] in [2007,2010]"
+    },
+    {
+      "build": "surviving (pid, movie_id) pairs",
+      "probe": "movie_companies via offsets_only on movie_id",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 2000,
+      "notes": "Range scan over mc rows for each movie_id; check note LIKE patterns AND cn country_code[company_id-1]==us_code"
+    },
+    {
+      "build": "char_name.id = ci.person_role_id",
+      "probe": "char_name dense-PK",
+      "type": "inner",
+      "strategy": "direct_array",
+      "build_cardinality": 1,
+      "notes": "char_name.name[chn_id-1] direct deref"
+    },
+    {
+      "build": "aka_name via offsets_only on person_id",
+      "probe": "pid",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 300,
+      "notes": "Range scan over aka_name rows for each pid; required by FROM-list join an.person_id=n.id"
+    }
+  ],
+  "filters": [
+    {"table": "role_type", "predicate": "role = 'actress'", "selectivity": 0.083},
+    {"table": "company_name", "predicate": "country_code = '[us]'", "selectivity": 0.35},
+    {"table": "name", "predicate": "gender = 'f' AND name LIKE '%Angel%'", "selectivity": 0.00007},
+    {"table": "cast_info", "predicate": "role_id = rt_id_actress AND note = '(voice)' AND person_role_id != INT32_MIN", "selectivity": 0.003},
+    {"table": "title", "predicate": "production_year BETWEEN 2007 AND 2010", "selectivity": 0.10},
+    {"table": "movie_companies", "predicate": "note LIKE '%(200%)%' AND (note LIKE '%(USA)%' OR note LIKE '%(worldwide)%')", "selectivity": 0.03}
+  ],
+  "data_structures": {
+    "dict_codes": "scalar ints (rt_id_actress, us_code, f_code)",
+    "pid_list": "std::vector<int32_t> (low hundreds)",
+    "ci_csr": "pre_built_index (cast_info__person_id offsets+rowids)",
+    "mc_offsets": "pre_built_index (movie_companies__movie_id offsets_only)",
+    "aka_offsets": "pre_built_index (aka_name__person_id offsets_only)",
+    "title_year_array": "flat_array (title.production_year.bin, dense-PK)",
+    "cn_country_array": "flat_array (company_name.country_code.bin, dense-PK)",
+    "aggregation": "4 scalar std::string MINs (lexicographic)"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "notes": "Parallelize the name scan to find pids; per-pid downstream work is also parallelizable since pids are independent. Use thread-local MIN strings, reduce at end."
+  },
+  "indexes": [
+    {"index": "cast_info__person_id (CSR)", "purpose": "join_lookup: enumerate ci rows for each pid"},
+    {"index": "movie_companies__movie_id (offsets_only)", "purpose": "join_lookup: enumerate mc rows for each movie_id"},
+    {"index": "aka_name__person_id (offsets_only)", "purpose": "join_lookup: enumerate aka rows for each pid"}
+  ],
+  "aggregation": "scalar_min_reduction",
+  "output": {"order_by": [], "limit": 1},
+  "execution_target": "cpp",
+  "implementation_notes": [
+    "Resolve rt_id_actress, us_code, f_code by linear scan of dict offsets/data.",
+    "Step 1: parallel scan name/gender.bin and name/name.{off,dat}; collect pids (1-based row id = i+1) where gender==f_code and name substring contains 'Angel'.",
+    "Step 2: for each pid, lo=cipid_off[pid], hi=cipid_off[pid+1]; iterate r in [lo,hi).",
+    "Step 3: check ci.role_id[r]==rt_id_actress; check ci.note offset length == 7 && memcmp('(voice)',7)==0; check ci.person_role_id[r] != INT32_MIN.",
+    "Step 4: mv = ci.movie_id[r]; require title.production_year[mv-1] in [2007,2010].",
+    "Step 5: iterate mc rows in [mc_off[mv], mc_off[mv+1]); for each, check note LIKE '%(200%)%' AND (LIKE '%(USA)%' OR LIKE '%(worldwide)%') AND cn.country_code[mc.company_id[k]-1]==us_code. If any match, mark movie qualified.",
+    "Step 6: chn_id = ci.person_role_id[r]; candidate char_name name at row chn_id-1.",
+    "Step 7: iterate aka_name range [aka_off[pid], aka_off[pid+1]); if non-empty, candidate aka name = min over range; require non-empty for join.",
+    "Step 8: update 4 MINs only when full match found. Use thread-local MIN strings; final reduction picks lexicographic min.",
+    "LIKE matching: simple memmem / naive substring search on raw note bytes — patterns are short literals.",
+    "Memory budget: title.production_year ~10MB, cn.country_code ~470KB, ci CSR ~160MB (mmap), mc offsets ~10MB, aka offsets ~16MB. Well within 62GB."
+  ]
+}

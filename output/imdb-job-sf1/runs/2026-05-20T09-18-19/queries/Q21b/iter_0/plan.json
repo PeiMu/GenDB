@@ -1,0 +1,114 @@
+{
+  "query_id": "Q21b",
+  "pipeline": [
+    "resolve_dims",
+    "build_cn_bitset",
+    "build_seq_movies_bitset",
+    "drive_movie_link_by_link_type",
+    "per_movie_probe_title_year",
+    "probe_movie_info_germany",
+    "probe_movie_companies",
+    "aggregate_min"
+  ],
+  "dim_resolution": [
+    {
+      "table": "company_type",
+      "predicate": "kind='production companies'",
+      "output": "ct_pc (scalar int32 id)",
+      "method": "linear_scan(4 rows)"
+    },
+    {
+      "table": "keyword",
+      "predicate": "keyword='sequel'",
+      "output": "k_sequel (scalar int32 id)",
+      "method": "linear_scan(134170 rows, equality on varlen)"
+    },
+    {
+      "table": "link_type",
+      "predicate": "link LIKE '%follow%'",
+      "output": "LT_ids (small std::vector<int32_t>, expected ~2-4 ids)",
+      "method": "linear_scan(18 rows, memmem)"
+    },
+    {
+      "table": "company_name",
+      "predicate": "country_code != '[pl]' AND (name LIKE '%Film%' OR name LIKE '%Warner%')",
+      "output": "CN_ids bitset(234998), also keep raw name string_views for MIN aggregation",
+      "method": "linear_scan with memmem; single pass"
+    }
+  ],
+  "join_order": [
+    {
+      "build": "movie_keyword filtered by k_sequel via CSR keyword_id",
+      "probe": "title (via movie_id)",
+      "type": "semi",
+      "strategy": "bitset",
+      "build_cardinality": 30000,
+      "notes": "seq_movies bitset sized title.rows=2528313; populate by walking movie_keyword__keyword_id CSR rowids for k_sequel and reading movie_id at each row"
+    },
+    {
+      "build": "movie_link filtered by link_type_id IN LT_ids via CSR",
+      "probe": "title",
+      "type": "inner",
+      "strategy": "csr_walk",
+      "build_cardinality": 5000,
+      "notes": "Driver: iterate LT_ids; for each lt walk movie_link__link_type_id CSR rowids. For each ml row read movie_id; this is the candidate mv set (small, ~few thousand). Also retain lt -> link string for MIN(lt.link)."
+    },
+    {
+      "build": "candidate mv set",
+      "probe": "title.production_year[mv-1]",
+      "type": "filter",
+      "strategy": "direct_array_lookup",
+      "notes": "Reject mv where production_year not in [2000,2010] or equals INT32_MIN. Also require seq_movies[mv]."
+    },
+    {
+      "build": "MI_set = {'Germany','German'} hash_set<string_view>",
+      "probe": "movie_info rows for mv via offsets_only index",
+      "type": "semi",
+      "strategy": "offsets_walk_with_set_probe",
+      "build_cardinality": 2,
+      "notes": "For each surviving mv, walk movie_info__movie_id offsets [off[mv-1], off[mv]); for each row check info string_view in MI_set. Short-circuit on first match."
+    },
+    {
+      "build": "CN_ids bitset + ct_pc scalar",
+      "probe": "movie_companies rows for mv via offsets_only index",
+      "type": "inner",
+      "strategy": "offsets_walk_with_bitset_probe",
+      "notes": "For each surviving mv, walk movie_companies__movie_id offsets [off[mv-1], off[mv]); per row: note empty AND company_type_id==ct_pc AND CN_ids[company_id]. Track cn.name string_view via cn id."
+    }
+  ],
+  "filters": [
+    {"table": "company_name", "predicate": "country_code != '[pl]' AND (name LIKE '%Film%' OR name LIKE '%Warner%')", "selectivity": 0.02},
+    {"table": "company_type", "predicate": "kind='production companies'", "selectivity": 0.25},
+    {"table": "keyword", "predicate": "keyword='sequel'", "selectivity": 7.5e-06},
+    {"table": "link_type", "predicate": "link LIKE '%follow%'", "selectivity": 0.15},
+    {"table": "movie_companies", "predicate": "note IS NULL", "selectivity": 0.5},
+    {"table": "movie_info", "predicate": "info IN ('Germany','German')", "selectivity": 0.003},
+    {"table": "title", "predicate": "production_year BETWEEN 2000 AND 2010", "selectivity": 0.22},
+    {"table": "movie_link", "predicate": "link_type_id IN LT_ids", "selectivity": 0.15}
+  ],
+  "data_structures": {
+    "ct_pc": "int32_t scalar",
+    "k_sequel": "int32_t scalar",
+    "LT_ids": "std::vector<int32_t> (small)",
+    "LT_links": "std::vector<std::string_view> aligned with LT_ids for MIN aggregation",
+    "CN_ids": "std::vector<uint64_t> bitset, size=234998 bits",
+    "CN_names": "raw varlen view (no copy) for MIN(cn.name)",
+    "MI_set": "small flat array of 2 string_views + length-keyed compare (or std::array)",
+    "seq_movies": "std::vector<uint64_t> bitset, size=2528313 bits",
+    "aggregation": "three scalar string_view holders (min_cn_name, min_lt_link, min_title) with lexicographic update"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven_over_candidate_movies",
+    "threads": "auto(nproc)",
+    "notes": "After collecting candidate mv list from movie_link CSR walks (single-threaded; very small ~5K), partition mv list into morsels and parallelize per-mv probing. Each thread keeps thread-local MIN trio, merged at end."
+  },
+  "indexes": [
+    {"index": "movie_keyword__keyword_id (CSR)", "purpose": "build seq_movies bitset"},
+    {"index": "movie_link__link_type_id (CSR)", "purpose": "driver: collect candidate mv set per lt"},
+    {"index": "movie_info__movie_id (offsets_only)", "purpose": "per-mv range probe for info IN MI_set"},
+    {"index": "movie_companies__movie_id (offsets_only)", "purpose": "per-mv range probe for note/ct/company_id"}
+  ],
+  "aggregation": "scalar_min_three_columns",
+  "output": {"order_by": [], "limit": 1, "projections": ["MIN(cn.name)", "MIN(lt.link)", "MIN(t.title)"]},
+  "execution_target": "cpp"
+}

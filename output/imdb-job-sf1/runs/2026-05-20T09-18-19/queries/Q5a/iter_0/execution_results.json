@@ -1,0 +1,22 @@
+{
+  "compile": {
+    "status": "pass"
+  },
+  "run": {
+    "status": "pass",
+    "duration_ms": 7
+  },
+  "validation": {
+    "status": "pass"
+  },
+  "optimization_target": "hot",
+  "timing_ms": 4.78,
+  "hot_timing_ms": 4.78,
+  "operation_timings": {
+    "data_loading": 0.08,
+    "resolve_ct": 0,
+    "main_scan": 2.74,
+    "output": 0.07,
+    "total": 4.78
+  }
+}

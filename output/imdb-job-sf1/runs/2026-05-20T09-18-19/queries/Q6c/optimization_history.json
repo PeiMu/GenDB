@@ -1,0 +1,25 @@
+{
+  "query_id": "Q6c",
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 7.87,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 7.87,
+      "validation": "pass",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "data_loading": 0.08,
+        "resolve_keyword": 0.02,
+        "name_filter": 4.22,
+        "main_scan": 0.1,
+        "output": 0.07,
+        "total": 6.66
+      }
+    }
+  ]
+}

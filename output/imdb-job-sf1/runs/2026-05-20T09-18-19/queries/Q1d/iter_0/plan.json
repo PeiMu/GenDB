@@ -1,0 +1,98 @@
+{
+  "query_id": "Q1d",
+  "pipeline": [
+    "resolve_target_ct_id",
+    "resolve_target_it_id",
+    "scan_title_filter_year",
+    "probe_mc_via_offsets",
+    "filter_mc_company_type_and_note",
+    "probe_mi_idx_via_offsets",
+    "filter_mi_idx_info_type",
+    "aggregate_min"
+  ],
+  "join_order": [
+    {
+      "build": "company_type(kind='production companies')",
+      "probe": "scalar",
+      "type": "inner",
+      "strategy": "scalar_resolve",
+      "build_cardinality": 1,
+      "notes": "Scan 4-row company_type.kind to resolve target_ct_id (int32_t)."
+    },
+    {
+      "build": "info_type(info='bottom 10 rank')",
+      "probe": "scalar",
+      "type": "inner",
+      "strategy": "scalar_resolve",
+      "build_cardinality": 1,
+      "notes": "Scan 113-row info_type.info to resolve target_it_id (int32_t)."
+    },
+    {
+      "build": "title(production_year>2000)",
+      "probe": "movie_companies",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 700000,
+      "notes": "Driver: iterate title rows i; for surviving titles (year>2000, !=INT32_MIN) use movie_companies__movie_id offsets_only to access mc range for movie_id=i+1."
+    },
+    {
+      "build": "title(filtered) x mc(filtered)",
+      "probe": "movie_info_idx",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 200000,
+      "notes": "For each surviving (title,mc) pair, probe movie_info_idx__movie_id offsets_only on the same movie_id; filter by info_type_id == target_it_id. 'bottom 10 rank' is extremely rare so very few rows survive."
+    }
+  ],
+  "filters": [
+    {"table": "company_type", "predicate": "kind = 'production companies'", "selectivity": 0.25},
+    {"table": "info_type", "predicate": "info = 'bottom 10 rank'", "selectivity": 0.0088},
+    {"table": "title", "predicate": "production_year != INT32_MIN AND production_year > 2000", "selectivity": 0.28},
+    {"table": "movie_companies", "predicate": "company_type_id == target_ct_id", "selectivity": 0.25},
+    {"table": "movie_companies", "predicate": "note not NULL AND memmem(note,'(as Metro-Goldwyn-Mayer Pictures)') == NULL", "selectivity": 0.5, "notes": "Empty (NULL) notes fail NOT LIKE; only ~half of mc rows have a note."},
+    {"table": "movie_info_idx", "predicate": "info_type_id == target_it_id", "selectivity": 0.001}
+  ],
+  "data_structures": {
+    "target_ct_id": "int32_t scalar",
+    "target_it_id": "int32_t scalar",
+    "mc_movie_id_offsets": "pre_built_offsets_only_index (int32_t[N+1])",
+    "mi_idx_movie_id_offsets": "pre_built_offsets_only_index (int32_t[N+1])",
+    "aggregation": "scalar_min_accumulators (per-thread, merged at end)"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "morsel": "partition title rows into blocks of 100000 (title block size); each thread iterates its title range and probes mc/mi_idx index ranges independently; per-thread MIN accumulators merged at end."
+  },
+  "indexes": [
+    {"index": "movie_companies__movie_id", "purpose": "join_lookup (offsets_only)"},
+    {"index": "movie_info_idx__movie_id", "purpose": "join_lookup (offsets_only)"}
+  ],
+  "aggregation": "scalar_min",
+  "min_columns": [
+    {"expr": "mc.note", "type": "varlen", "init": "unset", "compare": "memcmp lex"},
+    {"expr": "t.title", "type": "varlen", "init": "unset", "compare": "memcmp lex"},
+    {"expr": "t.production_year", "type": "int32_t", "init": "INT32_MAX"}
+  ],
+  "output": {"order_by": [], "limit": 1},
+  "scan_strategy": {
+    "driver": "title.production_year",
+    "skip_null_sentinel": "INT32_MIN",
+    "per_title": [
+      "if (year == INT32_MIN || year <= 2000) continue;",
+      "mid = i + 1;  // title.id is dense identity",
+      "for (r = mc_off[mid]; r < mc_off[mid+1]; ++r):",
+      "  if (mc.company_type_id[r] != target_ct_id) continue;",
+      "  load mc.note via .off/.dat; if (len==0) continue;",
+      "  if (memmem(note,len,'(as Metro-Goldwyn-Mayer Pictures)',32) != NULL) continue;",
+      "  for (s = mi_off[mid]; s < mi_off[mid+1]; ++s):",
+      "    if (mi_idx.info_type_id[s] != target_it_id) continue;",
+      "    update MIN(mc.note), MIN(t.title), MIN(t.production_year)"
+    ]
+  },
+  "notes": [
+    "Because 'bottom 10 rank' is extremely rare in mi_idx, swapping the probe order (mi_idx first, then mc) is an alternative; however since both indexes are offsets_only on movie_id and title drives the scan, probing mi_idx first per title is equally efficient and avoids loading mc.note for titles that won't match. Choose: probe mi_idx first to short-circuit aggressively.",
+    "Refined per-title loop: probe mi_idx range first; if any row matches target_it_id, then probe mc range and apply ct/note filters."
+  ],
+  "execution_target": "cpp"
+}

@@ -1,0 +1,110 @@
+{
+  "query_id": "Q27a",
+  "pipeline": [
+    "resolve_dims",
+    "build_cn_set",
+    "build_lt_set",
+    "drive_movie_keyword_sequel",
+    "filter_title_year",
+    "probe_movie_link",
+    "probe_movie_companies",
+    "probe_complete_cast",
+    "probe_movie_info",
+    "aggregate_min"
+  ],
+  "dim_resolution": [
+    {"name": "cct1_set", "table": "comp_cast_type", "predicate": "kind IN ('cast','crew')", "structure": "uint8_flags[5]", "expected_size": 2},
+    {"name": "complete_id", "table": "comp_cast_type", "predicate": "kind = 'complete'", "structure": "scalar_int32"},
+    {"name": "ct_id", "table": "company_type", "predicate": "kind = 'production companies'", "structure": "scalar_int32"},
+    {"name": "sequel_kw_id", "table": "keyword", "predicate": "keyword = 'sequel'", "structure": "scalar_int32"},
+    {"name": "pl_code", "table": "company_name", "predicate": "country_code dict lookup for '[pl]'", "structure": "scalar_int16"},
+    {"name": "lt_set", "table": "link_type", "predicate": "link LIKE '%follow%' (memmem)", "structure": "uint8_flags[19]", "expected_size": 2},
+    {"name": "cn_set", "table": "company_name", "predicate": "(name LIKE '%Film%' OR name LIKE '%Warner%') AND country_code != pl_code", "structure": "bitset(234998)", "expected_size": 17000, "notes": "scan 235k rows once; memmem for both literals; reject pl_code"},
+    {"name": "mi_info_set", "table": "movie_info", "predicate": "info IN ('Sweden','Germany','Swedish','German')", "structure": "inline_string_compare with len<=7 prefilter"}
+  ],
+  "join_order": [
+    {
+      "step": 1,
+      "driver": "movie_keyword__keyword_id CSR at sequel_kw_id",
+      "produces": "candidate t_ids (sequel movies)",
+      "expected_cardinality": 2000,
+      "strategy": "csr_lookup",
+      "notes": "lo=off[sequel_kw_id]; hi=off[sequel_kw_id+1]; t_id = mk_movie_id[rowids[k]]; dedupe via small hashset since same movie may have multiple keyword rows (unlikely but possible)"
+    },
+    {
+      "step": 2,
+      "filter": "title.production_year BETWEEN 1950 AND 2000",
+      "selectivity": 0.6,
+      "strategy": "direct_array_lookup",
+      "notes": "row = t_id - 1; year_arr[row]"
+    },
+    {
+      "step": 3,
+      "probe": "movie_link via movie_link__movie_id offsets",
+      "build": "lt_set (small flag array)",
+      "type": "semi",
+      "strategy": "index_range_scan",
+      "notes": "any row in [off[t_id], off[t_id+1]) with link_type_id in lt_set; capture matched ml_row for lt.link MIN later"
+    },
+    {
+      "step": 4,
+      "probe": "movie_companies via movie_companies__movie_id offsets",
+      "build": "cn_set bitset + ct_id scalar",
+      "type": "semi",
+      "strategy": "index_range_scan",
+      "notes": "filter company_type_id==ct_id && cn_set[company_id] && note off[r]==off[r+1]; capture matched cn ids for MIN(cn.name)"
+    },
+    {
+      "step": 5,
+      "probe": "complete_cast via complete_cast__movie_id offsets",
+      "build": "cct1_set + complete_id",
+      "type": "semi",
+      "strategy": "index_range_scan",
+      "notes": "any row with subject_id in cct1_set && status_id == complete_id"
+    },
+    {
+      "step": 6,
+      "probe": "movie_info via movie_info__movie_id offsets",
+      "build": "mi_info_set (4 literals)",
+      "type": "semi",
+      "strategy": "index_range_scan",
+      "notes": "any row with info in {Sweden,Germany,Swedish,German}; length prefilter <=7"
+    }
+  ],
+  "filters": [
+    {"table": "keyword", "predicate": "keyword='sequel'", "selectivity": "scalar"},
+    {"table": "title", "predicate": "production_year BETWEEN 1950 AND 2000", "selectivity": 0.6},
+    {"table": "company_name", "predicate": "name LIKE '%Film%' OR LIKE '%Warner%' AND country_code!=pl_code", "selectivity": 0.07},
+    {"table": "link_type", "predicate": "link LIKE '%follow%'", "selectivity": 0.11},
+    {"table": "movie_companies", "predicate": "note IS NULL", "selectivity": 0.6},
+    {"table": "movie_info", "predicate": "info IN literal_set", "selectivity": 0.0005}
+  ],
+  "data_structures": {
+    "cn_set": "bitset(234998)",
+    "lt_set": "uint8_flags[19]",
+    "cct1_set": "uint8_flags[5]",
+    "mi_info_set": "inline string compare (4 short literals)",
+    "candidate_t_ids": "vector<int32_t> from CSR driver (small ~2000)",
+    "min_aggregates": "three int32 row tracking (best_cn_row, best_lt_row, best_t_row) updated by comparing string_view ordering"
+  },
+  "parallelism": {
+    "strategy": "single_threaded",
+    "threads": 1,
+    "notes": "Driver cardinality ~2000 sequel movies; per-candidate work is small index range probes. Threading overhead would dominate. Parallelize only the cn_set build scan if needed (235k rows is cheap single-threaded ~few ms)."
+  },
+  "indexes": [
+    {"index": "movie_keyword__keyword_id", "purpose": "driver: iterate sequel movies"},
+    {"index": "movie_link__movie_id", "purpose": "join_lookup ml by t_id"},
+    {"index": "movie_companies__movie_id", "purpose": "join_lookup mc by t_id"},
+    {"index": "complete_cast__movie_id", "purpose": "join_lookup cc by t_id"},
+    {"index": "movie_info__movie_id", "purpose": "join_lookup mi by t_id"}
+  ],
+  "aggregation": "scalar_min_three_strings",
+  "min_tracking": {
+    "producing_company": "track min cn.name string_view across surviving mc rows (resolve via cn.name.off/.dat at matched company_id)",
+    "link_type": "track min lt.link string_view across surviving ml rows (lt.link is tiny, 18 rows; just track min lt_id encountered then resolve once at end)",
+    "complete_western_sequel": "track min t.title string_view across surviving t_ids"
+  },
+  "output": {"order_by": [], "limit": 1, "scalar_result": true},
+  "execution_target": "cpp"
+}

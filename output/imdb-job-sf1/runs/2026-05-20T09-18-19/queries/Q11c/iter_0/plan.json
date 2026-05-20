@@ -1,0 +1,80 @@
+{
+  "query_id": "Q11c",
+  "pipeline": [
+    "resolve_dims",
+    "filter_company_name",
+    "expand_mc_via_cn_csr",
+    "filter_mc",
+    "probe_title",
+    "probe_mk",
+    "probe_ml",
+    "aggregate_min"
+  ],
+  "join_order": [
+    {
+      "build": "company_name(filtered: prefix '20th Century Fox%' OR 'Twentieth Century Fox%', cc != pl_code && cc != 0)",
+      "probe": "movie_companies via movie_companies__company_id CSR",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 20,
+      "notes": "extremely selective prefix filter; iterate cn_ids and use CSR offsets[cn_id..cn_id+1] -> rowids"
+    },
+    {
+      "build": "mc rows (note non-empty, ct_id != pc_id && ct_id != 0)",
+      "probe": "title[mid-1]",
+      "type": "inner",
+      "strategy": "direct_array",
+      "build_cardinality": 100,
+      "notes": "title sorted by id; row = mid-1; check py != INT32_MIN && py > 1950"
+    },
+    {
+      "build": "title-qualified mids",
+      "probe": "movie_keyword via movie_keyword__movie_id CSR",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 100,
+      "notes": "scan mk[lo..hi) and require keyword_id in K (set of <=3 ids); use small inline set"
+    },
+    {
+      "build": "mk-qualified mids",
+      "probe": "movie_link via movie_link__movie_id CSR",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 50,
+      "notes": "existence probe: hi > lo suffices since link_type join is structural"
+    }
+  ],
+  "filters": [
+    {"table": "company_name", "predicate": "name LIKE '20th Century Fox%' OR name LIKE 'Twentieth Century Fox%'", "selectivity": 0.00008},
+    {"table": "company_name", "predicate": "country_code != pl_code && country_code != 0", "selectivity": 0.9},
+    {"table": "company_type", "predicate": "kind != 'production companies' (resolved to pc_id; allowed ct_ids = {1..4}\\{pc_id})", "selectivity": 0.75},
+    {"table": "keyword", "predicate": "keyword IN ('sequel','revenge','based-on-novel') -> set K", "selectivity": 0.00002},
+    {"table": "movie_companies", "predicate": "note_off[i] != note_off[i+1] && ct_id in allowed", "selectivity": 0.3},
+    {"table": "title", "predicate": "production_year != INT32_MIN && production_year > 1950", "selectivity": 0.9}
+  ],
+  "data_structures": {
+    "pl_code": "int16 scalar (resolved from company_name.country_code dict)",
+    "pc_id": "int32 scalar (resolved from company_type.kind dict scan; ct_id for 'production companies')",
+    "keyword_set_K": "stack-allocated int32 array, size <= 3 (linear scan)",
+    "cn_filtered_ids": "std::vector<int32_t> (expected ~20)",
+    "mc_expansion": "iterate CSR rowids directly, no intermediate materialization",
+    "min_aggregates": "three byte-wise min holders (const char* + length) for cn.name, mc.note, t.title"
+  },
+  "parallelism": {
+    "strategy": "single_threaded",
+    "threads": 1,
+    "notes": "Driver cardinality is tiny (~20 cn_ids, ~few hundred mc rows). Parallel overhead would dominate. Keyword resolution scan over 134k rows is also trivial single-threaded."
+  },
+  "indexes": [
+    {"index": "movie_companies__company_id", "purpose": "join_lookup: expand cn_id -> mc rows"},
+    {"index": "movie_keyword__movie_id (offsets_only)", "purpose": "join_lookup: probe mk by mid"},
+    {"index": "movie_link__movie_id (offsets_only)", "purpose": "existence probe by mid"}
+  ],
+  "aggregation": "scalar_min_byte_wise",
+  "output": {
+    "columns": ["MIN(cn.name) AS from_company", "MIN(mc.note) AS production_note", "MIN(t.title) AS movie_based_on_book"],
+    "order_by": [],
+    "limit": 1
+  },
+  "execution_target": "cpp"
+}

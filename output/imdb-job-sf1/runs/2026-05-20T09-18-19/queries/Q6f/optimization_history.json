@@ -1,0 +1,25 @@
+{
+  "query_id": "Q6f",
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 29.75666666666667,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 29.75666666666667,
+      "validation": "pass",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "data_loading": 0.42,
+        "keyword_filter": 0.12,
+        "csr_expand_and_year_filter": 5.78,
+        "main_scan": 9.58,
+        "output": 0.08,
+        "total": 22.85
+      }
+    }
+  ]
+}

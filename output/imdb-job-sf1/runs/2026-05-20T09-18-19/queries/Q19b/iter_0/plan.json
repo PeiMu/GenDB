@@ -1,0 +1,107 @@
+{
+  "query_id": "Q19b",
+  "pipeline": [
+    "resolve_dim_ids",
+    "scan_title_filter",
+    "probe_mc_via_movie_id_index",
+    "probe_mi_via_movie_id_index",
+    "probe_ci_via_movie_id_index",
+    "filter_name_via_person_id",
+    "probe_aka_name_existence",
+    "aggregate_min"
+  ],
+  "join_order": [
+    {
+      "build": "title(filtered: year 2007..2008 AND title LIKE %Kung%Fu%Panda%)",
+      "probe": "movie_companies via movie_companies__movie_id offsets",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 5,
+      "notes": "title filter extremely selective (<=10 rows). Use offsets_only index to fetch mc rows per t.id"
+    },
+    {
+      "build": "movie_companies row (filtered: note LIKE %(200%)% AND (note LIKE %(USA)% OR %(worldwide)%))",
+      "probe": "company_name[company_id] dense-PK lookup, require country_code=='[us]'",
+      "type": "semi",
+      "strategy": "direct_array",
+      "build_cardinality": 50,
+      "notes": "company_name is dense-PK; direct array lookup of country_code"
+    },
+    {
+      "build": "title(filtered) row",
+      "probe": "movie_info via movie_info__movie_id offsets",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 5,
+      "notes": "Filter mi.info_type_id==it_rd AND (info LIKE 'Japan:%2007%' OR 'USA:%2008%')"
+    },
+    {
+      "build": "title(filtered) row",
+      "probe": "cast_info via cast_info__movie_id offsets",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 5,
+      "notes": "Filter ci.note=='(voice)' (exact), role_id==rt_actress, person_role_id non-NULL"
+    },
+    {
+      "build": "ci.person_id",
+      "probe": "name[pid] dense-PK lookup, require gender=='f' AND name LIKE %Angel%",
+      "type": "semi",
+      "strategy": "direct_array",
+      "build_cardinality": 200,
+      "notes": "name is dense-PK; direct array lookup of gender and name varlen"
+    },
+    {
+      "build": "ci.person_id",
+      "probe": "aka_name via aka_name__person_id offsets (existence)",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 200,
+      "notes": "Offsets_only index: existence iff offsets[pid+1] > offsets[pid]"
+    }
+  ],
+  "filters": [
+    {"table": "role_type", "predicate": "role = 'actress'", "selectivity": 0.083},
+    {"table": "info_type", "predicate": "info = 'release dates'", "selectivity": 0.009},
+    {"table": "company_name", "predicate": "country_code = '[us]'", "selectivity": 0.35},
+    {"table": "title", "predicate": "production_year BETWEEN 2007 AND 2008 AND title LIKE '%Kung%Fu%Panda%'", "selectivity": 0.000002},
+    {"table": "movie_companies", "predicate": "note LIKE '%(200%)%' AND (note LIKE '%(USA)%' OR note LIKE '%(worldwide)%')", "selectivity": 0.05},
+    {"table": "movie_info", "predicate": "info_type_id = it_rd AND (info LIKE 'Japan:%2007%' OR info LIKE 'USA:%2008%')", "selectivity": 0.002},
+    {"table": "cast_info", "predicate": "note = '(voice)' AND role_id = rt_actress AND person_role_id IS NOT NULL", "selectivity": 0.005},
+    {"table": "name", "predicate": "gender = 'f' AND name LIKE '%Angel%'", "selectivity": 0.002}
+  ],
+  "data_structures": {
+    "dim_ids": "scalar constants (rt_actress, it_rd, cc_us, g_f) resolved via single scan",
+    "title_driver": "small flat_array<uint32_t> of surviving title ids + parallel array of title strings for MIN",
+    "mc_filter": "per-movie inline scan via offsets_only index, no materialization",
+    "mi_filter": "per-movie inline scan via offsets_only index",
+    "ci_filter": "per-movie inline scan via offsets_only index",
+    "name_lookup": "direct dense-PK array indexing (name.gender column + name.name varlen)",
+    "aka_existence": "offsets_only index range check (O(1))",
+    "aggregation": "two scalar string accumulators for MIN(n.name) and MIN(t.title)"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "notes": "Parallelize title scan over morsels (2.5M rows). After title filter survivors are tiny — process serially or with per-thread MIN accumulators reduced at end."
+  },
+  "indexes": [
+    {"index": "movie_companies__movie_id (offsets_only)", "purpose": "join_lookup mc by t.id"},
+    {"index": "movie_info__movie_id (offsets_only)", "purpose": "join_lookup mi by t.id"},
+    {"index": "cast_info__movie_id (offsets_only)", "purpose": "join_lookup ci by t.id"},
+    {"index": "aka_name__person_id (offsets_only)", "purpose": "existence_check per person_id"}
+  ],
+  "aggregation": "scalar_min_two_columns",
+  "output": {"order_by": [], "limit": 1, "projection": ["MIN(n.name) AS voicing_actress", "MIN(t.title) AS kung_fu_panda"]},
+  "execution_target": "cpp",
+  "implementation_notes": [
+    "Step 1: single-pass resolve constants rt_actress (role_type.role='actress'), it_rd (info_type.info='release dates'), cc_us (company_name.country_code='[us]' as a precomputed bitset/set since 234,997 rows), g_f (name.gender byte == 'f').",
+    "Actually cc_us has 234k+ rows — DO NOT enumerate; instead, per mc row look up company_name.country_code[mc.company_id] and compare to '[us]' (or compute the byte-equality once).",
+    "Step 2: parallel scan title.production_year for [2007,2008]; for surviving rows fetch t.title via offsets+dat; apply three-substring scan ('Kung','Fu','Panda' in order). Collect surviving t.id list (expected <=5 rows).",
+    "Step 3: for each surviving t.id, iterate mc via movie_companies__movie_id offsets. For each mc row: check note has '(200' followed by ')' and contains either '(USA)' or '(worldwide)'; then check company_name.country_code[mc.company_id]=='[us]'. Bail at first satisfying mc row (only existence needed).",
+    "Step 4: similarly verify mi existence: iterate mi rows for t.id, require info_type_id==it_rd, info not null, and (prefix 'Japan:' AND contains '2007') OR (prefix 'USA:' AND contains '2008'). Existence sufficient.",
+    "Step 5: iterate ci rows for t.id; for each row require note length==7 and memcmp '(voice)', role_id==rt_actress, person_role_id != NULL. Read pid=person_id; check name.gender[pid]=='f', fetch n.name and require contains 'Angel'. Check aka_name existence via offsets_only index for pid.",
+    "Step 6: if all conditions hold for this ci row → candidate. Update MIN(n.name) with name string, MIN(t.title) with title string.",
+    "Per-thread MINs reduced at end via lexicographic comparison."
+  ]
+}

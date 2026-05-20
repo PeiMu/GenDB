@@ -1,0 +1,84 @@
+{
+  "query_id": "Q12a",
+  "pipeline": [
+    "resolve_dim_literals",
+    "scan_title_production_year",
+    "probe_movie_info_idx_by_movie_id",
+    "probe_movie_info_by_movie_id",
+    "probe_movie_companies_by_movie_id",
+    "lookup_company_name_country_code",
+    "min_aggregate"
+  ],
+  "dim_resolution": [
+    {"output": "us_code", "source": "company_name.country_code dict", "literal": "[us]"},
+    {"output": "ct_id", "source": "company_type scan", "predicate": "kind = 'production companies'"},
+    {"output": "it1_id", "source": "info_type scan", "predicate": "info = 'genres'"},
+    {"output": "it2_id", "source": "info_type scan", "predicate": "info = 'rating'"}
+  ],
+  "join_order": [
+    {
+      "build": "title(production_year BETWEEN 2005 AND 2008)",
+      "probe": "movie_info_idx via offsets_only index on movie_id",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 90000,
+      "notes": "Title is sorted by id and id is dense PK; driver is the ~3-4% selective year filter. Required: mi_idx row with info_type_id==it2_id AND info > '8.0'. Capture mi_idx.info for MIN."
+    },
+    {
+      "build": "surviving_mids",
+      "probe": "movie_info via offsets_only index on movie_id",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 50000,
+      "notes": "Existence check: row with info_type_id==it1_id AND info IN ('Drama','Horror'). Prune by length (5 or 6) before memcmp."
+    },
+    {
+      "build": "surviving_mids",
+      "probe": "movie_companies via offsets_only index on movie_id",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 30000,
+      "notes": "For each mc row with company_type_id==ct_id, lookup company_name.country_code[company_id-1]==us_code; capture cn.name for MIN."
+    }
+  ],
+  "filters": [
+    {"table": "title", "predicate": "production_year BETWEEN 2005 AND 2008 (non-NULL)", "selectivity": 0.035},
+    {"table": "movie_info_idx", "predicate": "info_type_id == it2_id", "selectivity": 0.5},
+    {"table": "movie_info_idx", "predicate": "info > '8.0' (lex)", "selectivity": 0.15},
+    {"table": "movie_info", "predicate": "info_type_id == it1_id", "selectivity": 0.1},
+    {"table": "movie_info", "predicate": "info IN ('Drama','Horror')", "selectivity": 0.15},
+    {"table": "movie_companies", "predicate": "company_type_id == ct_id", "selectivity": 0.5},
+    {"table": "company_name", "predicate": "country_code == us_code", "selectivity": 0.4}
+  ],
+  "data_structures": {
+    "surviving_mids": "flat_array<int32_t> (sequential mids appended in title id order)",
+    "mi_idx_offsets": "mmap int32_t[2528314] (offsets_only)",
+    "mi_offsets": "mmap int32_t[title_rows+1] (offsets_only)",
+    "mc_offsets": "mmap int32_t[title_rows+1] (offsets_only)",
+    "company_name_country_code": "mmap int16_t[234997] direct array indexed by company_id-1",
+    "min_accumulator": "3 byte buffers (movie_company, rating, drama_horror_movie) with byte-wise lex compare"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "morsel_unit": "title id range",
+    "notes": "Partition title.production_year scan into morsels; each thread maintains local MIN accumulators; merge at end with byte-wise MIN."
+  },
+  "indexes": [
+    {"index": "movie_info_idx__movie_id (offsets_only)", "purpose": "join_lookup: [lo,hi) by mid"},
+    {"index": "movie_info__movie_id (offsets_only)", "purpose": "join_lookup: [lo,hi) by mid"},
+    {"index": "movie_companies__movie_id (offsets_only)", "purpose": "join_lookup: [lo,hi) by mid"}
+  ],
+  "aggregation": "scalar_min (3 columns, byte-wise lex compare, no GROUP BY)",
+  "string_compare": {
+    "mi_idx.info_gt_8.0": "memcmp against \"8.0\" then length tiebreak (longer string > if prefix matches)",
+    "mi.info_in_set": "length-prune (5 for 'Drama' or 6 for 'Horror'), then memcmp",
+    "min_aggregation": "byte-wise lex compare on raw varlen slices"
+  },
+  "output": {
+    "select": ["MIN(cn.name) AS movie_company", "MIN(mi_idx.info) AS rating", "MIN(t.title) AS drama_horror_movie"],
+    "order_by": [],
+    "limit": null
+  },
+  "execution_target": "cpp"
+}

@@ -1,0 +1,73 @@
+{
+  "query_id": "Q17c",
+  "pipeline": [
+    "resolve_keyword_id",
+    "build_name_x_prefix_bitset",
+    "csr_scan_movie_keyword_by_kid",
+    "dedup_movie_ids",
+    "probe_movie_companies_exists",
+    "probe_cast_info_persons",
+    "filter_person_x_prefix",
+    "aggregate_min_name"
+  ],
+  "join_order": [
+    {
+      "build": "keyword(filtered: keyword='character-name-in-title')",
+      "probe": "movie_keyword(CSR on keyword_id)",
+      "type": "inner",
+      "strategy": "direct_array",
+      "build_cardinality": 1,
+      "notes": "Resolve single k_id by scanning keyword.name varlen; use CSR slice to get mk rows -> movie_ids"
+    },
+    {
+      "build": "movie_keyword_slice -> distinct movie_ids",
+      "probe": "movie_companies(offsets_only on movie_id)",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 40000,
+      "notes": "Existence-only via offsets_only; mc.company_id = cn.id is trivially satisfied (cn dense-PK, no predicate)"
+    },
+    {
+      "build": "name(filtered: name LIKE 'X%') -> x_prefix bitset[4167491]",
+      "probe": "cast_info(offsets_only on movie_id) for surviving movie_ids",
+      "type": "semi",
+      "strategy": "bitset_lookup",
+      "build_cardinality": 4200,
+      "notes": "name has dense PK; build boolean bitset indexed by person_id-1; for each surviving movie, walk ci offsets and check x_prefix[ci.person_id-1]"
+    }
+  ],
+  "filters": [
+    {"table": "keyword", "predicate": "keyword = 'character-name-in-title'", "selectivity": 7.45e-6},
+    {"table": "name", "predicate": "name LIKE 'X%' (first byte == 'X')", "selectivity": 0.001},
+    {"table": "movie_companies", "predicate": "EXISTS(mc.movie_id = t.id)", "selectivity": 1.0},
+    {"table": "company_name", "predicate": "(none; satisfied by mc rows)", "selectivity": 1.0}
+  ],
+  "data_structures": {
+    "keyword_resolve": "linear_scan(keyword.off/dat) -> single int32 k_id",
+    "name_x_prefix": "std::vector<uint8_t> bitset(4167491) indexed by name.id-1",
+    "mk_csr_slice": "direct pointer into movie_keyword__keyword_id__rowids.bin via offsets",
+    "movie_id_dedup": "not strictly required; iterate mk slice and probe directly (slice is small, ~40k rows); optionally dense bitset(2528312) if duplicates appear",
+    "mc_exists_probe": "movie_companies__movie_id__offsets.bin (offsets_only)",
+    "ci_probe": "cast_info__movie_id__offsets.bin (offsets_only) + cast_info/person_id.bin",
+    "aggregation": "single MIN string accumulator (std::string current_min, compared lexicographically via offsets/dat)"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "morsel_axis": "movie_keyword CSR slice (mk rows for k_id) split into ~12 chunks; per-thread local MIN, reduced at the end",
+    "notes": "Build phase (k_id resolution, x_prefix bitset) single-threaded; bitset build can be parallelized over name range if beneficial"
+  },
+  "indexes": [
+    {"index": "movie_keyword__keyword_id (CSR)", "purpose": "k_id -> mk rows -> movie_ids"},
+    {"index": "movie_companies__movie_id (offsets_only)", "purpose": "existence check for mc"},
+    {"index": "cast_info__movie_id (offsets_only)", "purpose": "iterate person_ids for each surviving movie"}
+  ],
+  "aggregation": "scalar_min_string",
+  "output": {
+    "projection": ["MIN(n.name) AS member_in_charnamed_movie", "MIN(n.name) AS a1"],
+    "order_by": [],
+    "limit": null,
+    "notes": "Single row output; both columns identical (same MIN expression)"
+  },
+  "execution_target": "cpp"
+}

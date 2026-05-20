@@ -1,0 +1,59 @@
+{
+  "query_id": "Q1c",
+  "pipeline": [
+    "resolve_ct_id",
+    "resolve_it_id",
+    "scan_title_filter_year",
+    "probe_mc_via_movie_id_index",
+    "filter_mc_company_type_and_note",
+    "probe_mi_idx_via_movie_id_index",
+    "filter_mi_idx_info_type",
+    "aggregate_min"
+  ],
+  "join_order": [
+    {
+      "build": "title(production_year>2010)",
+      "probe": "movie_companies via movie_companies__movie_id offsets_only",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 350000,
+      "notes": "Driver: iterate title rows passing year filter, use offsets index to fetch mc range per title.id"
+    },
+    {
+      "build": "surviving mc rows (ct match + note LIKE/NOT LIKE)",
+      "probe": "movie_info_idx via movie_info_idx__movie_id offsets_only",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 5000,
+      "notes": "For each surviving (title, mc) pair, probe mi_idx by movie_id; then check info_type_id == target_it_id"
+    }
+  ],
+  "filters": [
+    {"table": "company_type", "predicate": "kind = 'production companies'", "selectivity": 0.25},
+    {"table": "info_type", "predicate": "info = 'top 250 rank'", "selectivity": 0.009},
+    {"table": "title", "predicate": "production_year != INT32_MIN AND production_year > 2010", "selectivity": 0.14},
+    {"table": "movie_companies", "predicate": "company_type_id == target_ct_id", "selectivity": 0.5},
+    {"table": "movie_companies", "predicate": "note LIKE '%(co-production)%'", "selectivity": 0.01, "notes": "length prefilter (off[r+1]-off[r])>=16; empty note fails"},
+    {"table": "movie_companies", "predicate": "note NOT LIKE '%(as Metro-Goldwyn-Mayer Pictures)%'", "selectivity": 0.999},
+    {"table": "movie_info_idx", "predicate": "info_type_id == target_it_id", "selectivity": 0.0005, "notes": "'top 250 rank' is extremely selective"}
+  ],
+  "data_structures": {
+    "ct_target": "scalar int32_t target_ct_id from scanning company_type.kind",
+    "it_target": "scalar int32_t target_it_id from scanning info_type.info",
+    "mc_index": "offsets_only int32_t array (rows+1) at _idx/movie_companies__movie_id__offsets.bin",
+    "mi_idx_index": "offsets_only int32_t array (rows+1) at _idx/movie_info_idx__movie_id__offsets.bin",
+    "aggregation": "three scalar accumulators: min_note (std::string or pointer+len), min_title (std::string or pointer+len), min_year (int32_t)"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "morsel": "partition title.id range across 12 threads; each thread maintains local min accumulators; final reduction merges via min()"
+  },
+  "indexes": [
+    {"index": "movie_companies__movie_id", "purpose": "join_lookup: fetch mc rows for a given title.id"},
+    {"index": "movie_info_idx__movie_id", "purpose": "join_lookup: fetch mi_idx rows for a given title.id"}
+  ],
+  "aggregation": "scalar_min_accumulators",
+  "output": {"order_by": [], "limit": 1, "columns": ["MIN(mc.note) AS production_note", "MIN(t.title) AS movie_title", "MIN(t.production_year) AS movie_year"]},
+  "execution_target": "cpp"
+}

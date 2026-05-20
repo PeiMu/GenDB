@@ -1,0 +1,27 @@
+{
+  "query_id": "Q16a",
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 5.373333333333334,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 5.373333333333334,
+      "validation": "pass",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "data_loading": 0.12,
+        "resolve_us_code": 0,
+        "resolve_k_id": 0.01,
+        "build_cn_us_bitset": 0.58,
+        "main_scan": 2.06,
+        "probe_and_aggregate": 0.82,
+        "output": 0.05,
+        "total": 5.23
+      }
+    }
+  ]
+}

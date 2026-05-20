@@ -1,0 +1,27 @@
+{
+  "compile": {
+    "status": "pass"
+  },
+  "run": {
+    "status": "pass",
+    "duration_ms": 38
+  },
+  "validation": {
+    "status": "pass"
+  },
+  "optimization_target": "hot",
+  "timing_ms": 35.73,
+  "hot_timing_ms": 35.73,
+  "operation_timings": {
+    "data_loading": 0.15,
+    "resolve_dims": 0.12,
+    "scan_complete_cast": 1.1,
+    "filter_title": 0.88,
+    "filter_movie_keyword": 2.31,
+    "build_chn_bitset": 22.23,
+    "probe_cast_info": 1.05,
+    "main_scan": 0,
+    "output": 0.08,
+    "total": 35.17
+  }
+}

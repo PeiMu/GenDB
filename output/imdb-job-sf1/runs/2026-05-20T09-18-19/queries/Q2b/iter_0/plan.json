@@ -1,0 +1,71 @@
+{
+  "query_id": "Q2b",
+  "pipeline": [
+    "resolve_nl_country_code",
+    "build_cn_pass_bitmap",
+    "resolve_target_keyword_id",
+    "enumerate_mk_via_csr",
+    "probe_mc_via_offsets",
+    "check_cn_pass",
+    "read_title_min"
+  ],
+  "join_order": [
+    {
+      "build": "keyword(filtered by keyword='character-name-in-title')",
+      "probe": "movie_keyword",
+      "type": "inner",
+      "strategy": "csr_index_lookup",
+      "build_cardinality": 1,
+      "notes": "Use movie_keyword__keyword_id CSR; target_k_id resolved by scanning keyword.dat. Very small mk row set."
+    },
+    {
+      "build": "company_name(filtered by country_code='[nl]')",
+      "probe": "movie_companies",
+      "type": "semi",
+      "strategy": "direct_array",
+      "build_cardinality": 5000,
+      "notes": "cn_pass bitmap indexed by cn.id (size 234997). '[nl]' is rare → low popcount. For each candidate movie from mk, scan mc rows via movie_companies__movie_id offsets and test cn_pass[company_id]."
+    },
+    {
+      "build": "candidate_movie_ids (mk ∩ mc-with-nl-cn)",
+      "probe": "title",
+      "type": "inner",
+      "strategy": "direct_array",
+      "build_cardinality": 1000,
+      "notes": "title.id is dense identity; mv is the row index directly. Read t.title via title.off/title.dat for surviving movies."
+    }
+  ],
+  "filters": [
+    {"table": "company_name", "predicate": "country_code = '[nl]'", "selectivity": 0.02},
+    {"table": "keyword", "predicate": "keyword = 'character-name-in-title'", "selectivity": 7.45e-6}
+  ],
+  "data_structures": {
+    "cn_pass": "bitset(234997) — flat bool/uint8 array indexed by cn.id",
+    "target_k_id": "scalar int32",
+    "mk_csr": "preexisting movie_keyword__keyword_id CSR (offsets + rowids)",
+    "mc_offsets": "preexisting movie_companies__movie_id offsets",
+    "min_title": "scalar std::string accumulator"
+  },
+  "parallelism": {
+    "strategy": "single_thread",
+    "threads": 1,
+    "notes": "Driver set (mk rows for one keyword) is very small; thread overhead exceeds work. Run serial."
+  },
+  "indexes": [
+    {"index": "movie_keyword__keyword_id", "purpose": "driver_enumeration"},
+    {"index": "movie_companies__movie_id", "purpose": "join_lookup"}
+  ],
+  "aggregation": "scalar_min",
+  "output": {"projection": ["MIN(t.title) AS movie_title"], "limit": 1},
+  "execution_target": "cpp",
+  "execution_recipe": [
+    "1. Memory-map all required column files and index files.",
+    "2. Scan company_name/country_code.dict.dat to resolve '[nl]' → target_code (int16).",
+    "3. Build cn_pass: bitset of size 234997; for r in [0, 234997): cn_pass[r] = (country_code_bin[r] == target_code).",
+    "4. Scan keyword/keyword.off+dat to find row whose string == 'character-name-in-title'; target_k_id = keyword.id[row].",
+    "5. Using movie_keyword__keyword_id CSR: lo=off[target_k_id], hi=off[target_k_id+1]. For each k_pos in [lo,hi): mk_row=rowids[k_pos]; mv=mk.movie_id_bin[mk_row].",
+    "6. For each candidate mv: using movie_companies__movie_id offsets, iterate mc rows r in [off[mv], off[mv+1]); if cn_pass[mc.company_id_bin[r]] true → mv qualifies; break inner.",
+    "7. For qualifying mv: read title.title via title.off[mv]/title.off[mv+1] into string_view; update min_title (lexicographic).",
+    "8. Output min_title."
+  ]
+}

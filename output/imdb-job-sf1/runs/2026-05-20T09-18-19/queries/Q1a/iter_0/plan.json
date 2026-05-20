@@ -1,0 +1,139 @@
+{
+  "query_id": "Q1a",
+  "pipeline": [
+    "resolve_ct_id",
+    "resolve_it_id",
+    "driver_scan_title",
+    "probe_mi_idx_by_movie_id",
+    "probe_mc_by_movie_id",
+    "filter_mc_note_like",
+    "aggregate_min"
+  ],
+  "dimension_resolution": [
+    {
+      "table": "company_type",
+      "predicate": "kind = 'production companies'",
+      "method": "scan_varlen_dense_pk",
+      "files": ["company_type/kind.off", "company_type/kind.dat"],
+      "output": "target_ct_id (int32 scalar)",
+      "rows": 4
+    },
+    {
+      "table": "info_type",
+      "predicate": "info = 'top 250 rank'",
+      "method": "scan_varlen_dense_pk",
+      "files": ["info_type/info.off", "info_type/info.dat"],
+      "output": "target_it_id (int32 scalar)",
+      "rows": 113
+    }
+  ],
+  "join_order": [
+    {
+      "step": 1,
+      "driver": "title",
+      "iteration": "for v in 1..2528312 (dense PK identity)",
+      "notes": "Title is the star center; use as driver. v == title row index + 1 == title.id."
+    },
+    {
+      "step": 2,
+      "build": "target_it_id (scalar)",
+      "probe": "movie_info_idx via movie_id offsets index",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "index": "movie_info_idx__movie_id (offsets_only)",
+      "inner_filter": "movie_info_idx.info_type_id[r] == target_it_id",
+      "notes": "Probe mi_idx first: top-250 is very selective; if no mi_idx row matches for this title, skip to next title without touching mc."
+    },
+    {
+      "step": 3,
+      "build": "target_ct_id (scalar)",
+      "probe": "movie_companies via movie_id offsets index",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "index": "movie_companies__movie_id (offsets_only)",
+      "inner_filter": "movie_companies.company_type_id[r] == target_ct_id AND note predicates",
+      "notes": "Only reached for titles surviving mi_idx semi-join."
+    }
+  ],
+  "filters": [
+    {
+      "table": "company_type",
+      "predicate": "kind = 'production companies'",
+      "selectivity": 0.25,
+      "stage": "dimension_resolution"
+    },
+    {
+      "table": "info_type",
+      "predicate": "info = 'top 250 rank'",
+      "selectivity": 0.0088,
+      "stage": "dimension_resolution"
+    },
+    {
+      "table": "movie_info_idx",
+      "predicate": "info_type_id == target_it_id",
+      "selectivity": "low (top-250 is rare across mi_idx)",
+      "stage": "inner_loop_step_2"
+    },
+    {
+      "table": "movie_companies",
+      "predicate": "company_type_id == target_ct_id",
+      "selectivity": 0.5,
+      "stage": "inner_loop_step_3"
+    },
+    {
+      "table": "movie_companies",
+      "predicate": "note NOT LIKE '%(as Metro-Goldwyn-Mayer Pictures)%' AND (note LIKE '%(co-production)%' OR note LIKE '%(presents)%')",
+      "selectivity": "low (~1-3% of mc rows have these tags)",
+      "stage": "inner_loop_step_3",
+      "implementation": "memmem on .dat slice [off[r], off[r+1]); length-prefilter slice_len >= 10 for positive LIKE; empty slice (NULL) fails the positive OR"
+    }
+  ],
+  "data_structures": {
+    "ct_target": "int32 scalar (target_ct_id)",
+    "it_target": "int32 scalar (target_it_id)",
+    "mc_movie_id_index": "preloaded int32 offsets array (size 2528314) via _idx/movie_companies__movie_id__offsets.bin",
+    "mi_idx_movie_id_index": "preloaded int32 offsets array (size 2528314) via _idx/movie_info_idx__movie_id__offsets.bin",
+    "aggregation_state": "three scalar mins per thread: (string production_note, string movie_title, int32 movie_year); merge across threads at end",
+    "min_year_sentinel": "skip values == INT32_MIN (NULL marker)"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven over title.id range",
+    "threads": "auto(nproc)",
+    "morsel_size": 100000,
+    "notes": "12 cores; title is 2.5M rows so ~25 morsels of 100k each. Each thread maintains thread-local mins; final reduction is trivial."
+  },
+  "indexes": [
+    {
+      "index": "movie_companies__movie_id",
+      "type": "offsets_only",
+      "file": "_idx/movie_companies__movie_id__offsets.bin",
+      "purpose": "join_lookup: fetch mc rows for a given title.id"
+    },
+    {
+      "index": "movie_info_idx__movie_id",
+      "type": "offsets_only",
+      "file": "_idx/movie_info_idx__movie_id__offsets.bin",
+      "purpose": "join_lookup: fetch mi_idx rows for a given title.id"
+    }
+  ],
+  "aggregation": {
+    "type": "scalar_min_3",
+    "groups": 1,
+    "outputs": [
+      {"name": "production_note", "source": "mc.note (varlen)", "agg": "MIN (lexicographic)"},
+      {"name": "movie_title", "source": "t.title (varlen)", "agg": "MIN (lexicographic)"},
+      {"name": "movie_year", "source": "t.production_year (int32)", "agg": "MIN (skip INT32_MIN NULLs)"}
+    ]
+  },
+  "projection_strategy": {
+    "mc_note": "read [off[r], off[r+1]) only for surviving mc rows (already read for LIKE filter; reuse slice)",
+    "t_title": "read [off[v-1], off[v]) only when at least one (mc,mi_idx) combo survives for title v",
+    "t_production_year": "single int32 load only when title v survives"
+  },
+  "output": {
+    "order_by": [],
+    "limit": 1,
+    "shape": "single_row_3_cols"
+  },
+  "execution_target": "cpp"
+}

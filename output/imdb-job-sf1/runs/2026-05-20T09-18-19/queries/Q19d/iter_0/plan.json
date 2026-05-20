@@ -1,0 +1,126 @@
+{
+  "query_id": "Q19d",
+  "pipeline": [
+    "resolve_dim_ids",
+    "scan_cast_info_driver",
+    "lookup_title_year_filter",
+    "lookup_name_gender_filter",
+    "probe_movie_info_release_dates",
+    "probe_movie_companies_us",
+    "probe_aka_name_exists",
+    "probe_char_name_not_null",
+    "aggregate_min"
+  ],
+  "join_order": [
+    {
+      "build": "role_type(role='actress')",
+      "probe": "scalar_id_rt_actress",
+      "type": "inner",
+      "strategy": "scalar_resolve",
+      "build_cardinality": 1,
+      "notes": "Resolve rt_actress id via single-pass scan of role_type.role"
+    },
+    {
+      "build": "info_type(info='release dates')",
+      "probe": "scalar_id_it_rd",
+      "type": "inner",
+      "strategy": "scalar_resolve",
+      "build_cardinality": 1,
+      "notes": "Resolve it_rd id via single-pass scan of info_type.info"
+    },
+    {
+      "build": "company_name(country_code='[us]')",
+      "probe": "company_name.id",
+      "type": "inner",
+      "strategy": "bitset",
+      "build_cardinality": 234997,
+      "notes": "Build cn_us bitset of size company_name rows (dense PK) for O(1) company_id membership"
+    },
+    {
+      "build": "name.gender (array lookup)",
+      "probe": "ci.person_id",
+      "type": "inner",
+      "strategy": "direct_array",
+      "build_cardinality": 4167491,
+      "notes": "name.gender is dense int8 array — direct index by pid-1"
+    },
+    {
+      "build": "title.production_year (array lookup)",
+      "probe": "ci.movie_id",
+      "type": "inner",
+      "strategy": "direct_array",
+      "build_cardinality": 2528312,
+      "notes": "Test production_year[mv-1] > 2000 AND != INT32_MIN via dense PK direct lookup"
+    },
+    {
+      "build": "movie_info__movie_id offsets + info_type_id",
+      "probe": "ci.movie_id",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 14835720,
+      "notes": "For each candidate mv, iterate mi range [off[mv], off[mv+1]) testing info_type_id==it_rd; early-exit"
+    },
+    {
+      "build": "movie_companies__movie_id offsets + company_id",
+      "probe": "ci.movie_id",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 2609129,
+      "notes": "For each candidate mv, iterate mc range [off[mv], off[mv+1]) testing cn_us[company_id-1]; early-exit"
+    },
+    {
+      "build": "aka_name__person_id offsets",
+      "probe": "ci.person_id",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 901343,
+      "notes": "Existence check via off[pid+1] > off[pid]"
+    },
+    {
+      "build": "char_name FK non-null",
+      "probe": "ci.person_role_id",
+      "type": "inner",
+      "strategy": "null_check",
+      "build_cardinality": 3140339,
+      "notes": "person_role_id != INT32_MIN is sufficient (FK to dense PK char_name.id)"
+    }
+  ],
+  "filters": [
+    {"table": "role_type", "predicate": "role='actress'", "selectivity": 0.083},
+    {"table": "info_type", "predicate": "info='release dates'", "selectivity": 0.0088},
+    {"table": "company_name", "predicate": "country_code='[us]'", "selectivity": 0.4},
+    {"table": "name", "predicate": "gender='f'", "selectivity": 0.5},
+    {"table": "title", "predicate": "production_year > 2000 AND != INT32_MIN", "selectivity": 0.5},
+    {"table": "cast_info", "predicate": "note IN (4 voice strings) AND role_id==rt_actress AND person_role_id!=INT32_MIN", "selectivity": 0.001}
+  ],
+  "data_structures": {
+    "cn_us_bitset": "bitset(234997)",
+    "title_year_array": "direct_array (mmap title/production_year.bin int32)",
+    "name_gender_array": "direct_array (mmap name/gender.bin int8)",
+    "mi_offsets": "direct_array (mmap _idx/movie_info__movie_id__offsets.bin int32, 2528314)",
+    "mi_info_type_id": "direct_array (mmap movie_info/info_type_id.bin int32)",
+    "mc_offsets": "direct_array (mmap _idx/movie_companies__movie_id__offsets.bin int32)",
+    "mc_company_id": "direct_array (mmap movie_companies/company_id.bin int32)",
+    "an_offsets": "direct_array (mmap _idx/aka_name__person_id__offsets.bin int32)",
+    "ci_note": "string column with dictionary or direct compare against 4 voice literals",
+    "min_aggregation": "two scalar slots min(name), min(title) with thread-local then merge"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "driver": "cast_info linear scan partitioned into morsels of ~256K rows; thread-local min(name)/min(title); final reduction"
+  },
+  "indexes": [
+    {"index": "movie_info__movie_id__offsets", "purpose": "join_lookup (mi existence with it_rd)"},
+    {"index": "movie_companies__movie_id__offsets", "purpose": "join_lookup (mc existence with [us])"},
+    {"index": "aka_name__person_id__offsets", "purpose": "semi_join existence"}
+  ],
+  "aggregation": "scalar_min_two_columns",
+  "output": {
+    "select": ["MIN(n.name) AS voicing_actress", "MIN(t.title) AS jap_engl_voiced_movie"],
+    "order_by": [],
+    "limit": 1
+  },
+  "execution_target": "cpp",
+  "strategy_notes": "Drive from cast_info (36.2M rows) because the ci.note IN 4-voice-strings + role_id==rt_actress predicate is the most selective conjunction (~0.1% of ci rows). Apply cheap predicates first in this order to short-circuit: (1) role_id==rt_actress, (2) person_role_id!=INT32_MIN, (3) note IN voice-set, (4) name.gender==f via person_id lookup, (5) title.production_year>2000 via movie_id lookup, (6) mi release-dates existence, (7) mc [us] existence, (8) aka_name existence. Reorder cheapest-most-selective first. Resolved string dimension ids (rt_actress, it_rd, cc_us, g_f) at plan start so all inner-loop comparisons are integer. cn_us materialized as a bitset (~29KB) to fit in L1. All offsets/columns mmap'd; sequential scan of cast_info is HDD-friendly."
+}

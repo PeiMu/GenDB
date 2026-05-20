@@ -1,0 +1,66 @@
+{
+  "query_id": "Q3b",
+  "pipeline": [
+    "scan_keyword_like",
+    "csr_lookup_movie_keyword",
+    "filter_title_year",
+    "probe_movie_info_bulgaria",
+    "aggregate_min_title"
+  ],
+  "join_order": [
+    {
+      "build": "keyword(LIKE '%sequel%') -> seq_ids",
+      "probe": "movie_keyword (CSR by keyword_id)",
+      "type": "inner",
+      "strategy": "csr_index_lookup",
+      "build_cardinality": 200,
+      "notes": "Drive from small seq_ids set; walk movie_keyword__keyword_id CSR to gather candidate movie_ids"
+    },
+    {
+      "build": "candidate_movies (dedup hash_set)",
+      "probe": "title.production_year",
+      "type": "semi",
+      "strategy": "direct_array_lookup",
+      "build_cardinality": 50000,
+      "notes": "Filter candidate movies by t.production_year > 2010 via direct array access on title.id (dense identity)"
+    },
+    {
+      "build": "surviving_movies",
+      "probe": "movie_info (offsets_only by movie_id)",
+      "type": "semi",
+      "strategy": "index_nested_loop_existence",
+      "build_cardinality": 6000,
+      "notes": "For each surviving movie, scan mi.info range via movie_info__movie_id offsets; break on first 'Bulgaria' match (existence)"
+    }
+  ],
+  "filters": [
+    {"table": "keyword", "predicate": "keyword LIKE '%sequel%'", "selectivity": 0.0015, "method": "memmem_scan"},
+    {"table": "title", "predicate": "production_year != INT32_MIN AND production_year > 2010", "selectivity": 0.11},
+    {"table": "movie_info", "predicate": "info = 'Bulgaria'", "selectivity": 0.00001, "method": "length_prefilter_then_memcmp", "length": 8}
+  ],
+  "data_structures": {
+    "seq_ids": "std::vector<int32_t>",
+    "candidate_movies": "absl-style flat_hash_set<int32_t> or std::vector + sort/unique",
+    "surviving_movies": "std::vector<int32_t>",
+    "aggregation": "scalar min over varlen (std::string_view tracked, materialize at end)"
+  },
+  "parallelism": {
+    "strategy": "single_threaded",
+    "threads": 1,
+    "notes": "Driver set (seq_ids) is tiny (~200); candidate movies ~50k; final mi probes ~6k. Per-op work is small and dominated by random index/varlen access; threading overhead dominates."
+  },
+  "indexes": [
+    {"index": "movie_keyword__keyword_id", "purpose": "csr_join_lookup", "files": ["_idx/movie_keyword__keyword_id__offsets.bin", "_idx/movie_keyword__keyword_id__rowids.bin"]},
+    {"index": "movie_info__movie_id", "purpose": "offsets_only_range_lookup", "files": ["_idx/movie_info__movie_id__offsets.bin"]}
+  ],
+  "aggregation": "scalar_min_varlen",
+  "output": {"projection": ["MIN(t.title) AS movie_title"], "order_by": [], "limit": 1},
+  "execution_target": "cpp",
+  "execution_notes": [
+    "Step 1: Scan keyword/keyword.off+.dat via memmem('sequel') to collect seq_ids (small).",
+    "Step 2: For each kid in seq_ids, walk movie_keyword__keyword_id CSR: lo=off[kid], hi=off[kid+1]; for each k_pos, mk_row=rowids[k_pos]; mv=movie_keyword/movie_id.bin[mk_row]; insert mv into candidate_movies set.",
+    "Step 3: For each mv in candidate_movies, check title/production_year.bin[mv] (title is dense identity, so id==row). Keep mv if y!=INT32_MIN && y>2010.",
+    "Step 4: For each surviving mv, range-scan movie_info via offsets[mv..mv+1]; for each r, length prefilter (off[r+1]-off[r]==8) then memcmp against 'Bulgaria'. On first hit, take t.title[mv] and update running MIN (lex compare). Break inner loop on hit (existence semantics).",
+    "Step 5: Output min title (or NULL if no rows)."
+  ]
+}

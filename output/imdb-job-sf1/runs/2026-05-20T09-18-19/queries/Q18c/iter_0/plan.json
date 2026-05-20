@@ -1,0 +1,80 @@
+{
+  "query_id": "Q18c",
+  "pipeline": [
+    "resolve_constants",
+    "scan_movie_info_genres_filter",
+    "build_movie_set_T",
+    "probe_mi_idx_votes",
+    "probe_ci_writers_with_gender",
+    "aggregate_min"
+  ],
+  "join_order": [
+    {
+      "build": "info_type(it1.info='genres', it2.info='votes')",
+      "probe": "movie_info",
+      "type": "inner",
+      "strategy": "scalar_constant_resolution",
+      "build_cardinality": 2,
+      "notes": "Single 113-row scan resolves it_genres and it_votes; also resolve g_m from name.gender dict."
+    },
+    {
+      "build": "genre_name_set (6 string_views: Horror, Action, Sci-Fi, Thriller, Crime, War)",
+      "probe": "movie_info (via movie_info__info_type_id CSR for it_genres)",
+      "type": "inner",
+      "strategy": "csr_index_scan_with_hash_set",
+      "build_cardinality": 6,
+      "notes": "Use movie_info__info_type_id CSR to iterate only rows where info_type_id==it_genres (~hundreds of K to few M rows), then varlen length-prune + equality check against 6-entry hash set. Collect movie_ids into set T."
+    },
+    {
+      "build": "set T (filtered movie_ids)",
+      "probe": "movie_info_idx (via movie_info_idx__movie_id offsets)",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 200000,
+      "notes": "For each mv in T, lookup mi_idx range and find row where info_type_id==it_votes; capture mi_idx.info for MIN."
+    },
+    {
+      "build": "writer_note_set (5 string_views)",
+      "probe": "cast_info (via cast_info__movie_id offsets, only for mv that passed votes probe)",
+      "type": "semi",
+      "strategy": "index_nested_loop_with_hash_set_and_gender_check",
+      "build_cardinality": 5,
+      "notes": "For each mv that has votes, probe ci range, test note IN writer-set AND n_gender[person_id-1]==g_m. Any hit qualifies the movie."
+    }
+  ],
+  "filters": [
+    {"table": "info_type", "predicate": "info='genres'", "selectivity": 0.0088},
+    {"table": "info_type", "predicate": "info='votes'", "selectivity": 0.0088},
+    {"table": "name", "predicate": "gender='m'", "selectivity": 0.55},
+    {"table": "movie_info", "predicate": "info_type_id==it_genres AND info IN (6 genres)", "selectivity": 0.02},
+    {"table": "movie_info_idx", "predicate": "info_type_id==it_votes", "selectivity": 0.5},
+    {"table": "cast_info", "predicate": "note IN (5 writer notes)", "selectivity": 0.02}
+  ],
+  "data_structures": {
+    "genre_set": "flat_array<string_view>(6) with length-prune",
+    "writer_note_set": "flat_array<string_view>(5) with length-prune",
+    "n_gender_array": "read_vec<int8_t>(name/gender.bin), direct index lookup",
+    "movie_set_T": "absl::flat_hash_set<int32_t> or sorted vector<int32_t> (expected ~hundreds of K)",
+    "mi_movie_id_index": "movie_info_idx__movie_id offsets_only (int32, 2528314)",
+    "ci_movie_id_index": "cast_info__movie_id offsets_only (int32, 2528314)",
+    "mi_info_type_csr": "movie_info__info_type_id CSR (offsets + rowids)",
+    "aggregation": "three scalar MIN accumulators (string_view + materialize on update)"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "notes": "Parallelize CSR scan of movie_info genres rows into thread-local T sets, then merge. Parallelize probe loop over T across 12 threads with thread-local MIN aggregates, final reduce."
+  },
+  "indexes": [
+    {"index": "movie_info__info_type_id (CSR)", "purpose": "iterate only mi rows with info_type_id==it_genres"},
+    {"index": "movie_info_idx__movie_id (offsets_only)", "purpose": "join_lookup for votes per movie"},
+    {"index": "cast_info__movie_id (offsets_only)", "purpose": "join_lookup for writer cast per movie"}
+  ],
+  "aggregation": "scalar_min_three_columns",
+  "output": {
+    "order_by": [],
+    "limit": 1,
+    "columns": ["MIN(mi.info) AS movie_budget", "MIN(mi_idx.info) AS movie_votes", "MIN(t.title) AS movie_title"]
+  },
+  "execution_target": "cpp"
+}

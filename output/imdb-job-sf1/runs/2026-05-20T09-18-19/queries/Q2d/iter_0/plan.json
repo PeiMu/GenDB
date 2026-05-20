@@ -1,0 +1,68 @@
+{
+  "query_id": "Q2d",
+  "pipeline": [
+    "resolve_dict_country_code",
+    "build_cn_pass_bitset",
+    "scan_keyword_resolve_target_k_id",
+    "probe_mk_csr_for_target_keyword",
+    "for_each_candidate_movie_probe_mc_csr_and_check_cn_pass",
+    "fetch_title_and_track_min"
+  ],
+  "join_order": [
+    {
+      "build": "keyword(filter keyword='character-name-in-title') -> target_k_id (scalar)",
+      "probe": "movie_keyword via CSR movie_keyword__keyword_id[target_k_id]",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 1,
+      "notes": "Driver. CSR slice yields candidate mk rows; mk_row -> movie_id. Expected ~hundreds to low thousands of candidate movies."
+    },
+    {
+      "build": "company_name(country_code='[us]') -> cn_pass bitset(234997)",
+      "probe": "movie_companies.company_id for each mc row of candidate movie",
+      "type": "semi",
+      "strategy": "bitset_lookup",
+      "build_cardinality": 94000,
+      "notes": "[us] is ~40% of cn rows; cn_pass dense bitset over cn.id domain (234997). For each candidate movie, walk mc CSR slice and check cn_pass[company_id]."
+    },
+    {
+      "build": "candidate movie_id from mk driver",
+      "probe": "movie_companies via CSR movie_companies__movie_id[mv]",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 2000,
+      "notes": "CSR offsets give mc rows for each candidate mv. mc.movie_id = t.id and mc.movie_id = mk.movie_id are the same column (FK to title); title.id is dense identity so t.id == mv directly indexes title.title."
+    }
+  ],
+  "filters": [
+    {"table": "company_name", "predicate": "country_code = '[us]'", "selectivity": 0.4},
+    {"table": "keyword", "predicate": "keyword = 'character-name-in-title'", "selectivity": 7.45e-6}
+  ],
+  "data_structures": {
+    "cn_pass": "bitset(234997)",
+    "target_k_id": "int32_t scalar",
+    "mk_csr": "pre_built_index movie_keyword__keyword_id (offsets + rowids)",
+    "mc_csr": "pre_built_index movie_companies__movie_id (offsets_only)",
+    "aggregation": "scalar min(string) -- track best_idx into title varlen, compare via string_view"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven over mk CSR slice [lo,hi)",
+    "threads": "auto(nproc)",
+    "reduction": "per-thread local best title (as std::string), final reduction picks lexicographic min"
+  },
+  "indexes": [
+    {"index": "movie_keyword__keyword_id", "purpose": "join_lookup (driver CSR for target keyword)"},
+    {"index": "movie_companies__movie_id", "purpose": "join_lookup (mc rows per candidate movie)"}
+  ],
+  "aggregation": "scalar_min_string",
+  "output": {"order_by": [], "limit": 1, "projection": ["MIN(t.title) AS movie_title"]},
+  "execution_target": "cpp",
+  "notes": [
+    "Resolve [us] -> target_code by scanning country_code dict at runtime; build cn_pass[cn_row] = (country_code_bin[cn_row] == target_code). Since cn.id is dense identity, cn_pass is directly indexable by mc.company_id.",
+    "Resolve target_k_id by scanning keyword/keyword.dat using offsets; break on first match.",
+    "Driver loop: for k_pos in [off[target_k_id], off[target_k_id+1]): mk_row = rowids[k_pos]; mv = mk.movie_id[mk_row]. For each mv, iterate mc CSR; if cn_pass[mc.company_id[r]] then read title.title[mv] and update local min.",
+    "title.id is dense identity (rows=2528312), so mv directly indexes title varlen offsets.",
+    "Avoid materializing full title strings; compare std::string_view against current best and only copy on improvement.",
+    "No sampling needed: keyword filter selectivity ~1/134k makes mk slice small (low thousands), the bottleneck is well-characterized."
+  ]
+}

@@ -1,0 +1,82 @@
+{
+  "query_id": "Q13d",
+  "pipeline": [
+    "resolve_dims",
+    "scan_cn_us",
+    "csr_expand_mc_by_company",
+    "filter_company_type",
+    "lookup_title_kind",
+    "probe_mi_existence",
+    "probe_miidx_capture",
+    "min_aggregate"
+  ],
+  "dim_resolution": [
+    {"output": "us_code", "table": "company_name", "column": "country_code", "predicate": "country_code == '[us]'", "kind": "dict_lookup"},
+    {"output": "ct_id", "table": "company_type", "column": "kind", "predicate": "kind == 'production companies'", "kind": "scan_small"},
+    {"output": "it_id", "table": "info_type", "column": "info", "predicate": "info == 'rating'", "kind": "scan_small"},
+    {"output": "it2_id", "table": "info_type", "column": "info", "predicate": "info == 'release dates'", "kind": "scan_small"},
+    {"output": "kt_id", "table": "kind_type", "column": "kind", "predicate": "kind == 'movie'", "kind": "scan_small"}
+  ],
+  "join_order": [
+    {
+      "build": "cn_us (company_name filtered by country_code == us_code)",
+      "probe": "movie_companies via CSR by company_id",
+      "type": "inner",
+      "strategy": "csr_index_expand",
+      "build_cardinality": 36000,
+      "notes": "Drive from company side; use movie_companies__company_id CSR. Apply ct filter on mc rows."
+    },
+    {
+      "build": "mc rows (company_type_id == ct_id)",
+      "probe": "title by id (mid-1 direct lookup)",
+      "type": "inner",
+      "strategy": "direct_array_lookup",
+      "build_cardinality": 400000,
+      "notes": "Filter title.kind_id == kt_id; title is dense PK starting at 1."
+    },
+    {
+      "build": "qualifying mid",
+      "probe": "movie_info via CSR by movie_id",
+      "type": "semi",
+      "strategy": "csr_offsets_existence_scan",
+      "build_cardinality": 350000,
+      "notes": "Existence check: any row with info_type_id == it2_id in [lo,hi)."
+    },
+    {
+      "build": "qualifying mid",
+      "probe": "movie_info_idx via CSR by movie_id",
+      "type": "inner",
+      "strategy": "csr_offsets_filter_capture",
+      "build_cardinality": 300000,
+      "notes": "Filter rows where info_type_id == it_id; capture miidx.info varlen for MIN."
+    }
+  ],
+  "filters": [
+    {"table": "company_name", "predicate": "country_code == us_code", "selectivity": 0.15},
+    {"table": "movie_companies", "predicate": "company_type_id == ct_id", "selectivity": 0.25},
+    {"table": "title", "predicate": "kind_id == kt_id", "selectivity": 0.55},
+    {"table": "movie_info", "predicate": "info_type_id == it2_id (existence)", "selectivity": null},
+    {"table": "movie_info_idx", "predicate": "info_type_id == it_id", "selectivity": null}
+  ],
+  "data_structures": {
+    "cn_us": "flat_array<int32_t> of company_name ids (~36k)",
+    "mc_csr_company": "preexisting CSR: offsets[234999] + rowids[2609129]",
+    "mi_csr_movie": "preexisting offsets_only on movie_info.movie_id",
+    "miidx_csr_movie": "preexisting offsets_only on movie_info_idx.movie_id",
+    "title_kind_id": "mmap int32 column, direct index by mid-1",
+    "aggregation": "three scalar min holders (string_view best for cn.name, miidx.info, t.title)"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven over cn_us",
+    "threads": "auto(nproc)",
+    "reduction": "per-thread local mins reduced at end via byte-wise lexicographic compare"
+  },
+  "indexes": [
+    {"index": "movie_companies__company_id (CSR)", "purpose": "join_lookup driving company -> mc rows"},
+    {"index": "movie_info__movie_id (offsets_only)", "purpose": "existence probe on it2_id"},
+    {"index": "movie_info_idx__movie_id (offsets_only)", "purpose": "filter+capture probe on it_id"}
+  ],
+  "aggregation": "scalar_min_three_columns",
+  "output": {"columns": ["MIN(cn.name)", "MIN(miidx.info)", "MIN(t.title)"], "order_by": [], "limit": 1},
+  "execution_target": "cpp"
+}

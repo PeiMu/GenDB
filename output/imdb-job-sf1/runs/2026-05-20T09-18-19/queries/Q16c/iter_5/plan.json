@@ -1,0 +1,89 @@
+{
+  "query_id": "Q16c",
+  "pipeline": [
+    "resolve_constants",
+    "build_cn_us_bitset",
+    "enumerate_mk_by_keyword",
+    "filter_title_episode_nr",
+    "probe_mc_us_company",
+    "probe_ci_persons",
+    "enumerate_aka_name",
+    "aggregate_min"
+  ],
+  "join_order": [
+    {
+      "build": "keyword(k.keyword='character-name-in-title')",
+      "probe": "movie_keyword (CSR on keyword_id)",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 1,
+      "notes": "Single keyword id; CSR enumerate to get candidate movie_ids (~few thousand)"
+    },
+    {
+      "build": "title (episode_nr != NULL AND < 100)",
+      "probe": "candidate mv from mk",
+      "type": "semi",
+      "strategy": "direct_array",
+      "build_cardinality": 2528312,
+      "notes": "Apply per-row predicate via t_ep[mv-1]; rejects most non-episodic titles"
+    },
+    {
+      "build": "company_name (country_code='[us]') -> bitset over company_id",
+      "probe": "movie_companies for each surviving mv",
+      "type": "semi",
+      "strategy": "bitset_lookup",
+      "build_cardinality": 70000,
+      "notes": "~30% of 234997 cn rows; mc probe via movie_companies__movie_id offsets, check cn_us_bitset[mc.company_id-1]"
+    },
+    {
+      "build": "surviving mv (passed all filters)",
+      "probe": "cast_info via cast_info__movie_id offsets",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 2000,
+      "notes": "Enumerate ci rows for each mv; collect pid=ci.person_id"
+    },
+    {
+      "build": "pid set (from ci)",
+      "probe": "aka_name via aka_name__person_id offsets",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 100000,
+      "notes": "name table is dense-PK so n.id=pid is implicit; aka_name lookup yields an.name candidates"
+    }
+  ],
+  "filters": [
+    {"table": "company_name", "predicate": "country_code = '[us]'", "selectivity": 0.30},
+    {"table": "keyword", "predicate": "keyword = 'character-name-in-title'", "selectivity": 0.0000075},
+    {"table": "title", "predicate": "episode_nr != NULL AND episode_nr < 100", "selectivity": 0.10}
+  ],
+  "data_structures": {
+    "cn_us_bitset": "bitset(234997) over company_id (1-based -> idx-1)",
+    "mk_enumeration": "CSR slice [mk_k_off[k_id], mk_k_off[k_id+1])",
+    "title_filter": "inline scalar check on t_ep[mv-1]",
+    "mc_probe": "offsets_only(movie_companies__movie_id) + bitset test",
+    "ci_probe": "offsets_only(cast_info__movie_id)",
+    "an_probe": "offsets_only(aka_name__person_id)",
+    "aggregation": "two scalar MIN registers (string compare via varlen slices)"
+  },
+  "parallelism": {
+    "strategy": "serial",
+    "threads": 1,
+    "notes": "Driver is small CSR slice (~few thousand mk rows). Per-mv work is small; single-threaded avoids sync overhead and string-min reduction."
+  },
+  "indexes": [
+    {"index": "movie_keyword__keyword_id (CSR)", "purpose": "driver: enumerate mk rows for k_id"},
+    {"index": "movie_companies__movie_id (offsets_only)", "purpose": "join_lookup: mc rows for mv"},
+    {"index": "cast_info__movie_id (offsets_only)", "purpose": "join_lookup: ci rows for mv"},
+    {"index": "aka_name__person_id (offsets_only)", "purpose": "join_lookup: an rows for pid"}
+  ],
+  "aggregation": "scalar_min_two_registers",
+  "output": {"order_by": [], "limit": 1, "projection": ["MIN(an.name)", "MIN(t.title)"]},
+  "execution_target": "cpp",
+  "notes": [
+    "Early-exit: once an mv passes title+mc filters, update MIN(t.title) once per mv (not per ci/an row).",
+    "Skip ci enumeration for mvs that fail the cn[us] check.",
+    "name table is dense-PK so n.id=ci.person_id holds implicitly without a probe.",
+    "Use raw varlen offsets to compare strings lexicographically; cache current min as (off,len)."
+  ]
+}

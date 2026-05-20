@@ -1,0 +1,80 @@
+{
+  "query_id": "Q10a",
+  "pipeline": [
+    "resolve_dict_codes",
+    "build_ru_company_bitset",
+    "iter_ru_companies_via_csr",
+    "lookup_movie_id_filter_year",
+    "iter_cast_info_by_movie_id_range",
+    "filter_role_note_uncredited_voice",
+    "deref_char_name",
+    "aggregate_min"
+  ],
+  "join_order": [
+    {
+      "build": "company_name(country_code='[ru]')",
+      "probe": "movie_companies via CSR mccid",
+      "type": "inner",
+      "strategy": "csr_index_lookup",
+      "build_cardinality": 500,
+      "notes": "Few hundred russian companies; use movie_companies__company_id CSR to fetch matching mc rows directly, avoiding full mc scan."
+    },
+    {
+      "build": "title.production_year[mv-1] > 2005",
+      "probe": "mc.movie_id",
+      "type": "inner",
+      "strategy": "dense_pk_deref",
+      "build_cardinality": 2528312,
+      "notes": "title is dense-PK; direct array access by movie_id-1 to check year."
+    },
+    {
+      "build": "russian_movies (dedup set of movie_ids)",
+      "probe": "cast_info via offsets_only on movie_id",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 5000,
+      "notes": "Use cast_info__movie_id offsets to seek directly to the ci slice for each russian movie. cast_info sorted by movie_id."
+    },
+    {
+      "build": "rt_id_actor (scalar)",
+      "probe": "ci.role_id",
+      "type": "inner",
+      "strategy": "scalar_equality",
+      "build_cardinality": 1,
+      "notes": "Resolve rt_id_actor by scanning role_type once; compare ci.role_id == rt_id_actor."
+    },
+    {
+      "build": "ci.person_role_id (non-null)",
+      "probe": "char_name (dense-PK)",
+      "type": "inner",
+      "strategy": "dense_pk_deref",
+      "build_cardinality": 3140339,
+      "notes": "Deref char_name.name by chn_id-1 only when contributing to MIN."
+    }
+  ],
+  "filters": [
+    {"table": "company_name", "predicate": "country_code = '[ru]'", "selectivity": 0.002},
+    {"table": "title", "predicate": "production_year > 2005", "selectivity": 0.5},
+    {"table": "role_type", "predicate": "role = 'actor'", "selectivity": 0.083},
+    {"table": "cast_info", "predicate": "role_id = rt_id_actor", "selectivity": 0.35},
+    {"table": "cast_info", "predicate": "note LIKE '%(voice)%' AND note LIKE '%(uncredited)%'", "selectivity": 0.002, "notes": "memmem twice; check shorter needle '(voice)' first then '(uncredited)'"},
+    {"table": "cast_info", "predicate": "person_role_id IS NOT NULL", "selectivity": 0.3}
+  ],
+  "data_structures": {
+    "ru_company_bitset": "bitset(234998) over company_id",
+    "russian_movie_set": "absl::flat_hash_set<int32_t> or small sorted vec; dedup since multiple mc rows per movie",
+    "aggregation": "two scalar MIN registers (string for chn.name, string for t.title); compare via string_view, store best offsets"
+  },
+  "parallelism": {
+    "strategy": "serial",
+    "threads": 1,
+    "notes": "Russian-driven path produces a tiny working set (~few thousand mc rows, ~thousands of movies). Serial avoids morsel/threading overhead; MIN aggregation is trivially commutative if parallelism is ever needed."
+  },
+  "indexes": [
+    {"index": "movie_companies__company_id (CSR)", "purpose": "join_lookup: enumerate mc rows for each russian company_id"},
+    {"index": "cast_info__movie_id (offsets_only)", "purpose": "join_lookup: seek ci rows by movie_id"}
+  ],
+  "aggregation": "scalar_min_two_columns",
+  "output": {"order_by": [], "limit": 1, "notes": "Single-row result with two MIN aggregates."},
+  "execution_target": "cpp"
+}

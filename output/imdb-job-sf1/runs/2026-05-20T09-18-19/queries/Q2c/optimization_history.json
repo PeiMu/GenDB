@@ -1,0 +1,26 @@
+{
+  "query_id": "Q2c",
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 2.8800000000000003,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 2.8800000000000003,
+      "validation": "pass",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "data_loading": 0.09,
+        "resolve_country_code": 0,
+        "resolve_keyword": 0.01,
+        "cn_build_bitmap": 0.13,
+        "main_scan": 2.5,
+        "output": 0.09,
+        "total": 2.85
+      }
+    }
+  ]
+}

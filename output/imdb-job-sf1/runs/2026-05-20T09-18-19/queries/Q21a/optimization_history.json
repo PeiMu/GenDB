@@ -1,0 +1,27 @@
+{
+  "query_id": "Q21a",
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 15.72,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 15.72,
+      "validation": "pass",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "resolve_dims": 0.04,
+        "build_cn_bitset": 10.38,
+        "build_seq_bitset": 1.1,
+        "drive_ml": 0.02,
+        "filter_year_sequel": 0.04,
+        "main_scan": 0.16,
+        "output": 0.16,
+        "total": 13.48
+      }
+    }
+  ]
+}

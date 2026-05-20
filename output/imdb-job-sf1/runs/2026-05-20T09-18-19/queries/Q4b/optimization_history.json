@@ -1,0 +1,27 @@
+{
+  "query_id": "Q4b",
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 8.016666666666666,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 8.016666666666666,
+      "validation": "pass",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "data_loading": 0.1,
+        "resolve_info_type": 0,
+        "scan_keyword": 3.17,
+        "probe_mk_csr": 1.84,
+        "filter_prod_year": 0.37,
+        "main_scan": 0.76,
+        "output": 0.12,
+        "total": 7.59
+      }
+    }
+  ]
+}

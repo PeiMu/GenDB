@@ -1,0 +1,26 @@
+{
+  "query_id": "Q6e",
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 9.86,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 9.86,
+      "validation": "pass",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "data_loading": 0.21,
+        "keyword_resolve": 0.02,
+        "name_filter": 6.72,
+        "mk_probe_year_filter": 0.07,
+        "main_scan": 0.1,
+        "output": 0.07,
+        "total": 9.32
+      }
+    }
+  ]
+}

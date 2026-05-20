@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "created_by_run": "2026-05-20T09-18-19",
+  "created_at": "2026-05-20T10:15:59.602Z",
+  "source_iteration": "iter_0",
+  "storage_deps": [
+    "/id.bin",
+    "title/kind_id.bin",
+    "title/id.bin",
+    "_idx/movie_companies__movie_id__offsets.bin",
+    "movie_companies/company_type_id.bin",
+    "movie_companies/company_id.bin",
+    "_idx/movie_info__movie_id__offsets.bin",
+    "movie_info/info_type_id.bin",
+    "_idx/movie_info_idx__movie_id__offsets.bin",
+    "movie_info_idx/info_type_id.bin",
+    "company_name/country_code.bin"
+  ],
+  "hardware_results": {
+    "5825bbdaf7d0": {
+      "fingerprint": {
+        "cpu_cores": 12,
+        "simd": "avx2",
+        "total_memory_gb": 63,
+        "disk_type": "hdd",
+        "l3_cache_mb": 12
+      },
+      "hot_ms": 3.373333333333333,
+      "cold_ms": null,
+      "validated": true,
+      "validated_at": "2026-05-20T10:15:59.602Z",
+      "validated_by_run": "2026-05-20T09-18-19"
+    }
+  }
+}

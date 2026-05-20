@@ -1,0 +1,127 @@
+{
+  "query_id": "Q18c",
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 74.17333333333333,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 74.17333333333333,
+      "validation": "fail",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "data_loading": 0.69,
+        "resolve_constants": 0,
+        "scan_movie_info_genres_filter": 51.6,
+        "build_movie_set_T": 3.95,
+        "main_scan": 14.13,
+        "output": 0.07,
+        "total": 74.07
+      }
+    },
+    {
+      "iteration": 1,
+      "improved": true,
+      "categories": [],
+      "timing_ms": 72.74333333333334,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 72.74333333333334,
+      "validation": "fail",
+      "strategy": "",
+      "operation_timings": {
+        "data_loading": 0.76,
+        "resolve_constants": 0,
+        "scan_movie_info_genres_filter": 50.31,
+        "build_movie_set_T": 3.88,
+        "main_scan": 13.94,
+        "output": 0.07,
+        "total": 72.45
+      }
+    },
+    {
+      "iteration": 2,
+      "improved": false,
+      "categories": [],
+      "timing_ms": 72.90333333333335,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 72.90333333333335,
+      "validation": "fail",
+      "strategy": "",
+      "operation_timings": {
+        "data_loading": 0.69,
+        "resolve_constants": 0,
+        "scan_movie_info_genres_filter": 50.23,
+        "build_movie_set_T": 3.87,
+        "main_scan": 14.23,
+        "output": 0.07,
+        "total": 72.61
+      }
+    },
+    {
+      "iteration": 3,
+      "improved": true,
+      "categories": [
+        "escalation"
+      ],
+      "timing_ms": 72.72666666666667,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 72.72666666666667,
+      "validation": "fail",
+      "strategy": "escalation to opus",
+      "operation_timings": {
+        "data_loading": 0.69,
+        "resolve_constants": 0,
+        "scan_movie_info_genres_filter": 49.88,
+        "build_movie_set_T": 3.81,
+        "main_scan": 14.22,
+        "output": 0.07,
+        "total": 72.28
+      }
+    },
+    {
+      "iteration": 4,
+      "improved": false,
+      "categories": [
+        "escalation"
+      ],
+      "timing_ms": 73.23333333333333,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 73.23333333333333,
+      "validation": "fail",
+      "strategy": "escalation to opus",
+      "operation_timings": {
+        "data_loading": 0.75,
+        "resolve_constants": 0,
+        "scan_movie_info_genres_filter": 50.77,
+        "build_movie_set_T": 3.91,
+        "main_scan": 14.14,
+        "output": 0.07,
+        "total": 73.17
+      }
+    },
+    {
+      "iteration": 5,
+      "improved": false,
+      "categories": [
+        "escalation"
+      ],
+      "timing_ms": 73.40000000000002,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 73.40000000000002,
+      "validation": "fail",
+      "strategy": "escalation to opus",
+      "operation_timings": {
+        "data_loading": 0.69,
+        "resolve_constants": 0,
+        "scan_movie_info_genres_filter": 50.12,
+        "build_movie_set_T": 4.16,
+        "main_scan": 13.68,
+        "output": 0.07,
+        "total": 72.29
+      }
+    }
+  ]
+}

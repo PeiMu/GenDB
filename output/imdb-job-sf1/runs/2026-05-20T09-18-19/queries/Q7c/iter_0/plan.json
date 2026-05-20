@@ -1,0 +1,104 @@
+{
+  "query_id": "Q7c",
+  "pipeline": [
+    "resolve_dim_codes",
+    "scan_pi_by_info_type",
+    "filter_pi_note_nonempty",
+    "filter_name_pcode_cf_and_gender",
+    "semijoin_aka_name",
+    "expand_cast_info_by_person",
+    "filter_title_year",
+    "expand_movie_link_by_linked_movie_id",
+    "filter_link_type_in_set",
+    "aggregate_min_name_min_pi_info"
+  ],
+  "join_order": [
+    {
+      "build": "info_type(info='mini biography')",
+      "probe": "person_info via CSR person_info__info_type_id",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 1,
+      "notes": "Driver: single it_id selects pi slice; pi.note IS NOT NULL filter applied inline."
+    },
+    {
+      "build": "candidate_pids (post pi-filter, name filters)",
+      "probe": "aka_name via offsets-only aka_name__person_id",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 200000,
+      "notes": "Per pid, scan aka slice; pass if any aka has len>0 AND (memchr(name,'a') || name[0]=='A')."
+    },
+    {
+      "build": "surviving_pids",
+      "probe": "cast_info via CSR cast_info__person_id",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 150000,
+      "notes": "Per pid expand to ci rows; read ci_movie[ci_row] to get t_id."
+    },
+    {
+      "build": "title.production_year filter (inline)",
+      "probe": "title.production_year[t_id-1]",
+      "type": "inner",
+      "strategy": "direct_array",
+      "build_cardinality": 2528312,
+      "notes": "1980<=y<=2010 && y!=INT32_MIN; direct array indexing by t_id."
+    },
+    {
+      "build": "t_id",
+      "probe": "movie_link via CSR movie_link__linked_movie_id",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 29997,
+      "notes": "Per t_id, enumerate ml rows; verify ml_link_type_id in target_lt_ids."
+    },
+    {
+      "build": "link_type(link IN 4 values)",
+      "probe": "movie_link.link_type_id",
+      "type": "semi",
+      "strategy": "bitset",
+      "build_cardinality": 4,
+      "notes": "Tiny target_lt_ids set (≤4 ids out of 18); use std::array<bool,19> bitset for O(1) membership."
+    }
+  ],
+  "filters": [
+    {"table": "info_type", "predicate": "info = 'mini biography'", "selectivity": 0.0088},
+    {"table": "link_type", "predicate": "link IN ('references','referenced in','features','featured in')", "selectivity": 0.22},
+    {"table": "person_info", "predicate": "note IS NOT NULL (off[r+1]>off[r])", "selectivity": 0.7},
+    {"table": "name", "predicate": "name_pcode_cf BETWEEN 'A' AND 'F'", "selectivity": 0.25},
+    {"table": "name", "predicate": "gender='m' OR (gender='f' AND name LIKE 'A%')", "selectivity": 0.55},
+    {"table": "aka_name", "predicate": "len>0 AND (name LIKE '%a%' OR name LIKE 'A%')", "selectivity": 0.9},
+    {"table": "title", "predicate": "production_year BETWEEN 1980 AND 2010", "selectivity": 0.6}
+  ],
+  "data_structures": {
+    "target_it_id": "int32_t scalar (scan info_type.info; find 'mini biography')",
+    "target_lt_ids": "std::array<bool,19> bitset indexed by link_type.id",
+    "gender_codes": "int8_t code_m, code_f resolved from name/gender.dict at runtime",
+    "pi_slice": "CSR person_info__info_type_id (offsets+rowids, mmap int32)",
+    "aka_name_idx": "offsets-only aka_name__person_id (mmap int32)",
+    "ci_person_idx": "CSR cast_info__person_id (offsets+rowids, mmap int32)",
+    "ml_linked_idx": "CSR movie_link__linked_movie_id (offsets+rowids, mmap int32)",
+    "title_year": "mmap int32 array, direct indexed by t_id-1",
+    "aggregation": "per-thread (min_name_off,min_name_len) and (min_pi_info_off,min_pi_info_len); merge with lexicographic compare against name.dat / person_info.info.dat"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "notes": "Partition the pi slice [lo,hi) for target_it_id into morsels (e.g., 4096 rows each). Each thread maintains local MIN(name) and MIN(pi.info); final reduction lex-compares via the .dat buffers."
+  },
+  "indexes": [
+    {"index": "person_info__info_type_id", "purpose": "driver_slice"},
+    {"index": "aka_name__person_id", "purpose": "semi_join_probe"},
+    {"index": "cast_info__person_id", "purpose": "join_expand"},
+    {"index": "movie_link__linked_movie_id", "purpose": "join_expand"}
+  ],
+  "aggregation": "scalar_min_two_varlen",
+  "output": {"projection": ["MIN(n.name)", "MIN(pi.info)"], "order_by": [], "limit": 1},
+  "execution_target": "cpp",
+  "notes": [
+    "Per pi row in target_it_id slice: (1) check note non-empty; (2) pid=pi_person[pi_row]; (3) read name_pcode_cf[pid-1]: lex 'A'<=s<='F' (treat as bytewise; empty fails); (4) gender check with optional A%-name condition; (5) aka semi-join via offsets; (6) expand ci; (7) per t_id year filter; (8) ml semi-join with target_lt_ids; (9) if any match → update MIN(name) for pid and MIN(pi.info) for pi_row.",
+    "Short-circuit: once a pid passes aka semi-join and name MIN candidate is updated, MIN(pi.info) still requires at least one full match through ml; track them independently — name min is conditional on the full join succeeding, so update both only after a match is found.",
+    "BETWEEN 'A' AND 'F' on name_pcode_cf: inclusive, so accept strings s with s>='A' and s<='F\\xff...' — using std::string_view lex compare with 'A' lower bound and 'G' exclusive upper is incorrect; use s>=\"A\" && s<=\"F\" semantics: a string 'F' is accepted, 'Fa' is rejected (since 'Fa'>'F' lex). Implementation: compare to literal 'A' lower and to 'F' upper using strncmp-style bytewise compare."
+  ]
+}

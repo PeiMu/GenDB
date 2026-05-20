@@ -1,0 +1,27 @@
+{
+  "query_id": "Q17a",
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 19.756666666666664,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 19.756666666666664,
+      "validation": "pass",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "data_loading": 0.09,
+        "resolve_kid": 0.01,
+        "resolve_us_code": 0,
+        "build_b_prefix": 4.21,
+        "mk_csr_scan": 1.2,
+        "main_scan": 12.17,
+        "output": 0.07,
+        "total": 18.82
+      }
+    }
+  ]
+}

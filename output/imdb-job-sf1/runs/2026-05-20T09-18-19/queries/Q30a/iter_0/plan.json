@@ -1,0 +1,121 @@
+{
+  "query_id": "Q30a",
+  "pipeline": [
+    "resolve_dim_ids",
+    "scan_complete_cast_driver",
+    "filter_title_year",
+    "probe_movie_keyword",
+    "probe_movie_info_genres",
+    "probe_movie_info_idx_votes",
+    "probe_cast_info_writer_male",
+    "aggregate_min"
+  ],
+  "dim_resolution": [
+    {"table": "comp_cast_type", "predicate": "kind IN ('cast','crew')", "output": "cct1_ids (small std::array<int32,2>)", "notes": "scan 4 rows, row i -> id i+1"},
+    {"table": "comp_cast_type", "predicate": "kind = 'complete+verified'", "output": "cct2_id (int32 scalar)"},
+    {"table": "info_type", "predicate": "info = 'genres'", "output": "it1_id (int32 scalar)"},
+    {"table": "info_type", "predicate": "info = 'votes'", "output": "it2_id (int32 scalar)"},
+    {"table": "keyword", "predicate": "keyword IN (7 literals)", "output": "k_ids flat_hash_set<int32> (<=7)"},
+    {"table": "name.gender.dict", "predicate": "gender = 'm'", "output": "m_code (int8 scalar)"}
+  ],
+  "filters": [
+    {"table": "comp_cast_type", "predicate": "kind IN ('cast','crew')", "selectivity": 0.5, "stage": "dim_resolve"},
+    {"table": "comp_cast_type", "predicate": "kind = 'complete+verified'", "selectivity": 0.25, "stage": "dim_resolve"},
+    {"table": "info_type", "predicate": "info = 'genres'", "selectivity": 0.009, "stage": "dim_resolve"},
+    {"table": "info_type", "predicate": "info = 'votes'", "selectivity": 0.009, "stage": "dim_resolve"},
+    {"table": "keyword", "predicate": "keyword IN (7 literals)", "selectivity": 0.00005, "stage": "dim_resolve"},
+    {"table": "complete_cast", "predicate": "subject_id IN cct1_ids AND status_id == cct2_id", "selectivity": 0.05, "stage": "driver_scan", "notes": "expected ~5-10K surviving cc rows out of 135086"},
+    {"table": "title", "predicate": "production_year > 2000 (skip INT32_MIN)", "selectivity": 0.3, "stage": "per_mv"},
+    {"table": "movie_keyword", "predicate": "keyword_id IN k_ids (any)", "selectivity": 0.02, "stage": "semi_probe"},
+    {"table": "movie_info", "predicate": "info_type_id == it1_id AND info IN {'Horror','Thriller'}", "selectivity": 0.015, "stage": "semi_probe", "notes": "length prefilter 5-8 bytes"},
+    {"table": "movie_info_idx", "predicate": "info_type_id == it2_id (any)", "selectivity": 0.5, "stage": "semi_probe"},
+    {"table": "cast_info", "predicate": "note IN 5-literal writer_set AND name.gender[person_id-1]==m_code", "selectivity": 0.005, "stage": "semi_probe"}
+  ],
+  "join_order": [
+    {
+      "build": "complete_cast(filtered by subject_id IN cct1_ids AND status_id==cct2_id)",
+      "probe": "driver_loop",
+      "type": "driver",
+      "strategy": "linear_scan_smallest_fact",
+      "build_cardinality": 135086,
+      "expected_survivors": 8000,
+      "notes": "complete_cast is the smallest fact (135K). Single linear scan filters via cct1/cct2 dim ids; skip nullable movie_id == INT32_MIN. Produces dedup set of candidate mv values."
+    },
+    {
+      "build": "title.production_year[mv-1]",
+      "probe": "mv (per candidate)",
+      "type": "filter",
+      "strategy": "direct_array_lookup",
+      "build_cardinality": 2528312,
+      "notes": "Skip mv if production_year <= 2000 or == INT32_MIN."
+    },
+    {
+      "build": "movie_keyword via offsets_only[mv]",
+      "probe": "k_ids semi-test",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 4523930,
+      "notes": "Iterate mk rows for mv; require any keyword_id in k_ids (tiny set, linear scan ok)."
+    },
+    {
+      "build": "movie_info via offsets_only[mv]",
+      "probe": "it1_id + {Horror,Thriller}",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 14835720,
+      "notes": "Capture mi.info slice for MIN aggregation; length prefilter then equality."
+    },
+    {
+      "build": "movie_info_idx via offsets_only[mv]",
+      "probe": "it2_id",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 1380035,
+      "notes": "Capture mi_idx.info slice for MIN."
+    },
+    {
+      "build": "cast_info via offsets_only[mv]",
+      "probe": "note IN writer_set AND name.gender[pid-1]==m_code",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 36244344,
+      "notes": "For each surviving ci row, fetch pid; gather n.name slice for MIN."
+    }
+  ],
+  "data_structures": {
+    "cct1_ids": "std::array<int32,2> (linear scan, <=2 entries)",
+    "k_ids": "flat_hash_set<int32> (<=7 entries; or sorted small array + linear scan)",
+    "writer_notes": "flat_hash_set<string_view> (5 literals)",
+    "genres_set": "compile-time {'Horror','Thriller'} with length prefilter (5-8)",
+    "candidate_mv": "no materialization required — process each surviving cc row inline; optional flat_hash_set<int32> dedup since cc may have multiple rows per movie",
+    "mv_dedup": "flat_hash_set<int32> sized ~16K to dedup movie_id across cc filter survivors",
+    "aggregation": "four std::string_view running minima (mi.info, mi_idx.info, n.name, t.title); compare via std::string_view::operator<"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "morsel_unit": "complete_cast row range (chunks of ~8K rows)",
+    "notes": "Partition driver scan over complete_cast (135086 rows / 12 threads). Per-thread local min strings and local mv_dedup set; merge at end with 4-way lex-min reduction."
+  },
+  "indexes": [
+    {"index": "complete_cast__movie_id", "purpose": "not used for driver (linear scan), retained for sanity"},
+    {"index": "movie_keyword__movie_id", "purpose": "offsets_only probe per mv"},
+    {"index": "movie_info__movie_id", "purpose": "offsets_only probe per mv"},
+    {"index": "movie_info_idx__movie_id", "purpose": "offsets_only probe per mv"},
+    {"index": "cast_info__movie_id", "purpose": "offsets_only probe per mv"}
+  ],
+  "aggregation": "scalar_min_4way (no group-by; four global MIN aggregates merged across threads)",
+  "output": {
+    "order_by": [],
+    "limit": 1,
+    "columns": ["MIN(mi.info)", "MIN(mi_idx.info)", "MIN(n.name)", "MIN(t.title)"]
+  },
+  "execution_notes": [
+    "Driver order chosen because complete_cast (135K) is smallest fact and cct1/cct2 cut it ~95%.",
+    "Per surviving mv, evaluate cheap filters first: title.production_year, then movie_keyword (~2% selectivity), then movie_info Horror/Thriller, then movie_info_idx votes, finally cast_info (most expensive due to person_id chase and gender lookup).",
+    "Short-circuit each semi-join: stop on first matching row but still capture min candidate; for mi.info and mi_idx.info we must iterate all matching rows to compute MIN slice.",
+    "Skip slot 0 (NULL bucket) in offsets_only indexes.",
+    "Use string_view for varlen MIN aggregates to avoid string copies until thread-merge."
+  ],
+  "execution_target": "cpp"
+}

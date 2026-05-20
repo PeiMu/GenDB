@@ -1,0 +1,67 @@
+{
+  "query_id": "Q6c",
+  "pipeline": [
+    "resolve_keyword_id",
+    "build_downey_robert_ids",
+    "csr_probe_movie_keyword",
+    "filter_production_year",
+    "offsets_probe_cast_info",
+    "aggregate_min"
+  ],
+  "join_order": [
+    {
+      "build": "keyword(filter keyword='marvel-cinematic-universe')",
+      "probe": "movie_keyword via CSR movie_keyword__keyword_id",
+      "type": "inner",
+      "strategy": "pre_built_index",
+      "build_cardinality": 1,
+      "notes": "Single literal scan over keyword.keyword to resolve target_k_id; then CSR slice yields candidate mk rows (small)."
+    },
+    {
+      "build": "candidate t_ids from mk_movie_id[mk_row]",
+      "probe": "title.production_year",
+      "type": "inner",
+      "strategy": "direct_array",
+      "build_cardinality": 200,
+      "notes": "title is dense PK; production_year_bin[t_id-1] > 2014 && != INT32_MIN (selectivity ~5% of candidates)."
+    },
+    {
+      "build": "name(filter name LIKE '%Downey%Robert%') -> downey_robert_ids",
+      "probe": "cast_info.person_id within offsets_only slice per surviving t_id",
+      "type": "semi",
+      "strategy": "hash_set",
+      "build_cardinality": 50,
+      "notes": "Very selective LIKE produces a tiny set; small hash_set used for IN-test inside ci slice."
+    }
+  ],
+  "filters": [
+    {"table": "keyword", "predicate": "keyword = 'marvel-cinematic-universe'", "selectivity": 7.5e-06},
+    {"table": "name", "predicate": "name LIKE '%Downey%Robert%'", "selectivity": 1.2e-05},
+    {"table": "title", "predicate": "production_year > 2014 AND production_year != INT32_MIN", "selectivity": 0.05}
+  ],
+  "data_structures": {
+    "target_k_id": "int32_t scalar",
+    "downey_robert_ids": "flat_hash_set<int32_t>",
+    "candidate_t_ids": "implicit (consumed inline from CSR scan)",
+    "aggregation": "three scalar MIN trackers (k.keyword is constant literal; n.name and t.title compared as std::string_view)"
+  },
+  "parallelism": {
+    "strategy": "single_threaded",
+    "threads": 1,
+    "notes": "mk slice for one keyword id is tiny (~few hundred rows); parallel overhead would exceed work. name pre-scan can optionally be parallel over 12 threads since it scans 4.17M varlen rows."
+  },
+  "indexes": [
+    {"index": "movie_keyword__keyword_id", "purpose": "join_lookup (CSR slice for target_k_id)"},
+    {"index": "cast_info__movie_id", "purpose": "join_lookup (offsets_only slice per t_id)"}
+  ],
+  "aggregation": "scalar_min",
+  "output": {"order_by": [], "limit": null, "projection": ["MIN(k.keyword)", "MIN(n.name)", "MIN(t.title)"]},
+  "execution_notes": [
+    "MIN(k.keyword) resolves to the literal 'marvel-cinematic-universe' if any row matches; track presence via a boolean rather than re-reading.",
+    "Pre-scan name.name in parallel (12 threads) using offsets+dat; per-row check substring 'Downey' then 'Robert' after it. Append matching n.id to thread-local vectors then merge into flat_hash_set.",
+    "Pre-scan keyword.keyword sequentially (only 134K rows, varlen) to find target_k_id; if not found, return three NULLs.",
+    "Main loop: lo=mk_off[target_k_id], hi=mk_off[target_k_id+1]; for j in [lo,hi): mk_row=mk_rowids[j]; t_id=mk_movie_id[mk_row]; if production_year_bin[t_id-1] > 2014 && != INT32_MIN: walk ci_off[t_id]..ci_off[t_id+1]; if downey_robert_ids.contains(ci_person[r]) update MIN(n.name) and MIN(t.title) lazily (only fetch varlen on first match per t_id/person_id).",
+    "Use std::string_view comparisons against current best to avoid copying; only copy on update."
+  ],
+  "execution_target": "cpp"
+}

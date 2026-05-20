@@ -1,0 +1,70 @@
+{
+  "query_id": "Q8d",
+  "pipeline": [
+    "resolve_dict_codes",
+    "scan_cast_info_via_role_csr",
+    "probe_mc_and_cn_filter",
+    "probe_aka_name_existence",
+    "min_aggregate"
+  ],
+  "join_order": [
+    {
+      "build": "rt(role='costume designer') -> rt_id_cd",
+      "probe": "cast_info via cast_info__role_id CSR",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 1,
+      "notes": "Use CSR offsets[rt_id_cd..rt_id_cd+1] for row ids"
+    },
+    {
+      "build": "cn.country_code=='[us]' bitmap (us_code int16)",
+      "probe": "mc rows for ci.movie_id via movie_companies__movie_id offsets",
+      "type": "semi",
+      "strategy": "direct_array",
+      "build_cardinality": 234997,
+      "notes": "Per ci row: scan mc range; semi-join succeeds if any mc.company_id has cn.country_code[company_id-1]==us_code"
+    },
+    {
+      "build": "aka_name__person_id offsets",
+      "probe": "ci.person_id",
+      "type": "semi",
+      "strategy": "direct_array",
+      "build_cardinality": 901343,
+      "notes": "Existence: aka_name range for pid must be non-empty"
+    }
+  ],
+  "filters": [
+    {"table": "role_type", "predicate": "role='costume designer'", "selectivity": 0.083},
+    {"table": "company_name", "predicate": "country_code='[us]'", "selectivity": 0.5}
+  ],
+  "data_structures": {
+    "rt_id_resolution": "linear_scan_varlen",
+    "us_code_resolution": "linear_scan_dict",
+    "ci_driver": "csr_offsets+rowids (pre-built)",
+    "mc_lookup": "offsets_only (pre-built)",
+    "aka_name_lookup": "offsets_only (pre-built)",
+    "cn_country_code": "int16_array_direct_index",
+    "aggregation": "two_scalar_min_strings"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "notes": "Partition CSR row range [lo,hi) across 12 threads; each thread maintains local (min_title_idx, min_aname_idx); reduce at end via lexicographic string compare"
+  },
+  "indexes": [
+    {"index": "cast_info__role_id (CSR)", "purpose": "driver: select ci rows with role='costume designer'"},
+    {"index": "movie_companies__movie_id (offsets_only)", "purpose": "join_lookup: mc rows for given movie_id"},
+    {"index": "aka_name__person_id (offsets_only)", "purpose": "existence_check: aka_name presence for ci.person_id"}
+  ],
+  "aggregation": "scalar_min_two_columns",
+  "output": {"order_by": [], "limit": 1, "projection": ["MIN(an1.name) AS costume_designer_pseudo", "MIN(t.title) AS movie_with_costumes"]},
+  "execution_target": "cpp",
+  "implementation_notes": [
+    "Per-thread track (best_title_row, best_aname_row); resolve string via title.off/dat and aka_name.name.off/dat only at reduce step to avoid repeated varlen reads in hot loop.",
+    "For aka_name MIN, must compare across all aka rows in range[pid] (not just existence) — track min across the per-pid range during the inner loop.",
+    "Short-circuit: if mc-range for movie_id is empty OR aka-range for person_id is empty, skip the row.",
+    "n1 (name table) join is implied by ci.person_id range validity — name.id is dense PK so no explicit lookup needed (an1.person_id=n1.id=ci.person_id holds by construction).",
+    "t.id is dense PK — title row index = movie_id - 1.",
+    "cn.id is dense PK — cn row index = company_id - 1."
+  ]
+}

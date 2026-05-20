@@ -1,0 +1,148 @@
+{
+  "query_id": "Q28c",
+  "pipeline": [
+    "resolve_dims",
+    "scan_title_driver",
+    "probe_movie_keyword",
+    "probe_complete_cast",
+    "probe_movie_info_idx",
+    "probe_movie_companies",
+    "probe_movie_info",
+    "aggregate_min"
+  ],
+  "dim_resolution": [
+    {
+      "name": "cast_id",
+      "source": "comp_cast_type.kind == 'cast'",
+      "type": "scalar_int32"
+    },
+    {
+      "name": "complete_id",
+      "source": "comp_cast_type.kind == 'complete'",
+      "type": "scalar_int32"
+    },
+    {
+      "name": "us_code",
+      "source": "company_name.country_code dict lookup '[us]'",
+      "type": "scalar_dict_code"
+    },
+    {
+      "name": "cn_set",
+      "source": "company_name where country_code != us_code (dict code 0 NULL matches)",
+      "type": "bitset(234997)",
+      "expected_size": 134000
+    },
+    {
+      "name": "it1_id",
+      "source": "info_type.info == 'countries'",
+      "type": "scalar_int32"
+    },
+    {
+      "name": "it2_id",
+      "source": "info_type.info == 'rating'",
+      "type": "scalar_int32"
+    },
+    {
+      "name": "kw_set",
+      "source": "keyword.keyword IN ('murder','murder-in-title','blood','violence')",
+      "type": "bitset(134170)",
+      "expected_size": 4
+    },
+    {
+      "name": "kt_set",
+      "source": "kind_type.kind IN ('movie','episode')",
+      "type": "scalar_int32_pair",
+      "expected_size": 2
+    },
+    {
+      "name": "mi_info_set",
+      "source": "10 literal strings",
+      "type": "string_hash_set",
+      "expected_size": 10
+    }
+  ],
+  "join_order": [
+    {
+      "build": "title(year>2005 AND kind_id in kt_set)",
+      "probe": "per t_id pipeline",
+      "type": "driver",
+      "strategy": "parallel_scan_title",
+      "build_cardinality": 1100000,
+      "notes": "driver scan parallel by morsel; produces t_id list"
+    },
+    {
+      "build": "movie_keyword via offsets[t_id]",
+      "probe": "filter keyword_id in kw_set",
+      "type": "semi",
+      "strategy": "index_nested_loop + bitset(kw_set)",
+      "build_cardinality": 4,
+      "notes": "highly selective; eliminates most t_ids fast"
+    },
+    {
+      "build": "complete_cast via offsets[t_id]",
+      "probe": "subject_id==cast_id AND status_id==complete_id",
+      "type": "semi",
+      "strategy": "index_nested_loop + scalar_eq",
+      "build_cardinality": 2,
+      "notes": "very selective; cc has ~135k rows total"
+    },
+    {
+      "build": "movie_info_idx via offsets[t_id]",
+      "probe": "info_type_id==it2_id AND lex(info) < '8.5'",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 1,
+      "notes": "captures min(rating); use lexicographic string compare"
+    },
+    {
+      "build": "movie_companies via offsets[t_id]",
+      "probe": "company_id in cn_set AND note NOT LIKE %(USA)% AND note LIKE %(200%)%",
+      "type": "inner",
+      "strategy": "index_nested_loop + bitset_lookup + substring_scan",
+      "build_cardinality": 1,
+      "notes": "captures cn.name via cn_id->name lookup; substring search on note"
+    },
+    {
+      "build": "movie_info via offsets[t_id]",
+      "probe": "info_type_id==it1_id AND info in mi_info_set",
+      "type": "semi",
+      "strategy": "index_nested_loop + hashset_lookup",
+      "build_cardinality": 1,
+      "notes": "last to check (largest table); pruned set by prior probes"
+    }
+  ],
+  "filters": [
+    {"table": "title", "predicate": "production_year > 2005", "selectivity": 0.43},
+    {"table": "title", "predicate": "kind_id in kt_set", "selectivity": 0.95},
+    {"table": "movie_keyword", "predicate": "keyword_id in kw_set", "selectivity": 0.001},
+    {"table": "complete_cast", "predicate": "subject_id==cast_id AND status_id==complete_id", "selectivity": 0.25},
+    {"table": "movie_info_idx", "predicate": "info_type_id==it2_id AND info<'8.5'", "selectivity": 0.4},
+    {"table": "movie_companies", "predicate": "company_id in cn_set AND note matches", "selectivity": 0.02},
+    {"table": "movie_info", "predicate": "info_type_id==it1_id AND info in set", "selectivity": 0.01}
+  ],
+  "data_structures": {
+    "cn_set": "bitset(234997)",
+    "kw_set": "bitset(134170)",
+    "mi_info_set": "flat_hash_set<string_view> (10 entries)",
+    "cn_name_lookup": "direct_array via company_name.name offsets",
+    "title_lookup": "direct_array via title.title offsets",
+    "mi_idx_info_lookup": "direct_array via movie_info_idx.info offsets",
+    "aggregation": "3x atomic_min (movie_company,rating,title)"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "morsel_size": 16384,
+    "notes": "Parallelize title driver scan; each thread carries thread-local MIN and merges at end"
+  },
+  "indexes": [
+    {"index": "movie_keyword__movie_id", "purpose": "join_lookup"},
+    {"index": "complete_cast__movie_id", "purpose": "join_lookup"},
+    {"index": "movie_info_idx__movie_id", "purpose": "join_lookup"},
+    {"index": "movie_companies__movie_id", "purpose": "join_lookup"},
+    {"index": "movie_info__movie_id", "purpose": "join_lookup"}
+  ],
+  "aggregation": "scalar_min_3way",
+  "output": {"order_by": [], "limit": 1},
+  "execution_target": "cpp"
+}

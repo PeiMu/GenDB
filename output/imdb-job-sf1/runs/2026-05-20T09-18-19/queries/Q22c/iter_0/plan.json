@@ -1,0 +1,135 @@
+{
+  "query_id": "Q22c",
+  "pipeline": [
+    "resolve_dims",
+    "scan_title_driver",
+    "probe_mk_semi",
+    "probe_mi_semi",
+    "probe_mi_idx_with_min",
+    "probe_mc_with_cn_join",
+    "aggregate_min"
+  ],
+  "dim_resolution": [
+    {
+      "dim": "info_type",
+      "scan": "linear",
+      "outputs": ["it1_id (info='countries')", "it2_id (info='rating')"],
+      "rows": 113
+    },
+    {
+      "dim": "keyword",
+      "scan": "linear",
+      "outputs": "kw_ids set (4 entries)",
+      "structure": "flat_hash_set<int32_t> or small sorted vector + linear search",
+      "rows": 134170
+    },
+    {
+      "dim": "kind_type",
+      "scan": "linear",
+      "outputs": "kt_ids set ({movie, episode})",
+      "structure": "small array (2 entries)",
+      "rows": 7
+    },
+    {
+      "dim": "company_name",
+      "scan": "linear",
+      "outputs": "cn_ok[id] bitset where country_code != us_code AND code != 0; also cn_name[id] for MIN projection",
+      "structure": "bitset(234997) + offset/dat pointers to cn.name",
+      "rows": 234997
+    },
+    {
+      "dim": "company_type",
+      "scan": "none",
+      "notes": "All 4 ct ids are valid; trivial join — no filter."
+    }
+  ],
+  "join_order": [
+    {
+      "step": 1,
+      "build": "title (driver) with kt_ids and production_year > 2005 inline filter",
+      "probe": "—",
+      "type": "scan",
+      "strategy": "morsel_driven_parallel_scan",
+      "build_cardinality": 2528312,
+      "notes": "Driver loop over t.id v=1..N. Skip rows where production_year <= 2005 (also skip INT32_MIN sentinel) and where !kt_ids.contains(kind_id). Cheapest filters first."
+    },
+    {
+      "step": 2,
+      "build": "kw_ids (4 entries)",
+      "probe": "movie_keyword via mk__movie_id offsets[v..v+1]",
+      "type": "semi",
+      "strategy": "index_nested_loop + small_set_membership",
+      "build_cardinality": 4,
+      "notes": "For surviving v, scan mk rows; break early on first hit where kw_ids contains keyword_id. If no hit, skip v."
+    },
+    {
+      "step": 3,
+      "build": "mi_info_set (10 string_views) + it1_id",
+      "probe": "movie_info via mi__movie_id offsets[v..v+1]",
+      "type": "semi",
+      "strategy": "index_nested_loop + flat_hash_set<string_view>",
+      "build_cardinality": 10,
+      "notes": "For each row: first check info_type_id == it1_id, then length prefilter (3..10 chars), then set probe. Break on first match."
+    },
+    {
+      "step": 4,
+      "build": "it2_id + '8.5' constant",
+      "probe": "movie_info_idx via mi_idx__movie_id offsets[v..v+1]",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 1,
+      "notes": "For each row: info_type_id == it2_id, then lex compare info < '8.5' via memcmp. Track local_min_rating across all matching mi_idx rows for MIN projection."
+    },
+    {
+      "step": 5,
+      "build": "cn_ok bitset (cn.id -> valid) + ct trivial",
+      "probe": "movie_companies via mc__movie_id offsets[v..v+1]",
+      "type": "inner",
+      "strategy": "index_nested_loop + bitset_lookup + two_memmem",
+      "build_cardinality": 234997,
+      "notes": "For each mc row: (a) note present, (b) memmem find '(200' (LIKE %(200%)% — note '(200%)' means literal '(200' then any chars then ')'), (c) memmem NOT find '(USA)'. Then cn_ok[company_id]. Track local_min cn.name."
+    },
+    {
+      "step": 6,
+      "build": "—",
+      "probe": "—",
+      "type": "aggregate",
+      "strategy": "thread_local_min_combine",
+      "notes": "Per-thread MIN of (cn.name, mi_idx.info, t.title); combine across threads."
+    }
+  ],
+  "filters": [
+    {"table": "title", "predicate": "production_year > 2005", "selectivity": 0.25},
+    {"table": "title", "predicate": "kind_id IN (movie, episode)", "selectivity": 0.95},
+    {"table": "movie_keyword", "predicate": "keyword_id IN kw_ids(4)", "selectivity": 0.0003},
+    {"table": "movie_info", "predicate": "info_type_id = it1_id AND info IN (10 literals)", "selectivity": 0.01},
+    {"table": "movie_info_idx", "predicate": "info_type_id = it2_id AND info < '8.5'", "selectivity": 0.4},
+    {"table": "movie_companies", "predicate": "note LIKE '%(200%)%' AND NOT LIKE '%(USA)%'", "selectivity": 0.05},
+    {"table": "company_name", "predicate": "country_code != '[us]'", "selectivity": 0.85}
+  ],
+  "data_structures": {
+    "kw_ids": "flat_hash_set<int32_t> or sorted small array (4 entries)",
+    "kt_ids": "small array (2 entries) with linear contains",
+    "mi_info_set": "flat_hash_set<string_view> (10 literals)",
+    "cn_ok": "bitset(234997) keyed by cn.id",
+    "cn_name_view": "raw offsets+dat pointers (no copy) for MIN projection",
+    "title_projection": "raw offsets+dat for MIN(t.title)",
+    "mi_idx_info_projection": "raw offsets+dat for MIN(mi_idx.info)",
+    "aggregation": "thread_local string_view tracking min, with final reduction"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "morsel_size": 65536,
+    "notes": "Parallelize the title driver loop. Each thread maintains thread-local mins; reduce at end."
+  },
+  "indexes": [
+    {"index": "movie_keyword__movie_id (offsets_only)", "purpose": "per-title mk row range lookup"},
+    {"index": "movie_info__movie_id (offsets_only)", "purpose": "per-title mi row range lookup"},
+    {"index": "movie_info_idx__movie_id (offsets_only)", "purpose": "per-title mi_idx row range lookup"},
+    {"index": "movie_companies__movie_id (offsets_only)", "purpose": "per-title mc row range lookup"}
+  ],
+  "aggregation": "scalar_min_three_columns",
+  "output": {"order_by": [], "limit": 1, "projections": ["MIN(cn.name)", "MIN(mi_idx.info)", "MIN(t.title)"]},
+  "execution_target": "cpp"
+}

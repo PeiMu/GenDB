@@ -1,0 +1,94 @@
+{
+  "query_id": "Q8b",
+  "pipeline": [
+    "resolve_dict_codes",
+    "scan_title_driver",
+    "for_each_title_probe_mc",
+    "for_each_title_probe_ci",
+    "name_filter",
+    "aka_name_lookup",
+    "aggregate_min"
+  ],
+  "join_order": [
+    {
+      "build": "title (year IN {2006,2007} AND (title LIKE 'One Piece%' OR title LIKE 'Dragon Ball Z%'))",
+      "probe": "movie_companies via movie_companies__movie_id offsets",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 50,
+      "notes": "Title is the most selective driver (tens of rows); use offsets_only index on mc.movie_id"
+    },
+    {
+      "build": "company_name (country_code='[jp]') as bitset[N_company]",
+      "probe": "movie_companies (already restricted to surviving titles)",
+      "type": "semi",
+      "strategy": "direct_array",
+      "build_cardinality": 234997,
+      "notes": "Precompute bool[N_company+1] from cn.country_code.bin==jp_code; O(1) lookup per mc row"
+    },
+    {
+      "build": "title-surviving t_id set (with mc match)",
+      "probe": "cast_info via cast_info__movie_id offsets",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 50,
+      "notes": "Range scan ci by movie_id offsets; apply ci.role_id==rt_id_actress AND ci.note=='(voice: English version)'"
+    },
+    {
+      "build": "name_ok bitset[N_name+1] from name.name LIKE '%Yo%' AND NOT '%Yu%'",
+      "probe": "cast_info.person_id (surviving ci rows)",
+      "type": "semi",
+      "strategy": "bitset",
+      "build_cardinality": 4167491,
+      "notes": "Single full scan of name.{off,dat} builds bitset; O(1) lookup per ci row"
+    },
+    {
+      "build": "aka_name__person_id offsets",
+      "probe": "surviving person_ids",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 901343,
+      "notes": "Per surviving pid: range lookup; for each aka row track MIN(an.name)"
+    }
+  ],
+  "filters": [
+    {"table": "title", "predicate": "production_year BETWEEN 2006 AND 2007 AND (title LIKE 'One Piece%' OR title LIKE 'Dragon Ball Z%')", "selectivity": 0.00002},
+    {"table": "role_type", "predicate": "role='actress'", "selectivity": 0.083},
+    {"table": "company_name", "predicate": "country_code='[jp]'", "selectivity": 0.02},
+    {"table": "movie_companies", "predicate": "note LIKE '%(Japan)%' AND note NOT LIKE '%(USA)%' AND (note LIKE '%(2006)%' OR note LIKE '%(2007)%')", "selectivity": 0.001},
+    {"table": "cast_info", "predicate": "note='(voice: English version)' AND role_id=rt_id_actress", "selectivity": 0.005},
+    {"table": "name", "predicate": "name LIKE '%Yo%' AND NOT '%Yu%'", "selectivity": 0.03}
+  ],
+  "data_structures": {
+    "title_driver": "std::vector<int32_t> t_ids (small, tens)",
+    "rt_id_actress": "int32_t scalar resolved from role_type",
+    "jp_code": "int16_t scalar resolved from company_name dict",
+    "cn_is_jp": "std::vector<uint8_t> bool[N_company+1] indexed by company_id",
+    "name_ok": "std::vector<uint8_t> bitset[N_name+1] indexed by person_id (1-based)",
+    "ci_movie_offsets": "mmap int32 array (cast_info__movie_id__offsets.bin)",
+    "mc_movie_offsets": "mmap int32 array (movie_companies__movie_id__offsets.bin)",
+    "aka_pid_offsets": "mmap int32 array (aka_name__person_id__offsets.bin)",
+    "aggregation": "two std::string scalars min_aka_name, min_title (lexicographic MIN, replace if smaller)"
+  },
+  "parallelism": {
+    "strategy": "single_thread",
+    "threads": 1,
+    "notes": "Title driver yields only tens of t_ids; per-title work is tiny. Build name_ok bitset single-threaded (one sequential pass over name.dat). Avoid thread spawn overhead."
+  },
+  "indexes": [
+    {"index": "movie_companies__movie_id__offsets", "purpose": "join_lookup mc by t_id"},
+    {"index": "cast_info__movie_id__offsets", "purpose": "join_lookup ci by t_id"},
+    {"index": "aka_name__person_id__offsets", "purpose": "join_lookup aka_name by pid"}
+  ],
+  "aggregation": "scalar_min",
+  "output": {"order_by": [], "limit": 1},
+  "execution_target": "cpp",
+  "execution_notes": [
+    "Step 1: resolve rt_id_actress (scan role_type/role.{off,dat}), resolve jp_code (scan company_name/country_code.dict.{off,dat}).",
+    "Step 2: build cn_is_jp[1..N_company] from cn.country_code.bin == jp_code.",
+    "Step 3: scan title once: for i in [0, N_title): if year[i] in {2006,2007} AND (memcmp(title prefix,'One Piece',9)==0 OR memcmp(title prefix,'Dragon Ball Z',13)==0) push t_id=i+1 and remember title slice.",
+    "Step 4: build name_ok bitset by scanning name.{off,dat} once: name_ok[i+1] = (memmem 'Yo' present) && !(memmem 'Yu' present).",
+    "Step 5: for each t_id in driver: (a) mc range [mc_off[t_id], mc_off[t_id+1]); for each mc row r: apply 4 LIKE checks via memmem AND cn_is_jp[mc.company_id[r]]; break/note if any match (movie passes mc-filter). (b) if mc-filter passes, ci range [ci_off[t_id], ci_off[t_id+1]); for each ci row r: if role_id==rt_id_actress AND ci.note slice == '(voice: English version)' (length-compare then memcmp), pid=ci.person_id[r]; if name_ok[pid]: aka range [aka_off[pid], aka_off[pid+1]); for each aka row a: candidate aka_name = aka.name slice; update min_aka_name; also update min_title with current t.title slice.",
+    "Step 6: print MIN values; treat unset as NULL."
+  ]
+}

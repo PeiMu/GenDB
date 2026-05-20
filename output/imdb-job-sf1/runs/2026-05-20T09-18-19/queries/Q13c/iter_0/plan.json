@@ -1,0 +1,94 @@
+{
+  "query_id": "Q13c",
+  "pipeline": [
+    "resolve_dims",
+    "scan_title_filter_prefix",
+    "probe_movie_companies",
+    "probe_movie_info_exists",
+    "probe_movie_info_idx",
+    "aggregate_min"
+  ],
+  "dim_resolution": [
+    {"table": "company_name", "predicate": "country_code = '[us]'", "produces": "us_code (int16 dict code)"},
+    {"table": "company_type", "predicate": "kind = 'production companies'", "produces": "ct_id (scalar)"},
+    {"table": "info_type", "predicate": "info = 'rating'", "produces": "it_id (scalar)"},
+    {"table": "info_type", "predicate": "info = 'release dates'", "produces": "it2_id (scalar)"},
+    {"table": "kind_type", "predicate": "kind = 'movie'", "produces": "kt_id (scalar)"}
+  ],
+  "filters": [
+    {"table": "title", "predicate": "kind_id == kt_id", "selectivity": 0.6},
+    {"table": "title", "predicate": "title != ''", "selectivity": 0.999},
+    {"table": "title", "predicate": "memcmp(title,'Champion',8)==0 OR memcmp(title,'Loser',5)==0", "selectivity": 0.0003, "notes": "anchored prefix LIKE, ~hundreds of survivors out of 2.5M"},
+    {"table": "movie_companies", "predicate": "company_type_id == ct_id", "selectivity": 0.5},
+    {"table": "company_name", "predicate": "country_code[cid-1] == us_code", "selectivity": 0.4},
+    {"table": "movie_info", "predicate": "info_type_id == it2_id (existence)", "selectivity": 0.1},
+    {"table": "movie_info_idx", "predicate": "info_type_id == it_id", "selectivity": 0.4}
+  ],
+  "join_order": [
+    {
+      "build": "title (filtered: kind=movie AND prefix LIKE)",
+      "probe": "movie_companies via movie_companies__movie_id offsets",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 400,
+      "notes": "Anchored prefix is extremely selective; drive all probes from this tiny set."
+    },
+    {
+      "build": "filtered mc rows (ct_id match)",
+      "probe": "company_name.country_code[cid-1]",
+      "type": "inner",
+      "strategy": "direct_array",
+      "build_cardinality": 234997,
+      "notes": "PK lookup into company_name.country_code dict column."
+    },
+    {
+      "build": "title mids",
+      "probe": "movie_info via movie_info__movie_id offsets",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 400,
+      "notes": "Existence check for it2_id; stop on first match."
+    },
+    {
+      "build": "title mids",
+      "probe": "movie_info_idx via movie_info_idx__movie_id offsets",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 400,
+      "notes": "Filter on it_id; capture info for MIN."
+    }
+  ],
+  "data_structures": {
+    "title_candidates": "flat_vector<int32_t> (mids)",
+    "dim_codes": "scalars (us_code int16, ct_id/it_id/it2_id/kt_id int32)",
+    "mc_offsets": "mmap int32_t[] (movie_companies__movie_id offsets)",
+    "mi_offsets": "mmap int32_t[] (movie_info__movie_id offsets)",
+    "miidx_offsets": "mmap int32_t[] (movie_info_idx__movie_id offsets)",
+    "cn_country_code": "mmap int16_t[] (dict codes)",
+    "min_accumulators": "three std::string with bytewise min (cn.name, miidx.info, t.title)"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "notes": "Parallelize title scan across morsels (2.5M rows). Per-thread min accumulators merged at end."
+  },
+  "indexes": [
+    {"index": "movie_companies__movie_id (offsets_only)", "purpose": "join_lookup"},
+    {"index": "movie_info__movie_id (offsets_only)", "purpose": "join_lookup (existence)"},
+    {"index": "movie_info_idx__movie_id (offsets_only)", "purpose": "join_lookup"}
+  ],
+  "scan_strategy": {
+    "title": {
+      "method": "sequential_scan_parallel",
+      "predicate_order": [
+        "kind_id == kt_id (cheap int compare)",
+        "off[i+1] > off[i] (non-empty)",
+        "len>=5 AND (memcmp prefix Champion 8 OR memcmp prefix Loser 5)"
+      ],
+      "notes": "Anchored prefix → single memcmp per branch at title.dat+off[i]. No memmem."
+    }
+  },
+  "aggregation": "scalar_min_three_strings",
+  "output": {"order_by": [], "limit": 1, "projection": ["MIN(cn.name)", "MIN(miidx.info)", "MIN(t.title)"]},
+  "execution_target": "cpp"
+}

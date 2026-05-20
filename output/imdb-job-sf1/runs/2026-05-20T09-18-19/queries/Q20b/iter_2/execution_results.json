@@ -1,0 +1,27 @@
+{
+  "compile": {
+    "status": "pass"
+  },
+  "run": {
+    "status": "pass",
+    "duration_ms": 248
+  },
+  "validation": {
+    "status": "pass"
+  },
+  "optimization_target": "hot",
+  "timing_ms": 245.99333333333334,
+  "hot_timing_ms": 245.99333333333334,
+  "operation_timings": {
+    "data_loading": 0.16,
+    "resolve_cct": 0,
+    "resolve_kt": 0,
+    "resolve_keywords": 0.8,
+    "filter_name_downey_robert": 87.37,
+    "filter_char_name": 133.95,
+    "ci_probe": 0.63,
+    "main_scan": 0.09,
+    "output": 0.09,
+    "total": 227.68
+  }
+}

@@ -1,0 +1,139 @@
+{
+  "query_id": "Q25b",
+  "pipeline": [
+    "resolve_dims",
+    "prepass_valid_persons",
+    "scan_title_driver",
+    "per_survivor_fact_joins",
+    "running_min_aggregation"
+  ],
+  "dim_resolution": [
+    {
+      "step": "scan info_type twice",
+      "outputs": ["it1_id (info='genres')", "it2_id (info='votes')"],
+      "cardinality": 113,
+      "structure": "scalar int32"
+    },
+    {
+      "step": "scan keyword",
+      "outputs": ["kw_ids ∈ {'murder','blood','gore','death','female-nudity'}"],
+      "cardinality": 134170,
+      "expected_matches": 5,
+      "structure": "small flat_array<int32> (linear scan, 5 elements)"
+    },
+    {
+      "step": "resolve gender dict",
+      "outputs": ["m_code (uint8 dict code for 'm')"],
+      "structure": "scalar uint8"
+    },
+    {
+      "step": "prepass name → valid_persons",
+      "input": "name.gender == m_code",
+      "cardinality_in": 4167491,
+      "cardinality_out": 2200000,
+      "structure": "bitset(4167491) indexed by name.id-1",
+      "parallel": true
+    }
+  ],
+  "join_order": [
+    {
+      "build": "title (driver after filters)",
+      "probe": "—",
+      "type": "driver",
+      "strategy": "parallel_scan",
+      "filters": [
+        "production_year > 2010",
+        "title.dat[off[v-1]] == 'M' (single-byte prefix; Q25b template is 'M%')",
+        "title length > 0 (skip NULL)"
+      ],
+      "build_cardinality_pre_filter": 2528312,
+      "build_cardinality_post_filter": 80000,
+      "notes": "Drive on title id v; year filter + single-byte prefix memcmp."
+    },
+    {
+      "build": "movie_keyword via offsets_only",
+      "probe": "mk rows for movie_id=v",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "predicate": "kw_ids.contains(mk.keyword_id) via linear scan of 5-element array",
+      "notes": "Cheapest fact: tiny dim set; prune most surviving titles fast."
+    },
+    {
+      "build": "movie_info_idx via offsets_only",
+      "probe": "mi_idx rows for movie_id=v",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "predicate": "info_type_id == it2_id",
+      "projection": "track running MIN(mi_idx.info) per matching row",
+      "notes": "Small fact; single info_type_id equality."
+    },
+    {
+      "build": "movie_info via offsets_only",
+      "probe": "mi rows for movie_id=v",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "predicate": "info_type_id == it1_id AND info == 'Horror' (Q25b template single literal; runtime plan supports IN-set)",
+      "projection": "track running MIN(mi.info)",
+      "notes": "Larger fact but cheap inner-loop with two equality checks."
+    },
+    {
+      "build": "cast_info via offsets_only",
+      "probe": "ci rows for movie_id=v",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "predicate": "note ∈ writer-set AND valid_persons[ci.person_id-1]",
+      "projection": "fetch n.name via direct PK index, track MIN(n.name)",
+      "notes": "Largest fact, kept last; note filter is a hashed/inlined 5-string set test on dict codes."
+    }
+  ],
+  "filters": [
+    {"table": "title", "predicate": "production_year > 2010", "selectivity": 0.18},
+    {"table": "title", "predicate": "title LIKE 'M%' (single-byte)", "selectivity": 0.07},
+    {"table": "name", "predicate": "gender = 'm'", "selectivity": 0.53},
+    {"table": "info_type", "predicate": "info = 'genres'", "selectivity": 0.009},
+    {"table": "info_type", "predicate": "info = 'votes'", "selectivity": 0.009},
+    {"table": "keyword", "predicate": "keyword ∈ 5-set", "selectivity": 3.7e-5},
+    {"table": "movie_info", "predicate": "info_type_id=it1 AND info='Horror'", "selectivity": 0.003},
+    {"table": "movie_info_idx", "predicate": "info_type_id=it2", "selectivity": 0.5},
+    {"table": "cast_info", "predicate": "note ∈ writer-set", "selectivity": 0.06}
+  ],
+  "data_structures": {
+    "it1_id": "int32 scalar",
+    "it2_id": "int32 scalar",
+    "kw_ids": "flat_array<int32> (size ≤ 5, linear scan)",
+    "writer_note_set": "inline 5-entry switch on dict code if note dict-encoded, else 5 std::string_view comparisons",
+    "valid_persons": "bitset(name_rows) indexed by name.id-1",
+    "title_offsets": "mmap title.off (uint32)",
+    "fact_indexes": "mmap int32 offsets arrays (movie_info / movie_info_idx / movie_keyword / cast_info)",
+    "running_mins": "4 std::string_view scalars (mi.info, mi_idx.info, n.name, t.title) protected by per-thread locals then reduced"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "driver": "title scan partitioned by id range across threads",
+    "threads": "auto(nproc)",
+    "thread_locals": "per-thread mins for the 4 MIN aggregates; final reduce at end",
+    "prepass_parallel": "valid_persons bitset built with parallel scan over name table"
+  },
+  "indexes": [
+    {"index": "movie_info__movie_id (offsets_only)", "purpose": "join_lookup"},
+    {"index": "movie_info_idx__movie_id (offsets_only)", "purpose": "join_lookup"},
+    {"index": "movie_keyword__movie_id (offsets_only)", "purpose": "join_lookup"},
+    {"index": "cast_info__movie_id (offsets_only)", "purpose": "join_lookup"},
+    {"index": "name dense PK", "purpose": "direct fetch of n.name"}
+  ],
+  "aggregation": "scalar_min_reduce",
+  "output": {
+    "projections": [
+      "MIN(mi.info) AS movie_budget",
+      "MIN(mi_idx.info) AS movie_votes",
+      "MIN(n.name) AS male_writer",
+      "MIN(t.title) AS violent_movie_title"
+    ],
+    "order_by": [],
+    "limit": 1
+  },
+  "min_semantics": {
+    "note": "Only emit/update MINs when a full witness exists for the surviving title (i.e. at least one mk match, one mi_idx match, one mi match, one ci match with valid male writer). Update strategy: for each (title v) that passes all four fact joins with at least one row each, update title-min once and walk mi/mi_idx/ci matches updating their respective mins; n.name updated per matching ci row."
+  },
+  "execution_target": "cpp"
+}

@@ -1,0 +1,89 @@
+{
+  "query_id": "Q18b",
+  "pipeline": [
+    "resolve_dict_codes",
+    "scan_title_year_filter",
+    "per_movie_probe_mi_genres_horror_thriller_note_null",
+    "per_movie_probe_mi_idx_rating_gt_8",
+    "per_movie_probe_ci_writer_notes_female_person",
+    "aggregate_min"
+  ],
+  "join_order": [
+    {
+      "build": "info_type(it1.info='genres', it2.info='rating')",
+      "probe": "scalar_constants",
+      "type": "inner",
+      "strategy": "scan_resolve",
+      "build_cardinality": 2,
+      "notes": "Linear scan of info_type/info.off+.dat to resolve it_genres and it_rating ids"
+    },
+    {
+      "build": "name.gender dict",
+      "probe": "scalar_constant 'f'",
+      "type": "inner",
+      "strategy": "scan_resolve",
+      "build_cardinality": 1,
+      "notes": "Resolve g_f code from name/gender.dict"
+    },
+    {
+      "build": "title(production_year IN [2008,2014])",
+      "probe": "driver_set",
+      "type": "semi",
+      "strategy": "linear_scan_filter",
+      "build_cardinality": 304000,
+      "notes": "~12% of 2,528,312 titles; produce vector<int32_t> of movie ids T"
+    },
+    {
+      "build": "movie_info[range mv] semi (it1==it_genres AND info IN {Horror,Thriller} AND note IS NULL)",
+      "probe": "T",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 304000,
+      "notes": "Walk movie_info__movie_id__offsets[mv..mv+1); short ranges (~6 rows). Use flat_hash_set<string_view>{Horror,Thriller} for mi.info; note IS NULL via note.off[i]==note.off[i+1]"
+    },
+    {
+      "build": "movie_info_idx[range mv] semi (it2==it_rating AND info > '8.0')",
+      "probe": "T_after_mi",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 30000,
+      "notes": "Walk movie_info_idx__movie_id__offsets[mv..mv+1); compare info row slice lexicographically against '8.0' (memcmp + length tiebreak)"
+    },
+    {
+      "build": "cast_info[range mv] (note IN writer-set AND n_gender[person_id-1]==g_f)",
+      "probe": "T_after_mi_mi_idx",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 5000,
+      "notes": "Walk cast_info__movie_id__offsets[mv..mv+1); for each ci row, check note via flat_hash_set<string_view> of 5 writer roles, then direct array lookup n_gender[person_id-1]==g_f"
+    }
+  ],
+  "filters": [
+    {"table": "title", "predicate": "production_year BETWEEN 2008 AND 2014 (and != INT32_MIN)", "selectivity": 0.12},
+    {"table": "movie_info", "predicate": "info_type_id = it_genres AND info IN ('Horror','Thriller') AND note IS NULL", "selectivity": 0.01},
+    {"table": "movie_info_idx", "predicate": "info_type_id = it_rating AND info > '8.0'", "selectivity": 0.10},
+    {"table": "cast_info", "predicate": "note IN ('(writer)','(head writer)','(written by)','(story)','(story editor)')", "selectivity": 0.003},
+    {"table": "name", "predicate": "gender = 'f'", "selectivity": 0.25}
+  ],
+  "data_structures": {
+    "mi_info_set": "flat_hash_set<string_view> {'Horror','Thriller'}",
+    "ci_note_set": "flat_hash_set<string_view> 5 writer roles",
+    "name_gender_array": "raw int8_t array (mmap of name/gender.bin), direct index by person_id-1",
+    "title_driver": "std::vector<int32_t> of movie ids (sorted ascending by id)",
+    "min_aggregates": "three std::string holding current MIN(mi.info), MIN(mi_idx.info), MIN(t.title); guarded with a per-thread local then merged",
+    "indexes_mmap": "offsets_only int32_t arrays for cast_info/movie_info/movie_info_idx by movie_id"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven over title id range",
+    "threads": "auto(nproc)",
+    "notes": "Partition title id range [1..2528312] into morsels (~64K each). Each thread filters production_year, then per surviving movie does the three offset-range probes. Per-thread MIN buffers merged at end."
+  },
+  "indexes": [
+    {"index": "_idx/movie_info__movie_id__offsets.bin", "purpose": "join_lookup (mi range per movie)"},
+    {"index": "_idx/movie_info_idx__movie_id__offsets.bin", "purpose": "join_lookup (mi_idx range per movie)"},
+    {"index": "_idx/cast_info__movie_id__offsets.bin", "purpose": "join_lookup (ci range per movie)"}
+  ],
+  "aggregation": "scalar_min_three_strings",
+  "output": {"order_by": [], "limit": 1, "projection": ["MIN(mi.info) AS movie_budget", "MIN(mi_idx.info) AS movie_votes", "MIN(t.title) AS movie_title"]},
+  "execution_target": "cpp"
+}

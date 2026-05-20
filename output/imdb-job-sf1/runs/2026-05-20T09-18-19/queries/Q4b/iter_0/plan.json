@@ -1,0 +1,80 @@
+{
+  "query_id": "Q4b",
+  "pipeline": [
+    "scan_info_type_resolve_target_it_id",
+    "scan_keyword_like_sequel",
+    "probe_movie_keyword_csr_by_keyword_id",
+    "collect_candidate_movies",
+    "filter_title_production_year",
+    "probe_movie_info_idx_by_movie_id",
+    "filter_info_type_id_and_info_gt_9_0",
+    "aggregate_min_info_min_title"
+  ],
+  "join_order": [
+    {
+      "build": "info_type(info='rating')",
+      "probe": "scalar",
+      "type": "inner",
+      "strategy": "scalar_lookup",
+      "build_cardinality": 1,
+      "notes": "scan 113 rows; resolve target_it_id as int32_t scalar"
+    },
+    {
+      "build": "keyword(keyword LIKE '%sequel%')",
+      "probe": "scalar_set",
+      "type": "inner",
+      "strategy": "flat_array_scan",
+      "build_cardinality": 30,
+      "notes": "memmem scan over keyword.dat; collect seq_ids vector (small)"
+    },
+    {
+      "build": "seq_ids",
+      "probe": "movie_keyword",
+      "type": "semi",
+      "strategy": "csr_index_lookup",
+      "build_cardinality": 30,
+      "notes": "use movie_keyword__keyword_id CSR; for each kid in seq_ids, iterate rowids; collect candidate_movies into hash_set<int32_t>"
+    },
+    {
+      "build": "candidate_movies",
+      "probe": "title(production_year>2010)",
+      "type": "semi",
+      "strategy": "direct_array_lookup",
+      "build_cardinality": 8000,
+      "notes": "for each mv in candidate_movies, fetch title.production_year[mv]; filter y!=INT32_MIN && y>2010"
+    },
+    {
+      "build": "surviving_movies",
+      "probe": "movie_info_idx",
+      "type": "inner",
+      "strategy": "offsets_only_index_lookup",
+      "build_cardinality": 1000,
+      "notes": "use movie_info_idx__movie_id offsets_only; iterate mi_idx rows for each surviving movie; filter info_type_id==target_it_id and varlen info > '9.0' lex"
+    }
+  ],
+  "filters": [
+    {"table": "info_type", "predicate": "info = 'rating'", "selectivity": 0.009},
+    {"table": "keyword", "predicate": "keyword LIKE '%sequel%'", "selectivity": 0.0002},
+    {"table": "title", "predicate": "production_year > 2010", "selectivity": 0.12},
+    {"table": "movie_info_idx", "predicate": "info_type_id = target_it_id", "selectivity": 0.1},
+    {"table": "movie_info_idx", "predicate": "info > '9.0' (lex)", "selectivity": 0.1}
+  ],
+  "data_structures": {
+    "target_it_id": "int32_t scalar",
+    "seq_ids": "std::vector<int32_t>",
+    "candidate_movies": "std::unordered_set<int32_t> (or flat sorted vector)",
+    "aggregation": "two scalars: best_info (std::string_view), best_title (std::string_view); compared lex"
+  },
+  "parallelism": {
+    "strategy": "single_threaded",
+    "threads": 1,
+    "notes": "seq_ids small (~30); candidate_movies small (~thousands); per-movie work cheap; parallelism overhead would dominate. Optional: parallelize per-kid CSR probe if seq_ids >= 8."
+  },
+  "indexes": [
+    {"index": "movie_keyword__keyword_id", "purpose": "join_lookup: keyword_id -> mk rows -> movie_ids"},
+    {"index": "movie_info_idx__movie_id", "purpose": "join_lookup: movie_id -> mi_idx row range"}
+  ],
+  "aggregation": "scalar_min_min",
+  "output": {"order_by": [], "limit": 1},
+  "execution_target": "cpp"
+}

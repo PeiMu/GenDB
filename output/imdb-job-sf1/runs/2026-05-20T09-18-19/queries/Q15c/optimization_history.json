@@ -1,0 +1,23 @@
+{
+  "query_id": "Q15c",
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 25.080000000000002,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 25.080000000000002,
+      "validation": "pass",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "data_loading": 0.13,
+        "main_scan": 10.84,
+        "output": 1.33,
+        "total": 26.26
+      }
+    }
+  ]
+}

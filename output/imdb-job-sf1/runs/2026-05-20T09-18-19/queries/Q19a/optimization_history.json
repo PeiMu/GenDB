@@ -1,0 +1,121 @@
+{
+  "query_id": "Q19a",
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 18.78,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 18.78,
+      "validation": "fail",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "data_loading": 0.51,
+        "resolve_dict_constants": 0.01,
+        "build_P_set": 7.92,
+        "main_scan": 3.83,
+        "output": 0.09,
+        "total": 18.84
+      }
+    },
+    {
+      "iteration": 1,
+      "improved": false,
+      "categories": [],
+      "timing_ms": 18.816666666666666,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 18.816666666666666,
+      "validation": "fail",
+      "strategy": "",
+      "operation_timings": {
+        "data_loading": 0.51,
+        "resolve_dict_constants": 0.01,
+        "build_P_set": 7.97,
+        "main_scan": 3.84,
+        "output": 0.09,
+        "total": 18.88
+      }
+    },
+    {
+      "iteration": 2,
+      "improved": false,
+      "categories": [],
+      "timing_ms": 19.39,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 19.39,
+      "validation": "fail",
+      "strategy": "",
+      "operation_timings": {
+        "data_loading": 0.52,
+        "resolve_dict_constants": 0.01,
+        "build_P_set": 7.93,
+        "main_scan": 3.83,
+        "output": 0.09,
+        "total": 18.92
+      }
+    },
+    {
+      "iteration": 3,
+      "improved": false,
+      "categories": [
+        "escalation"
+      ],
+      "timing_ms": 25.97666666666667,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 25.97666666666667,
+      "validation": "fail",
+      "strategy": "escalation to opus",
+      "operation_timings": {
+        "data_loading": 0.51,
+        "resolve_dict_constants": 0.01,
+        "build_P_set": 7.95,
+        "main_scan": 3.83,
+        "output": 0.09,
+        "total": 18.85
+      }
+    },
+    {
+      "iteration": 4,
+      "improved": false,
+      "categories": [
+        "escalation"
+      ],
+      "timing_ms": 18.793333333333337,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 18.793333333333337,
+      "validation": "fail",
+      "strategy": "escalation to opus",
+      "operation_timings": {
+        "data_loading": 0.5,
+        "resolve_dict_constants": 0.01,
+        "build_P_set": 7.92,
+        "main_scan": 3.85,
+        "output": 0.08,
+        "total": 18.84
+      }
+    },
+    {
+      "iteration": 5,
+      "improved": true,
+      "categories": [
+        "escalation"
+      ],
+      "timing_ms": 18.766666666666666,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 18.766666666666666,
+      "validation": "fail",
+      "strategy": "escalation to opus",
+      "operation_timings": {
+        "data_loading": 0.5,
+        "resolve_dict_constants": 0.01,
+        "build_P_set": 7.91,
+        "main_scan": 3.83,
+        "output": 0.09,
+        "total": 18.82
+      }
+    }
+  ]
+}

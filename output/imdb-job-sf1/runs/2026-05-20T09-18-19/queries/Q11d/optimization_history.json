@@ -1,0 +1,26 @@
+{
+  "query_id": "Q11d",
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 5.57,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 5.57,
+      "validation": "pass",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "data_loading": 0.16,
+        "resolve_dims": 0.01,
+        "build_K_movies": 2.67,
+        "scan_movie_link": 1.06,
+        "main_scan": 0.55,
+        "output": 0.06,
+        "total": 5.5
+      }
+    }
+  ]
+}

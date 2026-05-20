@@ -1,0 +1,101 @@
+{
+  "query_id": "Q22d",
+  "pipeline": [
+    "resolve_dims",
+    "build_cn_lookup",
+    "scan_title_filter",
+    "probe_mk_semi",
+    "probe_mi_idx_capture_min",
+    "probe_mi_semi",
+    "probe_mc_capture_cn_name",
+    "aggregate_min"
+  ],
+  "dimension_resolution": [
+    {"table": "company_name.country_code", "action": "dict_scan", "produce": "us_code(int16)"},
+    {"table": "info_type", "action": "scan_for_literal", "produce": "it1_id (info='countries')"},
+    {"table": "info_type", "action": "scan_for_literal", "produce": "it2_id (info='rating')"},
+    {"table": "keyword", "action": "scan_for_in_set", "produce": "kw_ids[4] (murder, murder-in-title, blood, violence)"},
+    {"table": "kind_type", "action": "scan_for_in_set", "produce": "kt_ids[2] (movie, episode)"},
+    {"table": "movie_info.info", "action": "literal_set_compile", "produce": "mi_info_set[10] FNV hashset"}
+  ],
+  "join_order": [
+    {
+      "build": "title_survivors (production_year>2005 AND kind_id in kt_ids)",
+      "probe": "movie_keyword via offsets_only index",
+      "type": "semi",
+      "strategy": "index_nested_loop + small int set membership",
+      "build_cardinality": 700000,
+      "notes": "Cheapest int filter first; require >=1 mk row with keyword_id in kw_ids[4]"
+    },
+    {
+      "build": "kept titles after mk-semi",
+      "probe": "movie_info_idx via offsets_only index",
+      "type": "inner",
+      "strategy": "index_nested_loop + info_type_id==it2_id + memcmp(info,'8.5')<0",
+      "build_cardinality": 1380035,
+      "notes": "Smaller fact; capture matching info string for MIN(mi_idx.info)"
+    },
+    {
+      "build": "kept titles after mi_idx",
+      "probe": "movie_info via offsets_only index",
+      "type": "semi",
+      "strategy": "index_nested_loop + info_type_id==it1_id + hashset 10-literal IN on info varlen",
+      "build_cardinality": 14835720,
+      "notes": "Largest fact; do AFTER mi_idx & mk to minimize varlen reads"
+    },
+    {
+      "build": "cn lookup table (cn.id->name for country_code != us_code AND != 0)",
+      "probe": "movie_companies via offsets_only index",
+      "type": "inner",
+      "strategy": "index_nested_loop + cn_map lookup by mc.company_id",
+      "build_cardinality": 234997,
+      "notes": "company_type has 4 rows; ct join is trivial (no kind filter so ct.id matches any). Capture cn.name for MIN."
+    }
+  ],
+  "filters": [
+    {"table": "title", "predicate": "production_year > 2005", "selectivity": 0.28},
+    {"table": "title", "predicate": "kind_id in {movie,episode}", "selectivity": 0.85},
+    {"table": "movie_keyword", "predicate": "keyword_id in kw_ids[4]", "selectivity": 0.003},
+    {"table": "movie_info_idx", "predicate": "info_type_id==it2_id AND info < '8.5'", "selectivity": 0.4},
+    {"table": "movie_info", "predicate": "info_type_id==it1_id AND info IN(10 literals)", "selectivity": 0.01},
+    {"table": "company_name", "predicate": "country_code != '[us]' AND country_code != 0", "selectivity": 0.7},
+    {"table": "movie_companies", "predicate": "company_id has non-us cn entry", "selectivity": 0.5}
+  ],
+  "data_structures": {
+    "us_code": "int16_t scalar",
+    "it1_id": "int32_t scalar",
+    "it2_id": "int32_t scalar",
+    "kw_ids": "std::array<int32_t,4> linear scan (tiny)",
+    "kt_ids": "std::array<int32_t,2> linear scan (tiny)",
+    "mi_info_set": "flat hashset (FNV1a 64-bit) over 10 string literals; compare with memcmp on hash match",
+    "cn_lookup": "flat array cn_name_ptr[id] of size 234998 (offset,len) for non-us only; null entry signals US/unknown",
+    "mc_index": "offsets_only int32[2528314]",
+    "mi_index": "offsets_only int32 over title rowspace",
+    "mi_idx_index": "offsets_only int32 over title rowspace",
+    "mk_index": "offsets_only int32 over title rowspace",
+    "aggregation": "3 scalar MIN slots: (cn.name varlen), (mi_idx.info varlen), (t.title varlen) — store best (off,len) per thread, merge at end"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven over title rows",
+    "morsel_size": 16384,
+    "threads": "auto(nproc=12)",
+    "notes": "Per-thread local MIN triples; final reduction picks lex-smallest. mi.info & mi_idx.info & t.title kept as (offset,len) refs until reduction; resolve final 3 strings at end."
+  },
+  "indexes": [
+    {"index": "movie_keyword__movie_id (offsets_only)", "purpose": "per-title mk row range"},
+    {"index": "movie_info_idx__movie_id (offsets_only)", "purpose": "per-title mi_idx row range"},
+    {"index": "movie_info__movie_id (offsets_only)", "purpose": "per-title mi row range"},
+    {"index": "movie_companies__movie_id (offsets_only)", "purpose": "per-title mc row range"}
+  ],
+  "aggregation": "scalar_min_triple",
+  "output": {"select": ["MIN(cn.name)", "MIN(mi_idx.info)", "MIN(t.title)"], "order_by": [], "limit": null},
+  "execution_target": "cpp",
+  "execution_notes": [
+    "Skip reading movie_companies.note column entirely (not used in Q22d).",
+    "Order of per-title probes: mk (cheapest int membership) -> mi_idx (small fact, capture rating string) -> mi (largest fact, varlen IN) -> mc (cn lookup + capture name). Short-circuit as soon as any required semi-probe fails.",
+    "company_type join is trivially satisfied (ct has 4 rows, no predicate); ignore at runtime.",
+    "Use memcmp for mi_idx.info < '8.5' lex compare.",
+    "For mi.info IN(10) build small FNV hashset; on hash hit verify with memcmp.",
+    "For cn lookup, prebuild dense array indexed by cn.id (max 234997) storing varlen (off,len) only for rows passing country_code filter; saves per-probe hash."
+  ]
+}

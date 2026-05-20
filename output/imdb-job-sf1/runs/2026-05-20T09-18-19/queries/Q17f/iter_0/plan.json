@@ -1,0 +1,74 @@
+{
+  "query_id": "Q17f",
+  "pipeline": [
+    "resolve_keyword_id",
+    "prescan_name_hasB",
+    "csr_lookup_movie_keyword",
+    "for_each_movie: probe_mc_exists -> probe_ci -> check_hasB -> min_name"
+  ],
+  "join_order": [
+    {
+      "build": "keyword(keyword='character-name-in-title')",
+      "probe": "movie_keyword via CSR keyword_id",
+      "type": "inner",
+      "strategy": "csr_index_lookup",
+      "build_cardinality": 1,
+      "notes": "Single k_id resolves to a slice of mk rowids giving candidate movie_ids"
+    },
+    {
+      "build": "name hasB[] bitset (LIKE '%B%')",
+      "probe": "cast_info.person_id (per candidate movie via offsets_only)",
+      "type": "semi",
+      "strategy": "direct_array_lookup",
+      "build_cardinality": 4167491,
+      "notes": "hasB is a dense uint8 array indexed by name.id-1; ~50%+ selectivity"
+    },
+    {
+      "build": "movie_companies__movie_id offsets (existence)",
+      "probe": "candidate movie_ids from mk slice",
+      "type": "semi",
+      "strategy": "offsets_only_nonempty_check",
+      "build_cardinality": 2528314,
+      "notes": "Require mc range non-empty for the movie; no company predicate"
+    },
+    {
+      "build": "cast_info__movie_id offsets",
+      "probe": "candidate movie_ids that passed mc existence",
+      "type": "inner",
+      "strategy": "offsets_only_range_scan",
+      "build_cardinality": 2528314,
+      "notes": "Iterate ci rows for movie; look up person_id and check hasB"
+    }
+  ],
+  "filters": [
+    {"table": "keyword", "predicate": "keyword = 'character-name-in-title'", "selectivity": 7.45e-6},
+    {"table": "name", "predicate": "name LIKE '%B%'", "selectivity": 0.55}
+  ],
+  "data_structures": {
+    "name_hasB": "std::vector<uint8_t> size=4167491 (built via memchr per row)",
+    "mk_csr": "pre_built CSR (offsets int32[134172], rowids int32[4523930])",
+    "mc_offsets": "pre_built offsets_only int32[2528314]",
+    "ci_offsets": "pre_built offsets_only int32[2528314]",
+    "name_data": "name.off + name.dat for final MIN string compare",
+    "min_state": "best_name string (per-thread local, merged at end)"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven over mk slice (mk_k_row[lo..hi])",
+    "threads": "auto(nproc)",
+    "notes": "Threads partition the mk slice; each computes local MIN over distinct movies; final reduction"
+  },
+  "indexes": [
+    {"index": "movie_keyword__keyword_id (CSR)", "purpose": "driver: enumerate movie_ids for k_id"},
+    {"index": "movie_companies__movie_id (offsets_only)", "purpose": "existence check per movie"},
+    {"index": "cast_info__movie_id (offsets_only)", "purpose": "enumerate ci rows per movie"}
+  ],
+  "aggregation": "scalar_min_string",
+  "output": {"order_by": [], "limit": 1, "projection": ["MIN(n.name) AS member_in_charnamed_movie"]},
+  "execution_target": "cpp",
+  "notes": [
+    "Pre-scan name.name once to build hasB bitset using memchr('B') — single-byte LIKE is cheap.",
+    "Driver = keyword CSR slice (small). For each unique movie_id, gate on mc existence before scanning ci.",
+    "Deduplicate movie_ids inside the mk slice using a small hash_set or sort+unique to avoid revisiting same ci range.",
+    "Per-thread local best string; final reduction picks global MIN. Compare via string < on name.dat slice."
+  ]
+}

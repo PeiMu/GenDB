@@ -1,0 +1,107 @@
+{
+  "query_id": "Q19c",
+  "pipeline": [
+    "resolve_dims",
+    "scan_mi_by_info_type_csr",
+    "filter_mi_info_like",
+    "filter_title_year",
+    "join_mc_company_us",
+    "join_ci_voice_actress",
+    "filter_name_gender_like",
+    "filter_aka_name_exists",
+    "aggregate_min"
+  ],
+  "join_order": [
+    {
+      "build": "info_type(it.info='release dates')",
+      "probe": "movie_info via movie_info__info_type_id CSR",
+      "type": "semi",
+      "strategy": "index_csr_walk",
+      "build_cardinality": 1,
+      "notes": "Walk only the mi rows with info_type_id==it_rd; avoids full mi scan."
+    },
+    {
+      "build": "mi(info LIKE 'Japan:%200%' OR 'USA:%200%')",
+      "probe": "title.id",
+      "type": "inner",
+      "strategy": "direct_array_lookup",
+      "build_cardinality": 200000,
+      "notes": "mi.movie_id -> title row via dense PK; check production_year > 2000 and != INT32_MIN."
+    },
+    {
+      "build": "company_name(country_code='[us]') -> bitset over cn.id",
+      "probe": "movie_companies via mc__movie_id offsets for each candidate movie",
+      "type": "semi",
+      "strategy": "bitset_lookup_per_mc_row",
+      "build_cardinality": 80000,
+      "notes": "Per candidate movie, scan mc range; keep if cn_country_code[company_id-1]==cc_us. No mc.note filter in Q19c."
+    },
+    {
+      "build": "name(gender='f' AND name LIKE '%An%') -> bitset over n.id",
+      "probe": "cast_info via ci__movie_id offsets for each candidate movie",
+      "type": "inner",
+      "strategy": "filter_then_bitset_probe",
+      "build_cardinality": 800000,
+      "notes": "For each ci row: require note in voice-set, role_id==rt_actress, person_role_id!=INT32_MIN. Then probe n bitset by person_id; verify n.name LIKE '%An%' via memmem."
+    },
+    {
+      "build": "aka_name__person_id offsets",
+      "probe": "candidate person_id",
+      "type": "semi",
+      "strategy": "offsets_nonempty_check",
+      "build_cardinality": 901343,
+      "notes": "Require aka_name range non-empty for pid (off[pid]<off[pid+1])."
+    },
+    {
+      "build": "char_name dense-PK",
+      "probe": "ci.person_role_id",
+      "type": "semi",
+      "strategy": "range_check",
+      "build_cardinality": 3140339,
+      "notes": "person_role_id != INT32_MIN suffices; chn referenced only for existence (MIN not on chn)."
+    }
+  ],
+  "filters": [
+    {"table": "role_type", "predicate": "role='actress'", "selectivity": 0.083},
+    {"table": "info_type", "predicate": "info='release dates'", "selectivity": 0.009},
+    {"table": "company_name", "predicate": "country_code='[us]'", "selectivity": 0.35},
+    {"table": "name", "predicate": "gender='f' AND name LIKE '%An%'", "selectivity": 0.10},
+    {"table": "title", "predicate": "production_year>2000 AND !=INT32_MIN", "selectivity": 0.55},
+    {"table": "movie_info", "predicate": "info_type_id==it_rd AND (info LIKE 'Japan:%200%' OR 'USA:%200%')", "selectivity": 0.013},
+    {"table": "cast_info", "predicate": "note IN voice-set AND role_id==rt_actress AND person_role_id!=INT32_MIN", "selectivity": 0.005}
+  ],
+  "data_structures": {
+    "rt_actress": "scalar int32 (resolved from role_type)",
+    "it_rd": "scalar int32 (resolved from info_type)",
+    "cc_us": "scalar int32 (resolved from company_name.country_code dict)",
+    "g_f": "scalar int32 (resolved from name.gender dict)",
+    "cn_us_bitset": "bitset(234997) over cn.id where country_code==cc_us",
+    "name_filter_bitset": "bitset(4167491) over n.id where gender==g_f AND name LIKE '%An%' (memmem)",
+    "voice_note_set": "flat_hash_set<string_view> of 4 voice notes (or precompiled int32 dict-ids if note is dict-encoded)",
+    "candidate_movies": "vector<int32_t> (mi-derived movie_ids passing title year filter)",
+    "mi_info_type_csr_offsets": "read_vec<int32_t>('_idx/movie_info__info_type_id__offsets.bin')",
+    "mi_info_type_csr_rowids": "read_vec<int32_t>('_idx/movie_info__info_type_id__rowids.bin')",
+    "ci_movie_offsets": "read_vec<int32_t>('_idx/cast_info__movie_id__offsets.bin')",
+    "mc_movie_offsets": "read_vec<int32_t>('_idx/movie_companies__movie_id__offsets.bin')",
+    "aka_person_offsets": "read_vec<int32_t>('_idx/aka_name__person_id__offsets.bin')",
+    "aggregation": "two scalars: min_name (string_view), min_title (string_view)"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc=12)",
+    "notes": "Partition the CSR walk over mi[info_type==it_rd] rows into morsels; each thread maintains thread-local (min_name,min_title) string_views, merged at end."
+  },
+  "indexes": [
+    {"index": "movie_info__info_type_id (CSR)", "purpose": "iterate only mi rows with info_type_id==it_rd"},
+    {"index": "cast_info__movie_id (offsets_only)", "purpose": "per-movie ci range lookup"},
+    {"index": "movie_companies__movie_id (offsets_only)", "purpose": "per-movie mc range lookup"},
+    {"index": "aka_name__person_id (offsets_only)", "purpose": "semi-join existence check for an"}
+  ],
+  "aggregation": "scalar_min_two_strings",
+  "output": {
+    "order_by": [],
+    "limit": 1,
+    "projection": ["MIN(n.name) AS voicing_actress", "MIN(t.title) AS jap_engl_voiced_movie"]
+  },
+  "execution_target": "cpp"
+}

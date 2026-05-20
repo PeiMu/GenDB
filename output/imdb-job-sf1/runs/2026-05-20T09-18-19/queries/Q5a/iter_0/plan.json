@@ -1,0 +1,85 @@
+{
+  "query_id": "Q5a",
+  "pipeline": [
+    "resolve_target_ct_id",
+    "build_mi_info_set",
+    "scan_title_filter_year",
+    "probe_mc_by_movie_id",
+    "filter_mc_company_type_and_note",
+    "probe_mi_by_movie_id",
+    "filter_mi_info_in_set",
+    "project_title_and_aggregate_min"
+  ],
+  "join_order": [
+    {
+      "build": "company_type(kind='production companies')",
+      "probe": "movie_companies.company_type_id",
+      "type": "inner",
+      "strategy": "scalar_equality",
+      "build_cardinality": 1,
+      "notes": "Resolve single target_ct_id once via scan of company_type/kind.{off,dat}; ct.id is dense (row+1)."
+    },
+    {
+      "build": "title(production_year>2005)",
+      "probe": "movie_companies",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 758000,
+      "notes": "Driver is title; for each surviving t row, range-probe mc via offsets_only index keyed by t_id (mc sorted by movie_id)."
+    },
+    {
+      "build": "title(survived mc-check)",
+      "probe": "movie_info",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 75000,
+      "notes": "After mc semi-join, range-probe mi via offsets_only index keyed by t_id."
+    },
+    {
+      "build": "info_type",
+      "probe": "movie_info.info_type_id",
+      "type": "semi",
+      "strategy": "trivial_skip",
+      "build_cardinality": 113,
+      "notes": "No filter on info_type; FK guarantees mi.info_type_id matches some it.id. Skip explicit probe; only require mi.info_type_id non-NULL (already implied by FK)."
+    }
+  ],
+  "filters": [
+    {"table": "company_type", "predicate": "kind = 'production companies'", "selectivity": 0.25},
+    {"table": "title", "predicate": "production_year > 2005 AND production_year != INT32_MIN", "selectivity": 0.30},
+    {"table": "movie_companies", "predicate": "company_type_id = target_ct_id", "selectivity": 0.5},
+    {"table": "movie_companies", "predicate": "note LIKE '%(theatrical)%' AND note LIKE '%(France)%' (len>=22, both memmem)", "selectivity": 0.001},
+    {"table": "movie_info", "predicate": "info IN (8 European country/language literals); length prefilter (max 9 bytes)", "selectivity": 0.005}
+  ],
+  "data_structures": {
+    "target_ct_id": "int32_t scalar (single value resolved at startup)",
+    "mi_info_set": "flat_hash_set<string_view> of 8 literals (compile-time array, linear search acceptable given n=8 — prefer small inline switch on length then memcmp)",
+    "mc_offsets_index": "mmap int32_t array (length 2528314) from _idx/movie_companies__movie_id__offsets.bin",
+    "mi_offsets_index": "mmap int32_t array (length 2528314) from _idx/movie_info__movie_id__offsets.bin",
+    "aggregation": "per-thread local std::string current_min; final merge with lexicographic compare"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "morsel_unit": "title row range",
+    "morsel_size": 100000,
+    "threads": "auto(nproc)=12",
+    "notes": "Partition title row space [0, 2528312) into morsels; each thread maintains local MIN string; reduce across threads at end."
+  },
+  "indexes": [
+    {"index": "movie_companies__movie_id", "purpose": "join_lookup (range probe mc rows by t.id)"},
+    {"index": "movie_info__movie_id", "purpose": "join_lookup (range probe mi rows by t.id)"}
+  ],
+  "aggregation": "scalar_min_stringview",
+  "output": {"projection": ["MIN(t.title) AS typical_european_movie"], "order_by": [], "limit": 1},
+  "execution_order_per_title_row": [
+    "1. test production_year_bin[r] > 2005 && != INT32_MIN; else skip",
+    "2. t_id = r + 1; lo=mc_off[t_id], hi=mc_off[t_id+1]; if lo==hi skip",
+    "3. for mc_r in [lo,hi): test mc_ct[mc_r]==target_ct_id; then load note via off[mc_r..mc_r+1]; length prefilter (>=22); memmem for '(theatrical)' AND '(France)'. break on first match -> mc_ok=true",
+    "4. if !mc_ok skip",
+    "5. lo2=mi_off[t_id], hi2=mi_off[t_id+1]; if lo2==hi2 skip",
+    "6. for mi_r in [lo2,hi2): load info via off[mi_r..mi_r+1]; length prefilter (<=9); check membership in 8-literal set. break on first match -> mi_ok=true",
+    "7. if !mi_ok skip",
+    "8. load t.title via title/title.{off,dat}; update local MIN if cur_title < cur_min"
+  ],
+  "execution_target": "cpp"
+}

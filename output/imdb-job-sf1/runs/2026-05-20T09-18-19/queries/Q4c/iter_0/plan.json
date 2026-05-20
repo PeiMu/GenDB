@@ -1,0 +1,77 @@
+{
+  "query_id": "Q4c",
+  "pipeline": [
+    "resolve_target_it_id",
+    "scan_keyword_like_sequel",
+    "csr_probe_movie_keyword_by_keyword_id",
+    "collect_candidate_movies",
+    "filter_title_production_year",
+    "probe_movie_info_idx_by_movie_id",
+    "filter_info_type_and_info_gt_2_0",
+    "aggregate_min_min"
+  ],
+  "join_order": [
+    {
+      "build": "info_type(info='rating') -> target_it_id (scalar)",
+      "probe": "movie_info_idx.info_type_id (during mi_idx probe)",
+      "type": "inner",
+      "strategy": "scalar_equality",
+      "build_cardinality": 1,
+      "notes": "Scan info_type.info varlen (113 rows) via memcmp to obtain target_it_id once."
+    },
+    {
+      "build": "keyword(keyword LIKE '%sequel%') -> seq_ids (small set)",
+      "probe": "movie_keyword via movie_keyword__keyword_id CSR",
+      "type": "semi",
+      "strategy": "csr_lookup",
+      "build_cardinality": 50,
+      "notes": "memmem scan over keyword.dat (134170 rows); expected handful of matches. For each kid, walk CSR offsets[kid..kid+1] to collect candidate movie_ids."
+    },
+    {
+      "build": "candidate_movies (hash_set of movie_ids from CSR probe)",
+      "probe": "title.production_year (gather per candidate)",
+      "type": "semi",
+      "strategy": "direct_array_lookup",
+      "build_cardinality": 20000,
+      "notes": "Use dense PK: production_year_bin[movie_id]. Filter y != INT32_MIN && y > 1990. Keep survivors as a vector<int32_t> sorted ascending (movie_id order) to maximize sequential mi_idx access."
+    },
+    {
+      "build": "surviving movies (post production_year filter)",
+      "probe": "movie_info_idx via movie_info_idx__movie_id offsets_only",
+      "type": "inner",
+      "strategy": "offsets_only_range_scan",
+      "build_cardinality": 12000,
+      "notes": "For each surviving mv: lo=off[mv], hi=off[mv+1]; iterate r in [lo,hi); require info_type_id_bin[r]==target_it_id and lex compare mi_idx.info > '2.0'. mi_idx is FK-sorted by movie_id so probes are sequential."
+    }
+  ],
+  "filters": [
+    {"table": "info_type", "predicate": "info = 'rating'", "selectivity": 0.0088},
+    {"table": "keyword", "predicate": "keyword LIKE '%sequel%'", "selectivity": 0.0004},
+    {"table": "title", "predicate": "production_year > 1990 (non-null)", "selectivity": 0.55},
+    {"table": "movie_info_idx", "predicate": "info_type_id = target_it_id", "selectivity": 0.10},
+    {"table": "movie_info_idx", "predicate": "info > '2.0' (lex)", "selectivity": 0.95}
+  ],
+  "data_structures": {
+    "target_it_id": "int32_t scalar",
+    "seq_ids": "std::vector<int32_t> (small, <100 entries)",
+    "candidate_movies": "absl-style flat_hash_set<int32_t> sized for ~20k entries, then drained to sorted vector<int32_t>",
+    "surviving_movies": "std::vector<int32_t> (sorted ascending by movie_id)",
+    "aggregation": "two scalar accumulators: best_mi_info (string_view), best_title (string_view); lex-min via memcmp"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "notes": "Parallelize (a) keyword memmem scan over 134170 rows by row-range morsels, (b) per-movie mi_idx range scan + aggregation over the sorted surviving_movies vector by movie-index morsels. Each thread keeps a local (best_mi_info, best_title) pair, reduced at end via lex memcmp. info_type scan is trivially serial."
+  },
+  "indexes": [
+    {"index": "movie_keyword__keyword_id", "purpose": "join_lookup: kid -> mk row positions -> movie_ids"},
+    {"index": "movie_info_idx__movie_id", "purpose": "join_lookup: movie_id -> mi_idx row range (offsets_only)"}
+  ],
+  "aggregation": "scalar_min_min",
+  "output": {
+    "order_by": [],
+    "limit": 1,
+    "projection": ["MIN(mi_idx.info) AS rating", "MIN(t.title) AS movie_title"]
+  },
+  "execution_target": "cpp"
+}

@@ -1,0 +1,92 @@
+{
+  "query_id": "Q8a",
+  "strategy_summary": "Person-driven. Resolve scalar codes (actress role_id, [jp] country_code). Build cn_jp bitset over company_name rows. Scan name for LIKE '%Yo%' AND NOT '%Yu%' to get candidate pids (~20,911). For each pid walk cast_info__person_id CSR, filter role_id==actress AND note=='(voice: English version)' (~394 surviving rows). For each surviving (pid, movie_id): walk movie_companies__movie_id offsets, apply mc.note LIKE %(Japan)% AND NOT %(USA)%, check cn_jp bitset on mc.company_id-1. If passes, also require aka_name exists for pid (offsets_only). Update running MIN over aka_name.name in pid's aka_name range and MIN(title.title) at row mv-1.",
+  "pipeline": [
+    "resolve_dictionaries",
+    "build_cn_jp_bitset",
+    "scan_name_collect_candidate_pids",
+    "for_each_pid_walk_ci_csr_filter_role_and_note",
+    "for_each_surviving_ci_walk_mc_offsets_filter_and_check_cn_jp",
+    "semi_join_aka_name_offsets",
+    "min_aggregation"
+  ],
+  "join_order": [
+    {
+      "build": "name(filtered by LIKE %Yo% AND NOT %Yu%)",
+      "probe": "cast_info via cast_info__person_id CSR",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 20911,
+      "notes": "Use CSR per pid; ~151,718 ci rows visited total."
+    },
+    {
+      "build": "{actress role_id, '(voice: English version)' note literal}",
+      "probe": "cast_info rows walked above",
+      "type": "inner",
+      "strategy": "scalar_filter",
+      "build_cardinality": 1,
+      "notes": "Cuts to ~394 surviving (pid,mv) rows."
+    },
+    {
+      "build": "movie_id from surviving ci",
+      "probe": "movie_companies via movie_companies__movie_id offsets_only",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 394,
+      "notes": "Walk per-movie mc range; apply LIKE filters and cn_jp bitset check."
+    },
+    {
+      "build": "cn_jp bitset(234997)",
+      "probe": "mc.company_id",
+      "type": "semi",
+      "strategy": "bitset_lookup",
+      "build_cardinality": 6752,
+      "notes": "Precomputed bitset: cn.country_code == '[jp]' → set bit at cn_row."
+    },
+    {
+      "build": "aka_name__person_id offsets",
+      "probe": "surviving pid",
+      "type": "semi",
+      "strategy": "offsets_range_nonempty",
+      "build_cardinality": 901343,
+      "notes": "Semi-join: pid must have aka_name rows. Also iterate that range to MIN aka_name.name."
+    }
+  ],
+  "filters": [
+    {"table": "role_type", "predicate": "role = 'actress'", "selectivity": 0.083, "method": "dict_resolve_to_id"},
+    {"table": "company_name", "predicate": "country_code = '[jp]'", "selectivity": 0.0287, "method": "dict_code_match", "expected_rows": 6752},
+    {"table": "name", "predicate": "name LIKE '%Yo%' AND name NOT LIKE '%Yu%'", "selectivity": 0.005, "method": "memmem", "expected_rows": 20911},
+    {"table": "cast_info", "predicate": "role_id = actress_id AND note = '(voice: English version)'", "selectivity": 0.0026, "method": "scalar_equality_after_csr_walk", "expected_rows_after": 394},
+    {"table": "movie_companies", "predicate": "note LIKE '%(Japan)%' AND note NOT LIKE '%(USA)%'", "selectivity": 0.0187, "method": "memmem", "expected_rows": 48897}
+  ],
+  "data_structures": {
+    "name_candidates": "std::vector<int32_t> of pids (~20911)",
+    "cn_jp": "std::vector<uint8_t> bitset sized 234997",
+    "ci_walk": "no materialization; iterate CSR rowids and filter inline",
+    "aggregation": "two std::string running-min buffers under a mutex (or per-thread + final reduce)"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "morsel_phases": [
+      {"phase": "build_cn_jp_bitset", "over": "company_name rows (234997)", "morsel": "8192"},
+      {"phase": "scan_name", "over": "name rows (4167491)", "morsel": "16384", "output": "thread-local vector<int32_t> pids, concatenated at end"},
+      {"phase": "probe_per_pid", "over": "candidate pids vector", "morsel": "256", "output": "thread-local (min_aka_name, min_title) reduced at end"}
+    ]
+  },
+  "indexes": [
+    {"index": "cast_info__person_id (CSR)", "purpose": "join_lookup: pid -> ci rows"},
+    {"index": "movie_companies__movie_id (offsets_only)", "purpose": "join_lookup: movie_id -> mc rows"},
+    {"index": "aka_name__person_id (offsets_only)", "purpose": "semi-join + MIN over aka_name.name range"}
+  ],
+  "aggregation": "scalar_min_two_strings",
+  "min_strategy": "Per-thread (min_an_name, min_title) as std::string; on update copy shorter-lex string. Final reduction picks lexicographic min across threads. MIN(an1.name) ranges over all aka_name rows in pid's range that pass all join conditions (per query semantics, every (pid,mv) row that passes contributes all matching an1 rows).",
+  "output": {"order_by": [], "limit": 1, "projection": ["MIN(an1.name) AS actress_pseudonym", "MIN(t.title) AS japanese_movie_dubbed"]},
+  "memory_estimate_mb": {
+    "cn_jp_bitset": 0.03,
+    "name_candidates": 0.08,
+    "mmap_columns": "OS-managed (cast_info ~145MB role_id + 145MB person_id index rowids etc.)",
+    "total_resident_working_set_mb": 50
+  },
+  "execution_target": "cpp"
+}

@@ -1,0 +1,62 @@
+{
+  "query_id": "Q17b",
+  "pipeline": [
+    "resolve_keyword_id",
+    "build_name_z_prefix_bitset",
+    "csr_scan_movie_keyword_by_kid",
+    "probe_movie_companies_existence",
+    "probe_cast_info_movie_id",
+    "filter_person_z_prefix",
+    "aggregate_min_name"
+  ],
+  "join_order": [
+    {
+      "build": "keyword(keyword='character-name-in-title')",
+      "probe": "movie_keyword (CSR on keyword_id)",
+      "type": "inner",
+      "strategy": "csr_lookup",
+      "build_cardinality": 1,
+      "notes": "Single k_id; iterate mk rowids via CSR offsets"
+    },
+    {
+      "build": "movie_companies__movie_id (offsets_only)",
+      "probe": "mv from mk",
+      "type": "semi",
+      "strategy": "offsets_only_existence",
+      "build_cardinality": 2528314,
+      "notes": "No cn filter; only require any mc row exists for mv"
+    },
+    {
+      "build": "name z_prefix bitset (n.name LIKE 'Z%')",
+      "probe": "cast_info rows for mv (offsets_only on movie_id)",
+      "type": "inner",
+      "strategy": "bitset_lookup",
+      "build_cardinality": 50000,
+      "notes": "z_prefix[N] dense bitset on name.id; probe via ci.person_id[r]-1"
+    }
+  ],
+  "filters": [
+    {"table": "keyword", "predicate": "keyword = 'character-name-in-title'", "selectivity": 7.45e-06},
+    {"table": "name", "predicate": "name LIKE 'Z%'", "selectivity": 0.012}
+  ],
+  "data_structures": {
+    "z_prefix": "bitset(name_rows=4167491)",
+    "mk_csr": "pre_built_csr (movie_keyword__keyword_id offsets+rowids)",
+    "mc_offsets": "pre_built_offsets_only (movie_companies__movie_id)",
+    "ci_offsets": "pre_built_offsets_only (cast_info__movie_id)",
+    "aggregation": "scalar_min_string (track best (off,len) into name.dat)"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven_over_mk_range",
+    "threads": "auto(nproc)",
+    "notes": "Partition mk rowid range [lo,hi) across 12 threads; per-thread local MIN; final reduce"
+  },
+  "indexes": [
+    {"index": "movie_keyword__keyword_id", "purpose": "csr_scan_by_kid"},
+    {"index": "movie_companies__movie_id", "purpose": "existence_probe_by_movie_id"},
+    {"index": "cast_info__movie_id", "purpose": "row_lookup_by_movie_id"}
+  ],
+  "aggregation": "scalar_min",
+  "output": {"order_by": [], "limit": 1, "projection": ["MIN(n.name) AS member_in_charnamed_movie", "MIN(n.name) AS a1"]},
+  "execution_target": "cpp"
+}

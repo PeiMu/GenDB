@@ -1,0 +1,94 @@
+{
+  "query_id": "Q16d",
+  "pipeline": [
+    "resolve_dict_codes",
+    "build_cn_us_bitset",
+    "csr_enumerate_mk_by_keyword",
+    "filter_title_episode_nr",
+    "semijoin_movie_companies_us",
+    "probe_cast_info_by_movie",
+    "probe_aka_name_by_person",
+    "aggregate_min"
+  ],
+  "join_order": [
+    {
+      "build": "keyword(keyword='character-name-in-title')",
+      "probe": "movie_keyword via CSR keyword_id",
+      "type": "inner",
+      "strategy": "csr_index_lookup",
+      "build_cardinality": 1,
+      "notes": "Resolve k_id (scan keyword/keyword varlen). Drive query from small CSR slice of mk rows for k_id."
+    },
+    {
+      "build": "title(episode_nr in [5,100))",
+      "probe": "mk.movie_id (from CSR enumeration)",
+      "type": "semi",
+      "strategy": "direct_array_lookup",
+      "build_cardinality": 2528312,
+      "notes": "Dense PK on title: lookup t_ep[mv-1] per mk row. No prebuilt set; per-row predicate check."
+    },
+    {
+      "build": "company_name(country_code = us_code)",
+      "probe": "movie_companies via offsets_only on movie_id",
+      "type": "semi",
+      "strategy": "bitset_membership",
+      "build_cardinality": 70000,
+      "notes": "Build bitset cn_us_bs over company_name rows (~30% of 234997). For each surviving movie, scan mc offsets and require any mc.company_id with cn_us_bs set."
+    },
+    {
+      "build": "(qualifying movie ids)",
+      "probe": "cast_info via offsets_only on movie_id",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 5000,
+      "notes": "For each qualifying movie, enumerate ci rows; collect ci.person_id."
+    },
+    {
+      "build": "(person_ids from ci)",
+      "probe": "aka_name via offsets_only on person_id",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 100000,
+      "notes": "name.id is dense PK so n.id = ci.person_id is automatic; per pid, enumerate an rows."
+    }
+  ],
+  "filters": [
+    {"table": "company_name", "predicate": "country_code = '[us]'", "selectivity": 0.30},
+    {"table": "keyword", "predicate": "keyword = 'character-name-in-title'", "selectivity": 7.45e-06},
+    {"table": "title", "predicate": "episode_nr != NULL AND episode_nr >= 5 AND episode_nr < 100", "selectivity": 0.02}
+  ],
+  "data_structures": {
+    "cn_us_filter": "bitset(234997) over company_name rowid (cn_us_bs)",
+    "title_filter": "inline predicate on t_ep[mv-1] (no prematerialization)",
+    "mk_driver": "CSR slice [mk_k_off[k_id], mk_k_off[k_id+1])",
+    "qualifying_movies": "implicit per-mk-row (stream, no buffering)",
+    "min_an_name": "scalar std::string_view holding current minimum",
+    "min_t_title": "scalar std::string_view holding current minimum"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven over CSR mk slice",
+    "threads": "auto(nproc)",
+    "notes": "Partition mk_k_row[lo..hi) across 12 threads; each thread maintains thread-local min for an.name and t.title; final reduction merges by lexicographic min. Use std::string_view comparisons keyed off (name.off, name.dat) and (title.off, title.dat)."
+  },
+  "indexes": [
+    {"index": "movie_keyword__keyword_id (CSR)", "purpose": "driver_enumeration"},
+    {"index": "movie_companies__movie_id (offsets_only)", "purpose": "semijoin_us_company"},
+    {"index": "cast_info__movie_id (offsets_only)", "purpose": "fetch_person_ids"},
+    {"index": "aka_name__person_id (offsets_only)", "purpose": "fetch_aka_names"}
+  ],
+  "aggregation": "scalar_min_two_columns",
+  "output": {"order_by": [], "limit": 1, "projection": ["MIN(an.name)", "MIN(t.title)"]},
+  "execution_target": "cpp",
+  "execution_notes": [
+    "Step A: scan company_name/country_code.dict to find dict id for '[us]' => us_code (int16).",
+    "Step B: scan keyword/keyword varlen for exact match 'character-name-in-title' => k_id (int32).",
+    "Step C: build bitset cn_us_bs[r] = (cn_country_code[r] == us_code) over 234997 rows.",
+    "Step D: lo=mk_k_off[k_id], hi=mk_k_off[k_id+1]; for r in [lo,hi): mv = mk_k_row[r].",
+    "Step E: if !t_ep_ok(mv-1) continue. mv_idx = mv-1.",
+    "Step F: mc_lo=mc_off[mv_idx], mc_hi=mc_off[mv_idx+1]; us_ok=false; for j in [mc_lo,mc_hi) if cn_us_bs[mc_company_id[j]-1] { us_ok=true; break; }; if !us_ok continue.",
+    "Step G: update local min_t_title with title varlen(mv-1).",
+    "Step H: ci_lo=ci_off[mv_idx], ci_hi=ci_off[mv_idx+1]; for j in [ci_lo,ci_hi): pid = ci_person_id[j].",
+    "Step I: an_lo=an_off[pid-1], an_hi=an_off[pid-1+1]; for a in [an_lo,an_hi): update local min_an_name with aka_name varlen(a).",
+    "Step J: parallel reduce thread-local mins → final two scalars."
+  ]
+}

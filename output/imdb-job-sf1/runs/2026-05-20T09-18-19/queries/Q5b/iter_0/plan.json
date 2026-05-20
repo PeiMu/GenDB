@@ -1,0 +1,99 @@
+{
+  "query_id": "Q5b",
+  "pipeline": [
+    "resolve_dim_ct",
+    "scan_title_filter_year",
+    "probe_mc_by_movie_id",
+    "filter_mc_ct_and_note_substrings",
+    "probe_mi_by_movie_id",
+    "filter_mi_info_in_set",
+    "fetch_title_and_min"
+  ],
+  "dim_resolution": [
+    {
+      "table": "company_type",
+      "predicate": "kind = 'production companies'",
+      "method": "linear_scan_varlen_dict",
+      "files": ["company_type/kind.off", "company_type/kind.dat"],
+      "output": "target_ct_id (int32_t, row+1)",
+      "cardinality": 1
+    },
+    {
+      "table": "info_type",
+      "predicate": "none",
+      "method": "no_resolution_required",
+      "notes": "it.id used only as join key with mi.info_type_id; since it.id is identity over 113 rows and mi.info_type_id values are guaranteed to reference existing it rows, the it join is a no-op and can be elided."
+    }
+  ],
+  "join_order": [
+    {
+      "build": "title(filtered: production_year>2010 AND !=INT32_MIN)",
+      "probe": "movie_companies(via offsets_only index on movie_id)",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 300000,
+      "notes": "Driver scan over title; for each surviving t_id, range-probe mc using mc_off[t_id..t_id+1]."
+    },
+    {
+      "build": "mc_filtered (company_type_id==target_ct_id AND note contains '(VHS)' AND '(USA)' AND '(1994)')",
+      "probe": "movie_info(via offsets_only index on movie_id)",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 2000,
+      "notes": "Three-substring note filter is highly selective; only proceed to mi probe if at least one mc row survives for this t_id."
+    },
+    {
+      "build": "mi_filtered (info IN {'USA','America'})",
+      "probe": "title_id (already in hand)",
+      "type": "semi",
+      "strategy": "range_scan_with_filter",
+      "build_cardinality": 1500,
+      "notes": "Existence check; first matching mi row in range short-circuits the t_id qualification."
+    }
+  ],
+  "filters": [
+    {"table": "title", "predicate": "production_year > 2010 AND production_year != INT32_MIN", "selectivity": 0.12},
+    {"table": "movie_companies", "predicate": "company_type_id == target_ct_id", "selectivity": 0.5},
+    {"table": "movie_companies", "predicate": "note length >= 17 AND memmem(note,'(VHS)') AND memmem(note,'(USA)') AND memmem(note,'(1994)')", "selectivity": 0.0005, "notes": "Order substring checks cheapest/most-selective first: '(VHS)' (rarest), then '(1994)', then '(USA)'. Length prefilter cuts NULL/short notes."},
+    {"table": "movie_info", "predicate": "info IN {'USA','America'} (length prefilter then equality)", "selectivity": 0.01}
+  ],
+  "data_structures": {
+    "target_ct_id": "int32_t scalar",
+    "title_year_filter": "streaming scan over production_year.bin",
+    "mc_probe": "offsets_only index (mc_off[]) + streaming row range",
+    "mi_probe": "offsets_only index (mi_off[]) + streaming row range",
+    "mc_note_filter": "varlen .off + .dat with memmem; three required needles",
+    "mi_info_filter": "varlen .off + .dat with length+memcmp against 2-literal set",
+    "aggregation": "thread_local std::string + lex MIN reduction"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "morsel": "title row ranges of ~50000 rows",
+    "threads": "auto(nproc)",
+    "notes": "Each thread maintains local MIN string; final reduction picks lexicographically smallest. 12 cores → ~25 morsels."
+  },
+  "indexes": [
+    {"index": "movie_companies__movie_id (offsets_only)", "file": "_idx/movie_companies__movie_id__offsets.bin", "purpose": "join_lookup t.id → mc row range"},
+    {"index": "movie_info__movie_id (offsets_only)", "file": "_idx/movie_info__movie_id__offsets.bin", "purpose": "join_lookup t.id → mi row range"}
+  ],
+  "aggregation": "scalar_min_string",
+  "output": {
+    "projection": ["MIN(t.title) AS american_vhs_movie"],
+    "order_by": [],
+    "limit": 1
+  },
+  "memory_estimate": {
+    "title_production_year.bin": "~10 MB",
+    "mc_off": "~10 MB",
+    "mi_off": "~10 MB",
+    "mc_columns_streamed": "company_type_id + note.off+.dat accessed by row range",
+    "mi_columns_streamed": "info.off+.dat accessed by row range",
+    "fits_in_memory": true
+  },
+  "execution_target": "cpp",
+  "short_circuit_notes": [
+    "For each t_id: iterate mc range; on first mc row passing ct_id + 3-substring note filter, set mc_ok and break.",
+    "If mc_ok: iterate mi range; on first mi row with info IN set, set mi_ok and break.",
+    "If both ok: fetch t.title (varlen), update thread-local MIN."
+  ]
+}

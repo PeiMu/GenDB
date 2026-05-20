@@ -1,0 +1,26 @@
+{
+  "query_id": "Q3a",
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 14.153333333333334,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 14.153333333333334,
+      "validation": "pass",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "data_loading": 0.09,
+        "keyword_scan": 3.53,
+        "csr_walk": 1.15,
+        "year_filter": 0.38,
+        "main_scan": 4.73,
+        "output": 0.1,
+        "total": 13.61
+      }
+    }
+  ]
+}

@@ -1,0 +1,64 @@
+{
+  "compile": {
+    "status": "pass"
+  },
+  "run": {
+    "status": "pass",
+    "duration_ms": 21
+  },
+  "validation": {
+    "status": "fail",
+    "details": {
+      "match": false,
+      "queries": {
+        "Q19a": {
+          "rows_expected": 1,
+          "rows_actual": 1,
+          "match": false,
+          "error": "1 row(s) differ",
+          "sample_mismatches": [
+            {
+              "row": 0,
+              "expected": [
+                "Angeline, Moriah",
+                "Blue Harvest"
+              ],
+              "actual": [
+                "",
+                ""
+              ],
+              "cell_details": [
+                {
+                  "expected": "Angeline, Moriah",
+                  "actual": "",
+                  "pattern": "zero_output",
+                  "col": 0
+                },
+                {
+                  "expected": "Blue Harvest",
+                  "actual": "",
+                  "pattern": "zero_output",
+                  "col": 1
+                }
+              ]
+            }
+          ],
+          "mismatch_patterns": {
+            "zero_output": 2
+          }
+        }
+      }
+    }
+  },
+  "optimization_target": "hot",
+  "timing_ms": 25.97666666666667,
+  "hot_timing_ms": 25.97666666666667,
+  "operation_timings": {
+    "data_loading": 0.51,
+    "resolve_dict_constants": 0.01,
+    "build_P_set": 7.95,
+    "main_scan": 3.83,
+    "output": 0.09,
+    "total": 18.85
+  }
+}

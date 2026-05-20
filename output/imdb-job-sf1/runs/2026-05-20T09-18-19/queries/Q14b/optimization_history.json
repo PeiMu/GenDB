@@ -1,0 +1,23 @@
+{
+  "query_id": "Q14b",
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 4.776666666666666,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 4.776666666666666,
+      "validation": "pass",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "resolve_dims": 0.44,
+        "main_scan": 4.06,
+        "output": 0.06,
+        "total": 4.74
+      }
+    }
+  ]
+}

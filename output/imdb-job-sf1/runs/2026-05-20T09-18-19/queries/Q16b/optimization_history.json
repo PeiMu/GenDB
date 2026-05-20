@@ -1,0 +1,26 @@
+{
+  "query_id": "Q16b",
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 24.959999999999997,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 24.959999999999997,
+      "validation": "pass",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "data_loading": 0.21,
+        "us_mask_build": 0.64,
+        "mk_csr_enum": 1.71,
+        "us_semi_join": 3.6,
+        "main_scan": 11.35,
+        "output": 0.07,
+        "total": 23.89
+      }
+    }
+  ]
+}

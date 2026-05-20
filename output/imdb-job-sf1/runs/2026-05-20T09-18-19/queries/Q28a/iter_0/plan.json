@@ -1,0 +1,96 @@
+{
+  "query_id": "Q28a",
+  "pipeline": [
+    "resolve_dim_constants",
+    "build_dim_sets",
+    "parallel_scan_title_filtered",
+    "probe_movie_keyword",
+    "probe_complete_cast",
+    "probe_movie_info_idx",
+    "probe_movie_companies",
+    "probe_movie_info",
+    "min_aggregate"
+  ],
+  "dim_resolution": [
+    {"dim": "comp_cast_type", "outputs": ["crew_id (kind=='crew')", "verified_id (kind=='complete+verified')"], "strategy": "scalar_scan_4_rows"},
+    {"dim": "company_name", "outputs": ["us_code (country_code dict lookup)", "cn_set bitset(234997) where country_code != us_code AND country_code != 0"], "strategy": "dict_lookup_then_bitset_scan"},
+    {"dim": "info_type", "outputs": ["it1_id (info=='countries')", "it2_id (info=='rating')"], "strategy": "scalar_scan_113_rows"},
+    {"dim": "keyword", "outputs": ["kw_set: 4 ids for {murder,murder-in-title,blood,violence}"], "strategy": "scalar_scan_collect_ids"},
+    {"dim": "kind_type", "outputs": ["kt_set: 2 ids for {movie,episode}"], "strategy": "scalar_scan_7_rows"},
+    {"dim": "movie_info.info literals", "outputs": ["mi_info_set: 10-string hashset {Sweden,Norway,Germany,Denmark,Swedish,Danish,Norwegian,German,USA,American}"], "strategy": "small_string_hashset"}
+  ],
+  "join_order": [
+    {
+      "build": "title (filtered: production_year>2000 AND kind_id ∈ kt_set)",
+      "probe": "movie_keyword via offsets index",
+      "type": "semi",
+      "strategy": "index_nested_loop_with_kw_set_check",
+      "build_cardinality": 632000,
+      "notes": "Driver. ~25% of titles pass year, ~85% pass kt_set → ~21% of 2.5M ≈ 530k-630k. For each surviving t_id, range-scan mk[lo:hi], early-out on first kw_set hit. kw_set is 4 small ints → branch-predict friendly or tiny hashset."
+    },
+    {
+      "build": "complete_cast (subject_id==crew_id, status_id!=verified_id)",
+      "probe": "complete_cast via offsets index by t_id",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 135086,
+      "notes": "After mk semi-join. Range scan cc[lo:hi] for current t_id; check subject_id==crew_id AND status_id!=verified_id. Early-out on first match."
+    },
+    {
+      "build": "movie_info_idx (info_type_id==it2_id AND lex(info)<'8.5')",
+      "probe": "movie_info_idx via offsets index by t_id",
+      "type": "inner_collect_min",
+      "strategy": "index_nested_loop_collect_min_info",
+      "build_cardinality": 1380035,
+      "notes": "Required for projection MIN(mi_idx.info). Collect min info string for surviving rows; this is per-t_id so we keep best per t_id then global min."
+    },
+    {
+      "build": "movie_companies (company_id ∈ cn_set AND note LIKE '%(200%)%' AND note NOT LIKE '%(USA)%')",
+      "probe": "movie_companies via offsets index by t_id",
+      "type": "inner_collect_min",
+      "strategy": "index_nested_loop_collect_min_cn_name",
+      "build_cardinality": 2609129,
+      "notes": "Required for projection MIN(cn.name). For surviving mc rows, lazily fetch cn.name via cn_id. Apply note substring tests (memmem) before cn_set lookup since string filter is highly selective (~5%)."
+    },
+    {
+      "build": "movie_info (info_type_id==it1_id AND info ∈ mi_info_set)",
+      "probe": "movie_info via offsets index by t_id",
+      "type": "semi",
+      "strategy": "index_nested_loop_with_string_hashset",
+      "build_cardinality": 14835720,
+      "notes": "Last probe — largest table. Only need existence (semi-join). Filter info_type_id first (cheap int compare), then string hashset lookup. Early-out on first match."
+    }
+  ],
+  "filters": [
+    {"table": "title", "predicate": "production_year > 2000", "selectivity": 0.25},
+    {"table": "title", "predicate": "kind_id ∈ {movie,episode}", "selectivity": 0.85},
+    {"table": "movie_keyword", "predicate": "keyword_id ∈ kw_set (4 ids)", "selectivity": 0.001},
+    {"table": "complete_cast", "predicate": "subject_id==crew_id AND status_id!=verified_id", "selectivity": 0.25},
+    {"table": "movie_info_idx", "predicate": "info_type_id==it2_id AND lex(info)<'8.5'", "selectivity": 0.35},
+    {"table": "movie_companies", "predicate": "company_id ∈ cn_set AND memmem(note,'(USA)')==NULL AND memmem(note,'(200')!=NULL with ')' following", "selectivity": 0.05},
+    {"table": "movie_info", "predicate": "info_type_id==it1_id AND info ∈ mi_info_set", "selectivity": 0.01}
+  ],
+  "data_structures": {
+    "cn_set": "bitset(234997) — dense bool array indexed by company_name.id, set if country_code != us_code AND country_code != 0",
+    "kw_set": "tiny_int32_set (4 elements) — linear scan or 4-way branch",
+    "kt_set": "tiny_int32_set (2 elements)",
+    "mi_info_set": "small_string_hashset (10 entries) — fixed-size open-addressing hash on (len, first 16 bytes)",
+    "aggregation": "scalar_min_strings (3 outputs: best cn.name, best mi_idx.info, best t.title) — kept as offsets into source columns, compared lazily"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven_on_title",
+    "threads": "auto(12)",
+    "morsel_size": 65536,
+    "notes": "Partition title id-range into morsels; each thread maintains thread-local best (cn.name, mi_idx.info, t.title); merge at end via scalar MIN across 12 thread-locals."
+  },
+  "indexes": [
+    {"index": "movie_keyword__movie_id", "purpose": "join_lookup_by_t_id"},
+    {"index": "complete_cast__movie_id", "purpose": "join_lookup_by_t_id"},
+    {"index": "movie_info_idx__movie_id", "purpose": "join_lookup_by_t_id"},
+    {"index": "movie_companies__movie_id", "purpose": "join_lookup_by_t_id"},
+    {"index": "movie_info__movie_id", "purpose": "join_lookup_by_t_id"}
+  ],
+  "aggregation": "scalar_min_3_strings_thread_local_then_global",
+  "output": {"order_by": [], "limit": 1, "columns": ["MIN(cn.name)", "MIN(mi_idx.info)", "MIN(t.title)"]},
+  "execution_target": "cpp"
+}

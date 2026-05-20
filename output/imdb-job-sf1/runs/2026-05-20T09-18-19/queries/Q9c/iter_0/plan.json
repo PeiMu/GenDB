@@ -1,0 +1,97 @@
+{
+  "query_id": "Q9c",
+  "pipeline": [
+    "resolve_constants",
+    "build_name_pid_bitset",
+    "build_aka_name_presence_bitset",
+    "build_cn_us_bitset",
+    "build_mc_movie_has_us_bitset",
+    "build_ci_voice_bitset",
+    "probe_per_pid",
+    "aggregate_mins"
+  ],
+  "filters": [
+    {"table": "role_type", "predicate": "role = 'actress'", "selectivity": 0.083, "method": "dict_scan_const"},
+    {"table": "company_name", "predicate": "country_code = '[us]'", "selectivity": 0.361, "rows_kept": 84843, "method": "dict_scan_into_bitset"},
+    {"table": "name", "predicate": "gender = 'f' AND name LIKE '%An%'", "selectivity": 0.012, "rows_kept": 50011, "method": "scan_bitset_over_name_id"},
+    {"table": "cast_info", "predicate": "role_id = rt_id_actress AND note IN voice_set AND person_role_id != INT32_MIN", "selectivity": 0.0076, "rows_kept": 276166, "method": "scan_bitset_over_ci_rowid"},
+    {"table": "movie_companies", "predicate": "cn.country_code[company_id-1] = us_code (no note filter)", "method": "scan_set_movie_us_bitset"}
+  ],
+  "join_order": [
+    {
+      "build": "name_pid_bitset(gender=f, %An%)",
+      "probe": "aka_name presence (via aka_name__person_id offsets)",
+      "type": "semi",
+      "strategy": "bitset_intersect",
+      "build_cardinality": 50011,
+      "notes": "Driver = name pids with female + %An% AND aka_name presence. Use aka_name offsets to check non-empty range cheaply."
+    },
+    {
+      "build": "driver_pids (~tens of thousands)",
+      "probe": "cast_info via CSR cast_info__person_id",
+      "type": "inner",
+      "strategy": "csr_walk",
+      "build_cardinality": 50000,
+      "notes": "For each driver pid, scan ci rows; filter via precomputed ci_voice_bitset AND person_role_id != INT32_MIN."
+    },
+    {
+      "build": "mc_movie_has_us_bitset (size = title.rows = 2528312)",
+      "probe": "ci.movie_id at surviving ci rows",
+      "type": "semi",
+      "strategy": "bitset_lookup",
+      "build_cardinality": 2528312,
+      "notes": "Pre-walk movie_companies once; set bit[movie_id-1] if cn.country_code[company_id-1]==us. O(1) probe per ci row."
+    },
+    {
+      "build": "char_name dense-PK array",
+      "probe": "ci.person_role_id at surviving ci rows",
+      "type": "inner",
+      "strategy": "direct_array",
+      "build_cardinality": 3140339,
+      "notes": "Direct deref char_name.name[chn_id-1]."
+    },
+    {
+      "build": "title dense-PK array",
+      "probe": "ci.movie_id at surviving ci rows",
+      "type": "inner",
+      "strategy": "direct_array",
+      "build_cardinality": 2528312,
+      "notes": "Direct deref title.title[movie_id-1] for MIN(t.title)."
+    },
+    {
+      "build": "aka_name (via offsets per pid)",
+      "probe": "per surviving pid",
+      "type": "inner",
+      "strategy": "offsets_walk",
+      "build_cardinality": 901343,
+      "notes": "Walk aka_name rows for each surviving pid (lazily, only for pids that survive ci filter) to compute MIN(an.name)."
+    }
+  ],
+  "data_structures": {
+    "name_pid_bitset": "bitset(4167491) — name pids with gender=f AND name LIKE '%An%'",
+    "aka_name_presence_bitset": "bitset(4167491) — pids with aka_name__person_id range non-empty",
+    "driver_pid_list": "compact vector<int32_t> from intersect(name_pid_bitset, aka_name_presence_bitset) — ~tens of thousands",
+    "cn_us_bitset": "bitset(234997) — company_name ids with country_code=[us]",
+    "ci_voice_bitset": "bitset(36244344) — ci rows with role_id=actress AND note IN voice_set AND person_role_id!=INT32_MIN (~276166 set)",
+    "mc_movie_has_us_bitset": "bitset(2528312) — movies with any mc row whose company is us",
+    "min_accumulators": "4 string_view min accumulators (an_name, chn_name, n_name, t_title)"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "morsels": [
+      {"phase": "build_name_pid_bitset", "partition": "name rows split across 12 threads"},
+      {"phase": "build_ci_voice_bitset", "partition": "cast_info rows split across 12 threads"},
+      {"phase": "build_mc_movie_has_us_bitset", "partition": "movie_companies rows split across 12 threads, atomic-or into shared bitset (or thread-local then OR-merge)"},
+      {"phase": "probe_per_pid", "partition": "driver pid list split across 12 threads; thread-local MIN accumulators merged at end"}
+    ]
+  },
+  "indexes": [
+    {"index": "cast_info__person_id (CSR)", "purpose": "per-pid ci row enumeration"},
+    {"index": "movie_companies__movie_id (offsets_only)", "purpose": "pre-walk to build mc_movie_has_us_bitset"},
+    {"index": "aka_name__person_id (offsets_only)", "purpose": "aka_name presence check AND per-pid an enumeration"}
+  ],
+  "aggregation": "scalar_min_4cols",
+  "output": {"order_by": [], "limit": 1, "projection": ["MIN(an.name)", "MIN(chn.name)", "MIN(n.name)", "MIN(t.title)"]},
+  "execution_target": "cpp"
+}

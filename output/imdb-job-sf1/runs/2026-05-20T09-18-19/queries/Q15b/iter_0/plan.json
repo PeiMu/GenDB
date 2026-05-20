@@ -1,0 +1,100 @@
+{
+  "query_id": "Q15b",
+  "pipeline": [
+    "resolve_us_code",
+    "resolve_youtube_cn_ids",
+    "resolve_it1_id",
+    "enumerate_mc_via_csr_company_id",
+    "filter_mc_note_likes",
+    "filter_title_production_year",
+    "verify_existence_aka_title",
+    "verify_existence_movie_keyword",
+    "walk_movie_info_apply_filters",
+    "aggregate_min"
+  ],
+  "join_order": [
+    {
+      "build": "cn(filtered: country_code='[us]' AND name='YouTube')",
+      "probe": "movie_companies",
+      "type": "inner",
+      "strategy": "direct_array",
+      "build_cardinality": 1,
+      "notes": "Driver: typically 1 YouTube row in US. Use CSR movie_companies__company_id to enumerate mc rows."
+    },
+    {
+      "build": "mc(rows for YouTube, note LIKEs passed)",
+      "probe": "title",
+      "type": "inner",
+      "strategy": "direct_array",
+      "build_cardinality": 200,
+      "notes": "Dense PK lookup: title row r = mc.movie_id - 1. Apply production_year BETWEEN 2005 AND 2010."
+    },
+    {
+      "build": "surviving movie_ids",
+      "probe": "aka_title",
+      "type": "semi",
+      "strategy": "offsets_only_existence",
+      "build_cardinality": 100,
+      "notes": "Existence-only via aka_title__movie_id offsets; non-empty range."
+    },
+    {
+      "build": "surviving movie_ids",
+      "probe": "movie_keyword",
+      "type": "semi",
+      "strategy": "offsets_only_existence",
+      "build_cardinality": 100,
+      "notes": "Existence-only via movie_keyword__movie_id offsets; non-empty range."
+    },
+    {
+      "build": "it1(filtered: info='release dates') -> single int32 id",
+      "probe": "movie_info(walked per movie_id)",
+      "type": "inner",
+      "strategy": "scalar_equality",
+      "build_cardinality": 1,
+      "notes": "Walk movie_info__movie_id offsets for each surviving mv; filter info_type_id==it1_id, mi.note LIKE '%internet%', mi.info LIKE 'USA:% 200%'."
+    }
+  ],
+  "filters": [
+    {"table": "company_name", "predicate": "country_code = '[us]' AND name = 'YouTube'", "selectivity": 0.0000043},
+    {"table": "info_type", "predicate": "info = 'release dates'", "selectivity": 0.0088},
+    {"table": "movie_companies", "predicate": "note LIKE '%(200%)%' AND note LIKE '%(worldwide)%'", "selectivity": 0.01},
+    {"table": "title", "predicate": "production_year BETWEEN 2005 AND 2010", "selectivity": 0.10},
+    {"table": "movie_info", "predicate": "info_type_id=it1_id AND note LIKE '%internet%' AND info LIKE 'USA:% 200%'", "selectivity": 0.001}
+  ],
+  "data_structures": {
+    "cn_ids": "small_vector<int32_t> (typically 1 element)",
+    "us_code": "int16_t scalar",
+    "it1_id": "int32_t scalar",
+    "mc_enumeration": "CSR slice (mc_co_off[cn_id]..mc_co_off[cn_id+1])",
+    "aka_title_existence": "offsets_only range-nonempty check",
+    "movie_keyword_existence": "offsets_only range-nonempty check",
+    "movie_info_walk": "offsets_only range scan",
+    "aggregation": "two scalar min trackers (best_mi_info, best_title) holding (off,len) into respective .dat buffers"
+  },
+  "parallelism": {
+    "strategy": "single_threaded",
+    "threads": 1,
+    "notes": "Driver enumerates ~200-1000 mc rows for YouTube; serial is faster than thread setup. No partitioning benefit."
+  },
+  "indexes": [
+    {"index": "movie_companies__company_id (CSR)", "purpose": "enumerate mc rows for YouTube cn_id"},
+    {"index": "aka_title__movie_id (offsets_only)", "purpose": "existence check per movie_id"},
+    {"index": "movie_keyword__movie_id (offsets_only)", "purpose": "existence check per movie_id"},
+    {"index": "movie_info__movie_id (offsets_only)", "purpose": "walk mi rows per movie_id"}
+  ],
+  "aggregation": "scalar_min_two_columns",
+  "output": {"order_by": [], "limit": 1, "projection": ["MIN(mi.info) AS release_date", "MIN(t.title) AS youtube_movie"]},
+  "execution_target": "cpp",
+  "implementation_notes": [
+    "Resolve us_code by linear scan of country_code dict (113-ish entries).",
+    "Resolve cn_ids by scanning company_name rows where country_code==us_code and name=='YouTube' (exact len=7 memcmp).",
+    "Resolve it1_id by linear scan of info_type.info dict (113 rows) for 'release dates'.",
+    "For each cn_id in cn_ids, iterate CSR slice [mc_co_off[cn_id], mc_co_off[cn_id+1]) -> mc row r.",
+    "Apply mc.note LIKE checks via two memmem calls (substrings '(200' + ')' approximated as memmem '(200' AND memmem '(worldwide)').",
+    "Compute mv = mc.movie_id[r]; title row index = mv-1; check production_year in [2005,2010] (skip INT32_MIN).",
+    "Existence via offsets_only: aka_off[mv]<aka_off[mv+1] and mk_off[mv]<mk_off[mv+1].",
+    "Walk movie_info: for k in [mi_off[mv], mi_off[mv+1]) check info_type_id[k]==it1_id, then memmem('internet') on note, then prefix 'USA:' and memmem(' 200') on info; update mins.",
+    "MIN compares: lexicographic memcmp on (ptr,len); track best as (off,len).",
+    "Final output formats best title and best mi.info from their .dat buffers."
+  ]
+}

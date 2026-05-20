@@ -1,0 +1,81 @@
+{
+  "query_id": "Q13b",
+  "pipeline": [
+    "resolve_dims",
+    "scan_title_filter_like",
+    "probe_movie_companies",
+    "probe_movie_info_exists",
+    "probe_movie_info_idx",
+    "aggregate_min"
+  ],
+  "dim_resolution": [
+    {"table": "company_name", "column": "country_code", "predicate": "= '[us]'", "output": "us_code"},
+    {"table": "company_type", "column": "kind", "predicate": "= 'production companies'", "output": "ct_id"},
+    {"table": "info_type", "column": "info", "predicate": "= 'rating'", "output": "it_id"},
+    {"table": "info_type", "column": "info", "predicate": "= 'release dates'", "output": "it2_id"},
+    {"table": "kind_type", "column": "kind", "predicate": "= 'movie'", "output": "kt_id"}
+  ],
+  "filters": [
+    {"table": "title", "predicate": "kind_id == kt_id", "selectivity": 0.65},
+    {"table": "title", "predicate": "title != ''", "selectivity": 0.999},
+    {"table": "title", "predicate": "title LIKE '%Champion%' OR title LIKE '%Loser%'", "selectivity": 0.0015, "notes": "length>=5 prune then memmem for 'Champion'(8) or 'Loser'(5)"},
+    {"table": "movie_companies", "predicate": "company_type_id == ct_id", "selectivity": 0.5},
+    {"table": "company_name", "predicate": "country_code[cid-1] == us_code", "selectivity": 0.5},
+    {"table": "movie_info", "predicate": "info_type_id == it2_id (existence)", "selectivity": 0.07},
+    {"table": "movie_info_idx", "predicate": "info_type_id == it_id", "selectivity": 0.5}
+  ],
+  "join_order": [
+    {
+      "build": "title(filtered LIKE+kind=movie)",
+      "probe": "movie_companies via offsets[mid]",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 4000,
+      "notes": "title is driver; per-mid range probe into mc offsets index, filter ct_id, lookup cn.country_code"
+    },
+    {
+      "build": "candidate mids (with mc match)",
+      "probe": "movie_info via offsets[mid]",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 2000,
+      "notes": "existence check for info_type_id == it2_id"
+    },
+    {
+      "build": "candidate mids (with mc+mi match)",
+      "probe": "movie_info_idx via offsets[mid]",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 1500,
+      "notes": "filter info_type_id == it_id, capture miidx.info for MIN"
+    }
+  ],
+  "data_structures": {
+    "title_candidates": "flat_vector<uint32_t> mids",
+    "mc_probe": "offsets_only_index (mc.movie_id) -> [lo,hi)",
+    "cn_country_lookup": "direct_array (dict int16)",
+    "mi_probe": "offsets_only_index (mi.movie_id) -> [lo,hi)",
+    "miidx_probe": "offsets_only_index (miidx.movie_id) -> [lo,hi)",
+    "min_aggregates": "three byte-wise MIN slots (cn.name, miidx.info, t.title)"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "notes": "parallelize title scan in morsels of ~64K rows; per-thread local MIN slots, merged at end"
+  },
+  "indexes": [
+    {"index": "movie_companies__movie_id (offsets_only)", "purpose": "join_lookup"},
+    {"index": "movie_info__movie_id (offsets_only)", "purpose": "existence_check"},
+    {"index": "movie_info_idx__movie_id (offsets_only)", "purpose": "join_lookup"}
+  ],
+  "scan_plan": {
+    "title": {
+      "order": "row_order",
+      "row_prune": ["length>=5 via off[i+1]-off[i]", "kind_id == kt_id"],
+      "match": "memmem 'Champion' OR memmem 'Loser'"
+    }
+  },
+  "aggregation": "scalar_min_bytewise",
+  "output": {"order_by": [], "limit": 1, "projection": ["MIN(cn.name)", "MIN(miidx.info)", "MIN(t.title)"]},
+  "execution_target": "cpp"
+}

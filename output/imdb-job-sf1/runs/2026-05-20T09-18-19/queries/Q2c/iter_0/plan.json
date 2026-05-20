@@ -1,0 +1,61 @@
+{
+  "query_id": "Q2c",
+  "pipeline": [
+    "resolve_dict_country_code",
+    "scan_keyword_resolve_target_k_id",
+    "scan_cn_build_pass_bitmap",
+    "csr_probe_mk_by_keyword_id",
+    "extract_candidate_movie_ids",
+    "probe_mc_by_movie_id_check_cn_bitmap",
+    "fetch_title_min"
+  ],
+  "join_order": [
+    {
+      "build": "keyword(filtered: keyword='character-name-in-title')",
+      "probe": "movie_keyword via CSR movie_keyword__keyword_id",
+      "type": "inner",
+      "strategy": "csr_index_lookup",
+      "build_cardinality": 1,
+      "notes": "Driver: tiny mk slice via offsets[target_k_id..target_k_id+1]"
+    },
+    {
+      "build": "company_name(filtered: country_code='[sm]')",
+      "probe": "movie_companies(filtered by mv in candidate set via offsets_only movie_companies__movie_id)",
+      "type": "semi",
+      "strategy": "direct_array_bitmap",
+      "build_cardinality": 10,
+      "notes": "cn_pass bitmap over cn.id 1..234997; very sparse (sm is rare)"
+    },
+    {
+      "build": "title(by id)",
+      "probe": "surviving movie_ids",
+      "type": "inner",
+      "strategy": "direct_array",
+      "build_cardinality": 2528312,
+      "notes": "title.id is dense identity; direct index for varlen fetch"
+    }
+  ],
+  "filters": [
+    {"table": "company_name", "predicate": "country_code = '[sm]'", "selectivity": 0.00005, "notes": "resolved via dict at runtime; if not found, target_code=0 → empty result"},
+    {"table": "keyword", "predicate": "keyword = 'character-name-in-title'", "selectivity": 0.0000075, "notes": "resolved via varlen scan to get target_k_id"}
+  ],
+  "data_structures": {
+    "cn_pass": "bitset(234998) over cn.id; set bits where country_code == target_code",
+    "candidate_movie_ids": "implicit stream from CSR rowids → movie_id_bin[mk_row]; dedup unnecessary since we process each mk row independently and short-circuit per movie",
+    "mk_csr": "use prebuilt _idx/movie_keyword__keyword_id__offsets.bin + __rowids.bin",
+    "mc_offsets": "use prebuilt _idx/movie_companies__movie_id__offsets.bin",
+    "min_title": "single std::string accumulator; lexicographic min over surviving t.title varlen"
+  },
+  "parallelism": {
+    "strategy": "single_threaded",
+    "threads": 1,
+    "notes": "Candidate set is tiny (rare keyword × rare cn country); parallel overhead exceeds benefit. Driver loop is bounded by mk slice for one keyword (small)."
+  },
+  "indexes": [
+    {"index": "movie_keyword__keyword_id (CSR)", "purpose": "join_lookup: drive candidate mk rows for target_k_id"},
+    {"index": "movie_companies__movie_id (offsets_only)", "purpose": "join_lookup: per-candidate movie_id range scan in mc"}
+  ],
+  "aggregation": "scalar_min_varlen",
+  "output": {"projection": ["MIN(t.title) AS movie_title"], "order_by": [], "limit": 1},
+  "execution_target": "cpp"
+}

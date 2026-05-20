@@ -1,0 +1,92 @@
+{
+  "query_id": "Q19d",
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 53.49,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 53.49,
+      "validation": "pass",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "resolve_dims": 0.09,
+        "build_cn_bitset": 0.68,
+        "main_scan": 27.11,
+        "output": 0.07,
+        "total": 53.2
+      }
+    },
+    {
+      "iteration": 1,
+      "improved": true,
+      "categories": [],
+      "timing_ms": 50.29333333333333,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 50.29333333333333,
+      "validation": "pass",
+      "strategy": "",
+      "operation_timings": {
+        "resolve_dims": 0.07,
+        "build_cn_bitset": 0.58,
+        "main_scan": 24.69,
+        "output": 0.08,
+        "total": 50.14
+      }
+    },
+    {
+      "iteration": 2,
+      "improved": false,
+      "categories": [],
+      "timing_ms": 50.38333333333333,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 50.38333333333333,
+      "validation": "pass",
+      "strategy": "",
+      "operation_timings": {
+        "resolve_dims": 0.07,
+        "build_cn_bitset": 0.58,
+        "main_scan": 24.74,
+        "output": 0.08,
+        "total": 50.2
+      }
+    },
+    {
+      "iteration": 3,
+      "improved": true,
+      "categories": [],
+      "timing_ms": 50.11333333333334,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 50.11333333333334,
+      "validation": "pass",
+      "strategy": "",
+      "operation_timings": {
+        "resolve_dims": 0.07,
+        "build_cn_bitset": 0.57,
+        "main_scan": 24.63,
+        "output": 0.08,
+        "total": 50.11
+      }
+    },
+    {
+      "iteration": 4,
+      "improved": true,
+      "categories": [],
+      "timing_ms": 49.876666666666665,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 49.876666666666665,
+      "validation": "pass",
+      "strategy": "",
+      "operation_timings": {
+        "resolve_dims": 0.07,
+        "build_cn_bitset": 0.58,
+        "main_scan": 24.64,
+        "output": 0.07,
+        "total": 49.85
+      }
+    }
+  ]
+}

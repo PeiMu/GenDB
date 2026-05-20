@@ -1,0 +1,28 @@
+{
+  "query_id": "Q2a",
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 7.983333333333334,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 7.983333333333334,
+      "validation": "pass",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "data_loading": 0.09,
+        "resolve_target_code": 0,
+        "resolve_target_k_id": 0.01,
+        "build_cn_pass": 0.25,
+        "csr_probe_mk": 1.46,
+        "probe_mc_and_filter": 1.57,
+        "fetch_title_min": 1.84,
+        "output": 0.09,
+        "total": 7.68
+      }
+    }
+  ]
+}

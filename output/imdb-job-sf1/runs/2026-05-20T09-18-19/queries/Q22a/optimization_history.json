@@ -1,0 +1,24 @@
+{
+  "query_id": "Q22a",
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 12.803333333333333,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 12.803333333333333,
+      "validation": "pass",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "data_loading": 0.16,
+        "dim_resolve": 0.54,
+        "main_scan": 5.5,
+        "output": 0.06,
+        "total": 12.72
+      }
+    }
+  ]
+}

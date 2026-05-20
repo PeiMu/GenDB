@@ -1,0 +1,94 @@
+{
+  "query_id": "Q17e",
+  "pipeline": [
+    "resolve_dict_us_code",
+    "resolve_keyword_id_character_name_in_title",
+    "csr_scan_movie_keyword_by_kid",
+    "dedupe_movie_ids",
+    "semi_join_movie_companies_with_us_company",
+    "probe_cast_info_by_movie",
+    "min_aggregate_name"
+  ],
+  "join_order": [
+    {
+      "build": "keyword(filter keyword='character-name-in-title') -> k_id (scalar)",
+      "probe": "movie_keyword via CSR on keyword_id",
+      "type": "inner",
+      "strategy": "direct_csr_lookup",
+      "build_cardinality": 1,
+      "notes": "Driver: tiny keyword slice yields ~few thousand mk rows"
+    },
+    {
+      "build": "unique movie_ids from mk slice",
+      "probe": "movie_companies via offsets_only on movie_id",
+      "type": "semi",
+      "strategy": "index_nested_loop_with_dict_filter",
+      "build_cardinality": 5000,
+      "notes": "For each unique mv, scan mc offsets; require cn.country_code[company_id-1]==us_code; first match short-circuits"
+    },
+    {
+      "build": "company_name.country_code dict column (pre-loaded)",
+      "probe": "mc.company_id lookup",
+      "type": "semi",
+      "strategy": "direct_array",
+      "build_cardinality": 234997,
+      "notes": "Dense PK on company_name; cn_cc[company_id-1] compared to resolved us_code (int16)"
+    },
+    {
+      "build": "qualifying movie_ids (passed cn filter)",
+      "probe": "cast_info via offsets_only on movie_id",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 3000,
+      "notes": "For each qualifying mv, iterate ci rows; collect person_ids"
+    },
+    {
+      "build": "name.name varlen column (pre-loaded offsets+data)",
+      "probe": "person_id -> name.name[pid-1]",
+      "type": "inner",
+      "strategy": "direct_array",
+      "build_cardinality": 4167491,
+      "notes": "MIN aggregation: lex-compare each name to running min string_view"
+    }
+  ],
+  "filters": [
+    {"table": "company_name", "predicate": "country_code = '[us]'", "selectivity": 0.30, "method": "dict_resolve_runtime"},
+    {"table": "keyword", "predicate": "keyword = 'character-name-in-title'", "selectivity": 7.45e-6, "method": "varlen_linear_scan_for_kid"}
+  ],
+  "data_structures": {
+    "us_code": "int16 scalar (resolved from company_name/country_code.dict)",
+    "k_id": "int32 scalar (resolved from keyword.name dictionary lookup)",
+    "cn_country_code": "int16 array length 234997 (mmap)",
+    "mk_csr_offsets": "int32 array length 134172 (mmap)",
+    "mk_csr_rowids": "int32 array length 4523930 (mmap)",
+    "mk_movie_id": "int32 array length 4523930 (mmap)",
+    "mc_offsets": "int32 array length 2528314 (mmap)",
+    "mc_company_id": "int32 array length 2609129 (mmap)",
+    "ci_offsets": "int32 array length 2528314 (mmap)",
+    "ci_person_id": "int32 array length 36244344 (mmap)",
+    "name_off": "int64/int32 varlen offsets (mmap)",
+    "name_dat": "char varlen data (mmap)",
+    "movie_id_seen": "flat_bitset(2528313) to dedupe movie_ids from mk slice",
+    "thread_local_min": "std::string per thread, merged at end"
+  },
+  "parallelism": {
+    "strategy": "partition_parallel_over_unique_movies",
+    "threads": "auto(nproc)",
+    "notes": "mk slice is tiny (~few thousand). Dedupe via bitset, then partition unique movie_ids across 12 threads. Each thread holds a local min string; final reduction picks overall min."
+  },
+  "indexes": [
+    {"index": "movie_keyword__keyword_id (CSR)", "purpose": "driver: locate mk rows for k_id"},
+    {"index": "movie_companies__movie_id (offsets_only)", "purpose": "semi-join lookup for cn=[us] filter"},
+    {"index": "cast_info__movie_id (offsets_only)", "purpose": "expand qualifying movies to person_ids"}
+  ],
+  "aggregation": "scalar_min_string",
+  "output": {"columns": ["MIN(n.name) AS member_in_charnamed_movie"], "order_by": [], "limit": 1},
+  "execution_target": "cpp",
+  "execution_notes": [
+    "Step 1: dict-resolve '[us]' to int16 us_code from company_name/country_code.dict.off+.dict.dat.",
+    "Step 2: linear scan keyword.name varlen to find k_id where text == 'character-name-in-title'.",
+    "Step 3: lo=mk_k_off[k_id]; hi=mk_k_off[k_id+1]; for k in [lo,hi): mv=mk_movie_id[mk_k_row[k]]; mark in bitset.",
+    "Step 4: iterate set bits of bitset; for each mv test cn filter via mc offsets; if pass, expand ci offsets, update local min using std::string_view comparison on name varlen.",
+    "Step 5: reduce thread-local mins. Output single string."
+  ]
+}

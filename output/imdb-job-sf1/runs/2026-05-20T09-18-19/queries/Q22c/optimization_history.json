@@ -1,0 +1,121 @@
+{
+  "query_id": "Q22c",
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 20.53333333333333,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 20.53333333333333,
+      "validation": "fail",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "data_loading": 0.18,
+        "resolve_dims": 0.59,
+        "build_cn_ok": 0.37,
+        "main_scan": 7.23,
+        "output": 0.09,
+        "total": 20.54
+      }
+    },
+    {
+      "iteration": 1,
+      "improved": false,
+      "categories": [],
+      "timing_ms": 20.62,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 20.62,
+      "validation": "fail",
+      "strategy": "",
+      "operation_timings": {
+        "data_loading": 0.19,
+        "resolve_dims": 0.57,
+        "build_cn_ok": 0.38,
+        "main_scan": 7.25,
+        "output": 0.16,
+        "total": 20.63
+      }
+    },
+    {
+      "iteration": 2,
+      "improved": false,
+      "categories": [],
+      "timing_ms": 21.853333333333335,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 21.853333333333335,
+      "validation": "fail",
+      "strategy": "",
+      "operation_timings": {
+        "data_loading": 0.19,
+        "resolve_dims": 0.59,
+        "build_cn_ok": 0.38,
+        "main_scan": 7.25,
+        "output": 0.09,
+        "total": 20.6
+      }
+    },
+    {
+      "iteration": 3,
+      "improved": false,
+      "categories": [
+        "escalation"
+      ],
+      "timing_ms": 20.776666666666667,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 20.776666666666667,
+      "validation": "fail",
+      "strategy": "escalation to opus",
+      "operation_timings": {
+        "data_loading": 0.19,
+        "resolve_dims": 0.56,
+        "build_cn_ok": 0.37,
+        "main_scan": 7.5,
+        "output": 0.14,
+        "total": 20.86
+      }
+    },
+    {
+      "iteration": 4,
+      "improved": true,
+      "categories": [
+        "escalation"
+      ],
+      "timing_ms": 20.530000000000005,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 20.530000000000005,
+      "validation": "fail",
+      "strategy": "escalation to opus",
+      "operation_timings": {
+        "data_loading": 0.18,
+        "resolve_dims": 0.56,
+        "build_cn_ok": 0.37,
+        "main_scan": 7.32,
+        "output": 0.08,
+        "total": 20.59
+      }
+    },
+    {
+      "iteration": 5,
+      "improved": false,
+      "categories": [
+        "escalation"
+      ],
+      "timing_ms": 20.663333333333334,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 20.663333333333334,
+      "validation": "fail",
+      "strategy": "escalation to opus",
+      "operation_timings": {
+        "data_loading": 0.18,
+        "resolve_dims": 0.56,
+        "build_cn_ok": 0.37,
+        "main_scan": 7.3,
+        "output": 0.08,
+        "total": 20.65
+      }
+    }
+  ]
+}

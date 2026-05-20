@@ -1,0 +1,99 @@
+{
+  "query_id": "Q21c",
+  "pipeline": [
+    "resolve_dims",
+    "build_cn_bitset",
+    "build_mi_set",
+    "build_seq_movies_bitset",
+    "drive_movie_link_by_lt",
+    "per_mv_filter_year_and_sequel",
+    "per_mv_probe_movie_info",
+    "per_mv_probe_movie_companies",
+    "aggregate_min"
+  ],
+  "join_order": [
+    {
+      "build": "link_type(filtered: link LIKE '%follow%') -> LT_ids",
+      "probe": "movie_link via CSR movie_link__link_type_id",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 18,
+      "notes": "Drive from tiny LT_ids set; walk CSR to enumerate ml rows directly"
+    },
+    {
+      "build": "title (year in [1950,2010] AND production_year != INT32_MIN)",
+      "probe": "mv from movie_link",
+      "type": "semi",
+      "strategy": "direct_array",
+      "build_cardinality": 2528312,
+      "notes": "Title is dense-PK, sorted by id; check production_year[mv-1] directly"
+    },
+    {
+      "build": "movie_keyword.keyword_id == k_sequel -> seq_movies bitset(title_max+1)",
+      "probe": "mv (semi)",
+      "type": "semi",
+      "strategy": "bitset",
+      "build_cardinality": 2528312,
+      "notes": "Build by walking movie_keyword__keyword_id CSR for k_sequel; set bit per movie_id"
+    },
+    {
+      "build": "MI_set (flat_hash_set<string_view> of 9 strings)",
+      "probe": "movie_info range via movie_info__movie_id offsets_only for mv",
+      "type": "semi",
+      "strategy": "hash_set",
+      "build_cardinality": 9,
+      "notes": "EXISTS-style: short-circuit on first match"
+    },
+    {
+      "build": "company_name (country_code != '[pl]' AND name LIKE '%Film%'|'%Warner%') -> CN_ids bitset",
+      "probe": "movie_companies range via movie_companies__movie_id offsets_only for mv",
+      "type": "semi",
+      "strategy": "bitset",
+      "build_cardinality": 234997,
+      "notes": "Per mc row: note empty, company_type_id==ct_pc, CN_ids[company_id]"
+    }
+  ],
+  "filters": [
+    {"table": "company_name", "predicate": "country_code != '[pl]' AND (name LIKE '%Film%' OR name LIKE '%Warner%')", "selectivity": 0.05},
+    {"table": "company_type", "predicate": "kind = 'production companies'", "selectivity": 0.25},
+    {"table": "keyword", "predicate": "keyword = 'sequel'", "selectivity": 0.0000075},
+    {"table": "link_type", "predicate": "link LIKE '%follow%'", "selectivity": 0.2},
+    {"table": "movie_companies", "predicate": "note IS NULL (empty varlen)", "selectivity": 0.4},
+    {"table": "movie_info", "predicate": "info IN (9 strings incl. English)", "selectivity": 0.02},
+    {"table": "title", "predicate": "production_year BETWEEN 1950 AND 2010 AND != INT32_MIN", "selectivity": 0.85}
+  ],
+  "data_structures": {
+    "LT_ids": "small_vector<int32_t> (<=18)",
+    "CN_ids": "bitset(234997)",
+    "MI_set": "flat_hash_set<string_view> (9 entries)",
+    "seq_movies": "bitset(title_max+1)",
+    "ct_pc": "int32_t scalar",
+    "k_sequel": "int32_t scalar",
+    "aggregation": "scalar MIN(string_view) x3"
+  },
+  "parallelism": {
+    "strategy": "single_threaded",
+    "threads": 1,
+    "notes": "Driver loop is tiny (~few thousand ml rows after LT filter); parallelism overhead not worth it. Dim builds (CN_ids bitset, seq_movies bitset) are sequential CSR/scan."
+  },
+  "indexes": [
+    {"index": "movie_link__link_type_id (CSR)", "purpose": "drive ml rows from LT_ids"},
+    {"index": "movie_keyword__keyword_id (CSR)", "purpose": "build seq_movies bitset from k_sequel"},
+    {"index": "movie_info__movie_id (offsets_only)", "purpose": "per-mv range scan for MI_set EXISTS"},
+    {"index": "movie_companies__movie_id (offsets_only)", "purpose": "per-mv range scan for note/ct/cn check"}
+  ],
+  "aggregation": "scalar_min",
+  "output": {"order_by": [], "limit": 1},
+  "execution_target": "cpp",
+  "implementation_notes": [
+    "Use memmem for LIKE '%Film%', '%Warner%', '%follow%'.",
+    "company_name has varlen name and fixed country_code; iterate rows and set CN_ids[i] when both predicates hold.",
+    "Resolve ct_pc by scanning company_type (4 rows). Resolve k_sequel by scanning keyword (binary on kind not needed; linear scan is fine but if a sorted/index exists use it).",
+    "ml note: ml row stride small; capture both movie_id and link_type_id (->lt.link) at filter time. Track running MIN(lt.link) candidates only for ml rows whose mv ends up surviving.",
+    "title is sorted by id; production_year[mv-1] direct access (mv is 1-based title id).",
+    "movie_info range: stop EXISTS scan on first match.",
+    "movie_companies range: short-circuit on first qualifying mc row (note empty AND company_type_id==ct_pc AND CN_ids[company_id]). Capture cn.name for MIN.",
+    "Per surviving (mv, ml row), capture (cn.name, lt.link, t.title) and fold into 3 scalar MINs.",
+    "MIN comparisons over string_view lexicographic."
+  ]
+}

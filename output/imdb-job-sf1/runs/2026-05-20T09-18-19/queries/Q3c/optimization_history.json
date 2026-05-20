@@ -1,0 +1,26 @@
+{
+  "query_id": "Q3c",
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 23.44333333333333,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 23.44333333333333,
+      "validation": "pass",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "data_loading": 0.08,
+        "scan_keyword_like": 2.97,
+        "csr_lookup_movie_keyword": 1.57,
+        "filter_title_production_year": 0.4,
+        "main_scan": 11.18,
+        "output": 0.06,
+        "total": 23.39
+      }
+    }
+  ]
+}

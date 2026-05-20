@@ -1,0 +1,108 @@
+{
+  "query_id": "Q14a",
+  "pipeline": [
+    "resolve_dim_ids",
+    "scan_title_filter",
+    "semi_join_mk_keyword",
+    "semi_join_mi_country",
+    "probe_mi_idx_rating_aggregate"
+  ],
+  "dim_resolution": [
+    {
+      "table": "info_type",
+      "scan": "varlen",
+      "rows": 113,
+      "produces": ["it1_id where info='countries'", "it2_id where info='rating'"],
+      "structure": "two int32 scalars"
+    },
+    {
+      "table": "kind_type",
+      "scan": "varlen",
+      "rows": 7,
+      "produces": "kt_id where kind='movie'",
+      "structure": "int32 scalar"
+    },
+    {
+      "table": "keyword",
+      "scan": "varlen",
+      "rows": 134170,
+      "produces": "set of keyword ids in ('murder','murder-in-title','blood','violence')",
+      "structure": "flat_array<int32> (expected ~4 ids); use linear scan or unordered_set"
+    }
+  ],
+  "join_order": [
+    {
+      "step": 1,
+      "driver": "title",
+      "filter": "kind_id == kt_id AND production_year != INT32_MIN AND production_year > 2010",
+      "expected_survivors": 250000,
+      "notes": "kind_id selectivity ~7% (movies); production_year>2010 ~12%; combined ~1-3% of 2.5M titles -> ~50-100K. Cardinality estimate is conservative."
+    },
+    {
+      "step": 2,
+      "build": "k_ids (flat_array<int32>, ~4 entries)",
+      "probe": "movie_keyword via offsets_only on movie_id",
+      "type": "semi",
+      "strategy": "index_nested_loop_existence",
+      "build_cardinality": 4,
+      "notes": "For each surviving title mv, scan mk[mkmid[mv]..mkmid[mv+1]); check keyword_id in k_ids (linear scan over ~4 ids is cache-friendly). Break on first match."
+    },
+    {
+      "step": 3,
+      "build": "country_strings (flat_array<string_view>, 10 entries)",
+      "probe": "movie_info via offsets_only on movie_id",
+      "type": "semi",
+      "strategy": "index_nested_loop_existence",
+      "build_cardinality": 10,
+      "notes": "For each surviving title mv, scan mi[mimid[mv]..mimid[mv+1]); require info_type_id==it1_id AND info in country set. Use length-prefix dispatch then memcmp. Break on first match."
+    },
+    {
+      "step": 4,
+      "build": "it2_id, '8.5' constant",
+      "probe": "movie_info_idx via offsets_only on movie_id",
+      "type": "inner_aggregate",
+      "strategy": "index_nested_loop_aggregate",
+      "notes": "For each surviving title mv, scan mi_idx[mixmid[mv]..mixmid[mv+1]); require info_type_id==it2_id AND lex_lt(info, '8.5'). For each surviving row update MIN(mi_idx.info) and MIN(t.title). Note: a single title may match multiple mi_idx rows; aggregate MIN over all surviving (t,mi_idx) pairs."
+    }
+  ],
+  "filters": [
+    {"table": "info_type", "predicate": "info='countries'", "selectivity": 0.009},
+    {"table": "info_type", "predicate": "info='rating'", "selectivity": 0.009},
+    {"table": "kind_type", "predicate": "kind='movie'", "selectivity": 0.14},
+    {"table": "keyword", "predicate": "keyword IN (4 vals)", "selectivity": 0.00003},
+    {"table": "title", "predicate": "kind_id==kt_id", "selectivity": 0.07},
+    {"table": "title", "predicate": "production_year>2010", "selectivity": 0.12},
+    {"table": "movie_info", "predicate": "info_type_id==it1_id AND info IN (10 country strings)", "selectivity": 0.005},
+    {"table": "movie_info_idx", "predicate": "info_type_id==it2_id AND info<'8.5' (lex)", "selectivity": 0.5}
+  ],
+  "data_structures": {
+    "it1_id": "int32 scalar",
+    "it2_id": "int32 scalar",
+    "kt_id": "int32 scalar",
+    "k_ids": "flat_array<int32> (size ~4, linear scan)",
+    "country_strings": "flat_array<string_view> (size 10, length+memcmp dispatch)",
+    "min_rating": "std::string (or string_view tracking best mi_idx row)",
+    "min_title": "std::string (or string_view tracking best title row)"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven over title row range",
+    "threads": "auto(nproc)",
+    "morsel_size": 32768,
+    "reduction": "per-thread (min_rating_local, min_title_local); final reduction takes lex-min across threads",
+    "notes": "Title scan drives ~2.5M rows; each title independently probes mk/mi/mi_idx via offsets. Embarrassingly parallel. 12 cores available."
+  },
+  "indexes": [
+    {"index": "_idx/movie_keyword__movie_id__offsets.bin", "purpose": "join_lookup (mv -> mk row range)"},
+    {"index": "_idx/movie_info__movie_id__offsets.bin", "purpose": "join_lookup (mv -> mi row range)"},
+    {"index": "_idx/movie_info_idx__movie_id__offsets.bin", "purpose": "join_lookup (mv -> mi_idx row range)"}
+  ],
+  "aggregation": "scalar_min_two_strings",
+  "output": {
+    "select": ["MIN(mi_idx.info) AS rating", "MIN(t.title) AS northern_dark_movie"],
+    "order_by": [],
+    "limit": null,
+    "notes": "Scalar aggregate; emits a single row. Note MIN(t.title) is over the same multiset of (t,mi_idx) pairs as MIN(mi_idx.info), but since they aggregate independently over the join output, equivalent to MIN(t.title) over titles that pass all four semi/inner conditions."
+  },
+  "execution_target": "cpp",
+  "ordering_rationale": "Title is the natural driver: it is the central node of the star join, has filterable predicates (kind, year), and all three fact tables have offsets_only indexes keyed by movie_id. Ordering the existence semi-joins as mk(small fan-out, ~2) -> mi(fan-out ~6) -> mi_idx(fan-out ~0.5) puts the most selective and cheapest existence check first. mi_idx is last because it actually produces aggregation tuples rather than acting as a filter."
+}

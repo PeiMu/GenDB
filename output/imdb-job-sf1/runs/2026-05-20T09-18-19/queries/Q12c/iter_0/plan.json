@@ -1,0 +1,80 @@
+{
+  "query_id": "Q12c",
+  "pipeline": [
+    "resolve_dims",
+    "scan_title_filter_year",
+    "probe_mi_idx_per_mid",
+    "probe_mi_per_mid",
+    "probe_mc_per_mid_check_us",
+    "aggregate_min"
+  ],
+  "dim_resolution": [
+    {"table": "company_name", "column": "country_code", "value": "[us]", "bind": "us_code", "type": "int16_dict"},
+    {"table": "company_type", "column": "kind", "value": "production companies", "bind": "ct_id", "type": "varlen_scan"},
+    {"table": "info_type", "column": "info", "value": "genres", "bind": "it1_id", "type": "varlen_scan"},
+    {"table": "info_type", "column": "info", "value": "rating", "bind": "it2_id", "type": "varlen_scan"}
+  ],
+  "join_order": [
+    {
+      "build": "title(production_year BETWEEN 2000 AND 2010)",
+      "probe": "movie_info_idx via movie_id offsets index",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 250000,
+      "notes": "Title-driven plan. 11-year window ~10% of titles. Per-mid range probe via offsets."
+    },
+    {
+      "build": "title(filtered) AND mi_idx survivors",
+      "probe": "movie_info via movie_id offsets index",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "notes": "For each surviving mid, scan mi range; filter info_type_id==it1_id AND info ∈ GENRES hashset."
+    },
+    {
+      "build": "title(filtered) AND mi/mi_idx survivors",
+      "probe": "movie_companies via movie_id offsets index",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "notes": "For each mid surviving above, scan mc range; filter ct_id; lookup cn.country_code[cid-1]==us_code."
+    }
+  ],
+  "filters": [
+    {"table": "title", "predicate": "production_year BETWEEN 2000 AND 2010", "selectivity": 0.10},
+    {"table": "movie_info_idx", "predicate": "info_type_id == it2_id AND info > '7.0' (lex strict)", "selectivity": 0.15},
+    {"table": "movie_info", "predicate": "info_type_id == it1_id AND info ∈ {Drama,Horror,Western,Family}", "selectivity": 0.02},
+    {"table": "movie_companies", "predicate": "company_type_id == ct_id", "selectivity": 0.5},
+    {"table": "company_name", "predicate": "country_code == us_code", "selectivity": 0.4}
+  ],
+  "data_structures": {
+    "genres_set": "flat_hash_set<string_view>(4) for {Drama,Horror,Western,Family}",
+    "mi_idx_index": "offsets_only int32[2528314] from _idx/movie_info_idx__movie_id__offsets.bin",
+    "mi_index": "offsets_only int32[14835722] from _idx/movie_info__movie_id__offsets.bin",
+    "mc_index": "offsets_only int32[2609131] from _idx/movie_companies__movie_id__offsets.bin",
+    "cn_country_code": "mmap int16[234997]",
+    "aggregation": "three scalar MIN string_view slots (movie_company, rating, mainstream_movie)"
+  },
+  "indexes": [
+    {"index": "_idx/movie_info_idx__movie_id__offsets.bin", "purpose": "per-mid range scan of mi_idx"},
+    {"index": "_idx/movie_info__movie_id__offsets.bin", "purpose": "per-mid range scan of mi"},
+    {"index": "_idx/movie_companies__movie_id__offsets.bin", "purpose": "per-mid range scan of mc"}
+  ],
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "partition": "by title row ranges; per-thread MIN reduced at end via byte-wise min"
+  },
+  "aggregation": "scalar_min_lex",
+  "min_aggregation_details": {
+    "min_cn_name": "byte-wise lex min of company_name.name string_view",
+    "min_mi_idx_info": "byte-wise lex min of movie_info_idx.info string_view",
+    "min_t_title": "byte-wise lex min of title.title string_view",
+    "update_rule": "for each fully-qualifying (t,mi,mi_idx,mc,cn) tuple"
+  },
+  "execution_order_per_mid": [
+    "mi_idx probe (early reject if no qualifying row, captures candidate rating strings)",
+    "mi probe (early reject if no genre match)",
+    "mc probe with us check (each match emits tuple updating all three MINs with current min t.title, this mid's best mi_idx info, and cn.name)"
+  ],
+  "output": {"order_by": [], "limit": 1, "columns": ["movie_company", "rating", "mainstream_movie"]},
+  "execution_target": "cpp"
+}

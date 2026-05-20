@@ -1,0 +1,26 @@
+{
+  "query_id": "Q21b",
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 11.57,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 11.57,
+      "validation": "pass",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "data_loading": 0.44,
+        "cn_filter": 9.15,
+        "build_seq_bitset": 1.01,
+        "collect_ml": 0.02,
+        "main_scan": 0.09,
+        "output": 0.04,
+        "total": 11.54
+      }
+    }
+  ]
+}

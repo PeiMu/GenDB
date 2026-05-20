@@ -1,0 +1,78 @@
+{
+  "query_id": "Q6e",
+  "pipeline": [
+    "resolve_keyword_id",
+    "build_downey_robert_ids",
+    "csr_probe_mk",
+    "filter_year",
+    "scan_ci_range",
+    "semi_join_person",
+    "aggregate_min"
+  ],
+  "join_order": [
+    {
+      "build": "keyword(keyword='marvel-cinematic-universe')",
+      "probe": "movie_keyword via CSR",
+      "type": "inner",
+      "strategy": "pre_built_index",
+      "build_cardinality": 1,
+      "notes": "Single k_id resolved by scan of keyword.keyword; CSR _idx/movie_keyword__keyword_id yields small mk row list."
+    },
+    {
+      "build": "mk_rowids -> t_ids (filtered by production_year > 2000)",
+      "probe": "title.production_year",
+      "type": "inner",
+      "strategy": "direct_array",
+      "build_cardinality": 50,
+      "notes": "Distinct t_ids from mk; year filter via production_year_bin[t_id-1]."
+    },
+    {
+      "build": "name(name LIKE '%Downey%Robert%') -> downey_robert_ids",
+      "probe": "cast_info.person_id (per t_id range via ci offsets)",
+      "type": "semi",
+      "strategy": "hash_join",
+      "build_cardinality": 50,
+      "notes": "Build small hash_set of name ids matching LIKE; for each surviving t_id, scan ci range [ci_off[t_id], ci_off[t_id+1]) and test membership."
+    }
+  ],
+  "filters": [
+    {"table": "keyword", "predicate": "keyword = 'marvel-cinematic-universe'", "selectivity": 7.45e-6},
+    {"table": "name", "predicate": "name LIKE '%Downey%Robert%'", "selectivity": 1.2e-5},
+    {"table": "title", "predicate": "production_year > 2000 AND production_year != INT32_MIN", "selectivity": 0.33}
+  ],
+  "data_structures": {
+    "keyword_resolve": "scalar int32_t target_k_id",
+    "mk_csr": "pre_built_index(offsets+rowids)",
+    "ci_offsets": "pre_built_index(offsets_only)",
+    "downey_robert_ids": "hash_set<int32_t> (small, ~50-200 entries)",
+    "year_filter": "direct_array lookup on production_year_bin",
+    "aggregation": "scalar MIN accumulators (3 outputs)"
+  },
+  "parallelism": {
+    "strategy": "single_threaded",
+    "threads": 1,
+    "notes": "Name pre-scan can use parallel scan over 4.17M rows; main probe is tiny (~50 mk rows, ~hundreds of ci rows). Use parallel for name LIKE scan only."
+  },
+  "indexes": [
+    {"index": "movie_keyword__keyword_id", "purpose": "join_lookup (CSR probe single k_id -> mk rows)"},
+    {"index": "cast_info__movie_id", "purpose": "join_lookup (offsets_only per t_id range)"}
+  ],
+  "scans": [
+    {"table": "keyword", "columns": ["keyword.off", "keyword.dat", "id.bin"], "purpose": "resolve target_k_id", "parallel": false},
+    {"table": "name", "columns": ["name.off", "name.dat"], "purpose": "LIKE filter -> downey_robert_ids", "parallel": true, "threads": 12},
+    {"table": "title", "columns": ["production_year.bin"], "purpose": "year filter per t_id", "parallel": false, "access": "random by t_id"},
+    {"table": "movie_keyword", "columns": ["movie_id.bin"], "purpose": "derive t_id from mk_row", "parallel": false},
+    {"table": "cast_info", "columns": ["person_id.bin"], "purpose": "per-range membership test", "parallel": false}
+  ],
+  "aggregation": "scalar_min",
+  "output": {
+    "projections": [
+      {"expr": "MIN(k.keyword)", "shortcut": "literal 'marvel-cinematic-universe' (single fixed k_id)"},
+      {"expr": "MIN(n.name)", "source": "name.off+name.dat for matched n_id"},
+      {"expr": "MIN(t.title)", "source": "title.off+title.dat for matched t_id"}
+    ],
+    "order_by": [],
+    "limit": null
+  },
+  "execution_target": "cpp"
+}

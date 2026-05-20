@@ -1,0 +1,85 @@
+{
+  "query_id": "Q2a",
+  "pipeline": [
+    "resolve_target_code_de",
+    "resolve_target_k_id",
+    "build_cn_pass_bitset",
+    "csr_probe_movie_keyword_by_keyword_id",
+    "collect_candidate_movie_ids",
+    "probe_movie_companies_by_movie_id",
+    "filter_cn_pass",
+    "fetch_title_min"
+  ],
+  "join_order": [
+    {
+      "build": "keyword(filter keyword='character-name-in-title') -> target_k_id (single id)",
+      "probe": "movie_keyword via movie_keyword__keyword_id CSR",
+      "type": "inner",
+      "strategy": "csr_index_lookup",
+      "build_cardinality": 1,
+      "notes": "Single keyword id -> small list of mk rows (thousands). Drive query from here."
+    },
+    {
+      "build": "company_name(filter country_code='[de]') -> cn_pass[cid] bitset",
+      "probe": "movie_companies (via mc rows per candidate movie_id)",
+      "type": "semi",
+      "strategy": "bitset_lookup",
+      "build_cardinality": 2350,
+      "notes": "~1% of 234997 cn rows pass; dense bitset over id space [1..234997] enables O(1) cn.id membership test."
+    },
+    {
+      "build": "candidate movie_id set from mk probe",
+      "probe": "movie_companies via movie_companies__movie_id offsets_only",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 5000,
+      "notes": "For each candidate movie_id, look up its mc rows via offsets; test cn_pass[company_id]."
+    },
+    {
+      "build": "surviving movie_id set",
+      "probe": "title (id-indexed direct)",
+      "type": "inner",
+      "strategy": "direct_array",
+      "build_cardinality": 500,
+      "notes": "title.id is dense identity; read title.title via off/dat for survivors only and compute MIN."
+    }
+  ],
+  "filters": [
+    {"table": "company_name", "predicate": "country_code = '[de]'", "selectivity": 0.01},
+    {"table": "keyword", "predicate": "keyword = 'character-name-in-title'", "selectivity": 7.45e-6}
+  ],
+  "data_structures": {
+    "cn_pass": "bitset(234998) indexed by cn.id (1..234997); built by single scan of country_code.bin == target_code",
+    "candidate_movie_ids": "std::vector<int32_t> collected from mk CSR rowids' movie_id; deduplicate via flat boolean array sized title.rows (2528313) or sort+unique",
+    "movie_seen": "flat std::vector<uint8_t>(2528313) for dedup of candidate movie ids and to mark survivors",
+    "title_min_buffer": "std::string current minimum (lexicographic) for MIN(t.title)"
+  },
+  "parallelism": {
+    "strategy": "single_threaded",
+    "threads": 1,
+    "notes": "Driver mk-by-keyword list is small (few thousand rows); per-movie mc lookups via offsets_only are cheap. Synchronization overhead would dominate. Optionally parallelize cn_pass build with morsel scan but it is dominated by I/O."
+  },
+  "indexes": [
+    {"index": "movie_keyword__keyword_id", "purpose": "csr_lookup: skip directly to mk rows for target_k_id"},
+    {"index": "movie_companies__movie_id", "purpose": "offsets_only: skip to mc rows per candidate movie_id"}
+  ],
+  "aggregation": "scalar_min_string",
+  "output": {
+    "projection": ["MIN(t.title) AS movie_title"],
+    "order_by": [],
+    "limit": 1
+  },
+  "runtime_resolution": [
+    {
+      "name": "target_code",
+      "source": "company_name/country_code.dict.off + .dict.dat",
+      "method": "linear dict scan for '[de]', set target_code = (i+1); NULL=0"
+    },
+    {
+      "name": "target_k_id",
+      "source": "keyword/keyword.off + keyword/keyword.dat",
+      "method": "linear scan; row index r matching 'character-name-in-title' -> target_k_id = r + 1 (id=row+1 identity)"
+    }
+  ],
+  "execution_target": "cpp"
+}

@@ -1,0 +1,26 @@
+{
+  "query_id": "Q4c",
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 10.416666666666666,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 10.416666666666666,
+      "validation": "pass",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "data_loading": 0.11,
+        "resolve_it": 0,
+        "scan_keyword": 3.08,
+        "probe_mk_csr": 1.17,
+        "main_scan": 3.26,
+        "output": 0.05,
+        "total": 10.11
+      }
+    }
+  ]
+}

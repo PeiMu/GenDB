@@ -1,0 +1,25 @@
+{
+  "query_id": "Q2b",
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 4.613333333333333,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 4.613333333333333,
+      "validation": "pass",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "data_loading": 0.08,
+        "build_cn_pass": 0.04,
+        "resolve_keyword": 0.01,
+        "main_scan": 4.24,
+        "output": 0.04,
+        "total": 4.53
+      }
+    }
+  ]
+}

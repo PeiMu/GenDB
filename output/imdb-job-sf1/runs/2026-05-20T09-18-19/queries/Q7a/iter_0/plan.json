@@ -1,0 +1,95 @@
+{
+  "query_id": "Q7a",
+  "pipeline": [
+    "resolve_dim_constants",
+    "drive_person_info_by_info_type",
+    "filter_pi_note",
+    "filter_name_pcode_and_gender",
+    "semi_join_aka_name_like_a",
+    "enumerate_cast_info_by_pid",
+    "filter_title_year",
+    "semi_join_movie_link_lt",
+    "min_aggregate"
+  ],
+  "join_order": [
+    {
+      "build": "info_type(info='mini biography')",
+      "probe": "person_info via CSR person_info__info_type_id",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 1,
+      "notes": "Single it_id; iterate ~few thousand pi rows in the CSR slice."
+    },
+    {
+      "build": "pi_rows(note='Volker Boehm')",
+      "probe": "name[pid-1] (name_pcode_cf, gender, name)",
+      "type": "inner",
+      "strategy": "direct_array",
+      "build_cardinality": 10,
+      "notes": "pi.note is extremely selective; expect a handful of pids. Direct row lookup into name columns by pid."
+    },
+    {
+      "build": "candidate_pids",
+      "probe": "aka_name via offsets_only aka_name__person_id",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 10,
+      "notes": "Per pid, scan aka_name range and break on first row whose name contains 'a'."
+    },
+    {
+      "build": "candidate_pids",
+      "probe": "cast_info via CSR cast_info__person_id",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 10,
+      "notes": "Enumerate ci rows per surviving pid; derive t_id."
+    },
+    {
+      "build": "t_id (per ci row)",
+      "probe": "title.production_year[t_id-1]",
+      "type": "inner",
+      "strategy": "direct_array",
+      "build_cardinality": 1,
+      "notes": "Year range check before probing movie_link."
+    },
+    {
+      "build": "link_type(link='features')",
+      "probe": "movie_link via CSR movie_link__linked_movie_id",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 1,
+      "notes": "Per t_id, scan ml slice; tuple survives if any ml_link_type[r] == target_lt_id."
+    }
+  ],
+  "filters": [
+    {"table": "info_type", "predicate": "info = 'mini biography'", "selectivity": 0.0088},
+    {"table": "link_type", "predicate": "link = 'features'", "selectivity": 0.056},
+    {"table": "person_info", "predicate": "info_type_id = target_it_id", "selectivity": 0.001},
+    {"table": "person_info", "predicate": "note = 'Volker Boehm'", "selectivity": 0.00001},
+    {"table": "name", "predicate": "name_pcode_cf BETWEEN 'A' AND 'F'", "selectivity": 0.25},
+    {"table": "name", "predicate": "gender='m' OR (gender='f' AND name LIKE 'B%')", "selectivity": 0.7},
+    {"table": "aka_name", "predicate": "name LIKE '%a%'", "selectivity": 0.8},
+    {"table": "title", "predicate": "production_year BETWEEN 1980 AND 1995 AND != INT32_MIN", "selectivity": 0.18},
+    {"table": "movie_link", "predicate": "link_type_id = target_lt_id", "selectivity": 0.3}
+  ],
+  "data_structures": {
+    "dim_constants": "scalar int32 target_it_id, target_lt_id",
+    "gender_codes": "scalar int8 code_m, code_f resolved from name/gender.dict",
+    "candidate_pids": "small std::vector<int32_t> (expected <100 entries after pi filter)",
+    "aggregation": "two scalars: min n.name (std::string), min t.title (std::string)"
+  },
+  "parallelism": {
+    "strategy": "serial",
+    "threads": 1,
+    "notes": "Driver cardinality is tiny (handful of pids). Synchronization overhead would dominate."
+  },
+  "indexes": [
+    {"index": "person_info__info_type_id", "purpose": "enumerate pi rows for target_it_id"},
+    {"index": "aka_name__person_id", "purpose": "semi-join probe per pid"},
+    {"index": "cast_info__person_id", "purpose": "enumerate ci rows per pid -> t_ids"},
+    {"index": "movie_link__linked_movie_id", "purpose": "semi-join probe per t_id"}
+  ],
+  "aggregation": "scalar_min_two_outputs",
+  "output": {"order_by": [], "limit": 1, "projections": ["MIN(n.name) AS of_person", "MIN(t.title) AS biography_movie"]},
+  "execution_target": "cpp"
+}

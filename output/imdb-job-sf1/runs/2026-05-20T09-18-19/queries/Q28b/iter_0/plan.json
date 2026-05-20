@@ -1,0 +1,104 @@
+{
+  "query_id": "Q28b",
+  "pipeline": [
+    "resolve_dim_ids",
+    "build_dim_sets",
+    "scan_filter_title_driver",
+    "semi_join_movie_keyword",
+    "semi_join_complete_cast",
+    "semi_join_movie_info_idx_with_project",
+    "semi_join_movie_companies_with_project",
+    "semi_join_movie_info",
+    "aggregate_min"
+  ],
+  "dim_resolution": [
+    {"name": "crew_id", "source": "comp_cast_type.kind == 'crew'"},
+    {"name": "verified_id", "source": "comp_cast_type.kind == 'complete+verified'"},
+    {"name": "us_code", "source": "company_name.country_code dict lookup of '[us]'"},
+    {"name": "it1_id", "source": "info_type.info == 'countries'"},
+    {"name": "it2_id", "source": "info_type.info == 'rating'"},
+    {"name": "kw_set", "source": "keyword.keyword IN ('murder','murder-in-title','blood','violence')"},
+    {"name": "kt_set", "source": "kind_type.kind IN ('movie','episode')"},
+    {"name": "cn_set", "source": "company_name where country_code != us_code"},
+    {"name": "mi_info_set", "source": "literal set {'Sweden','Germany','Swedish','German'}"}
+  ],
+  "join_order": [
+    {
+      "build": "title(year>2005 AND kind_id IN kt_set)",
+      "probe": "movie_keyword (via offsets index per title id)",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 400000,
+      "notes": "Driver. Iterate t_id; filter mk rows by keyword_id IN kw_set; collect surviving t_ids into t_after_mk bitset."
+    },
+    {
+      "build": "t_after_mk",
+      "probe": "complete_cast (via offsets index per title id)",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 80000,
+      "notes": "For each surviving t_id, scan cc rows; require subject_id==crew_id AND status_id!=verified_id."
+    },
+    {
+      "build": "t_after_cc",
+      "probe": "movie_info_idx (via offsets index per title id)",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 20000,
+      "notes": "Filter info_type_id==it2_id AND lex(info)>'6.5'; project min(info) running aggregate; keep surviving t_ids."
+    },
+    {
+      "build": "t_after_miidx",
+      "probe": "movie_companies (via offsets index per title id)",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 5000,
+      "notes": "Filter company_id IN cn_set AND note NOT LIKE '%(USA)%' AND note LIKE '%(200%)%'; project cn.name via cn_id->name for MIN; keep t_ids."
+    },
+    {
+      "build": "t_after_mc",
+      "probe": "movie_info (via offsets index per title id)",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 2000,
+      "notes": "Filter info_type_id==it1_id AND info IN mi_info_set; survivors contribute t.title for MIN."
+    }
+  ],
+  "filters": [
+    {"table": "title", "predicate": "production_year > 2005 AND kind_id IN kt_set", "selectivity": 0.15},
+    {"table": "movie_keyword", "predicate": "keyword_id IN kw_set", "selectivity": 0.0003},
+    {"table": "complete_cast", "predicate": "subject_id==crew_id AND status_id!=verified_id", "selectivity": 0.5},
+    {"table": "movie_info_idx", "predicate": "info_type_id==it2_id AND info > '6.5'", "selectivity": 0.1},
+    {"table": "movie_companies", "predicate": "company_id IN cn_set AND note NOT LIKE '%(USA)%' AND note LIKE '%(200%)%'", "selectivity": 0.01},
+    {"table": "movie_info", "predicate": "info_type_id==it1_id AND info IN mi_info_set", "selectivity": 0.005},
+    {"table": "company_name", "predicate": "country_code != us_code", "selectivity": 0.85}
+  ],
+  "data_structures": {
+    "kw_set": "small_flat_array(int32, 4) linear scan",
+    "kt_set": "small_flat_array(int32, 2) linear scan",
+    "cn_set": "bitset(234997) over company_name ids",
+    "mi_info_set": "tiny_string_set (4 literals; direct comparisons)",
+    "t_driver_bitset": "bitset(2528312) over title ids",
+    "t_after_mk": "bitset(2528312) reused or compact vector<int32>",
+    "t_after_cc": "compact vector<int32>",
+    "t_after_miidx": "compact vector<int32>",
+    "t_after_mc": "compact vector<int32>",
+    "cn_name_lookup": "company_name.name offsets+dat addressed by cn_id",
+    "min_aggregators": "3 string MIN slots (movie_company, rating, title)"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "notes": "Parallelize over title id ranges in the driver scan. Each thread maintains local MIN aggregators and local survivor lists; reduce at end."
+  },
+  "indexes": [
+    {"index": "movie_keyword__movie_id", "purpose": "join_lookup per t_id"},
+    {"index": "complete_cast__movie_id", "purpose": "join_lookup per t_id"},
+    {"index": "movie_info_idx__movie_id", "purpose": "join_lookup per t_id"},
+    {"index": "movie_companies__movie_id", "purpose": "join_lookup per t_id"},
+    {"index": "movie_info__movie_id", "purpose": "join_lookup per t_id"}
+  ],
+  "aggregation": "running_min_during_probe",
+  "output": {"projection": ["MIN(cn.name)", "MIN(mi_idx.info)", "MIN(t.title)"], "limit": 1},
+  "execution_target": "cpp"
+}

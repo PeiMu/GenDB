@@ -1,0 +1,94 @@
+{
+  "query_id": "Q4a",
+  "pipeline": [
+    "resolve_it_target",
+    "scan_keyword_sequel",
+    "probe_mk_csr_by_keyword_id",
+    "filter_title_production_year",
+    "probe_mi_idx_by_movie_id",
+    "filter_info_type_and_rating",
+    "aggregate_min"
+  ],
+  "join_order": [
+    {
+      "build": "info_type(info='rating')",
+      "probe": "mi_idx.info_type_id (later)",
+      "type": "inner",
+      "strategy": "scalar_id_match",
+      "build_cardinality": 1,
+      "notes": "Scan info_type/info.dat (113 rows) via memcmp; capture target_it_id as int32_t scalar."
+    },
+    {
+      "build": "keyword(keyword LIKE '%sequel%')",
+      "probe": "movie_keyword.keyword_id via movie_keyword__keyword_id CSR",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 50,
+      "notes": "memmem scan over keyword.dat using offsets to collect seq_ids (small set, expected <100). For each kid, use movie_keyword__keyword_id CSR to enumerate mk rows; collect distinct candidate movie_ids."
+    },
+    {
+      "build": "candidate_movies (from mk semi-join)",
+      "probe": "title.id (dense PK)",
+      "type": "inner",
+      "strategy": "direct_array",
+      "build_cardinality": 20000,
+      "notes": "candidate_movies are title.id values (dense). Filter each by title.production_year > 2005 via direct array lookup on production_year.bin."
+    },
+    {
+      "build": "filtered_movies (production_year>2005)",
+      "probe": "movie_info_idx via movie_info_idx__movie_id offsets_only",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 4000,
+      "notes": "For each surviving movie, walk mi_idx rows in [off[mv], off[mv+1]); apply info_type_id==target_it_id and lex info>'5.0' filters."
+    }
+  ],
+  "filters": [
+    {"table": "info_type", "predicate": "info = 'rating'", "selectivity": 0.0088},
+    {"table": "keyword", "predicate": "keyword LIKE '%sequel%'", "selectivity": 0.0005},
+    {"table": "title", "predicate": "production_year > 2005 (and not INT32_MIN)", "selectivity": 0.20},
+    {"table": "movie_info_idx", "predicate": "info_type_id = target_it_id", "selectivity": 0.10},
+    {"table": "movie_info_idx", "predicate": "info > '5.0' (lex)", "selectivity": 0.50}
+  ],
+  "data_structures": {
+    "target_it_id": "int32_t scalar",
+    "seq_ids": "std::vector<int32_t> (small, <200)",
+    "candidate_movies": "std::vector<int32_t> deduped via std::vector<uint8_t> seen_bitmap sized to title rows (2528312 bytes = 2.4MB)",
+    "running_min_rating": "std::string_view (track shortest/lex-min mi_idx.info)",
+    "running_min_title": "std::string_view (track lex-min t.title)"
+  },
+  "parallelism": {
+    "strategy": "serial",
+    "threads": 1,
+    "notes": "Candidate movie set is small (~thousands) after %sequel% semi-join; per-movie mi_idx ranges are tiny. Synchronization overhead would exceed gains; keep single-threaded."
+  },
+  "indexes": [
+    {"index": "movie_keyword__keyword_id", "purpose": "join_lookup: kid -> mk rows -> movie_ids"},
+    {"index": "movie_info_idx__movie_id", "purpose": "join_lookup: movie_id -> mi_idx row range (offsets_only)"}
+  ],
+  "aggregation": "scalar_min",
+  "output": {
+    "projection": ["MIN(mi_idx.info) AS rating", "MIN(t.title) AS movie_title"],
+    "order_by": [],
+    "limit": 1
+  },
+  "memory_mapping": {
+    "files": [
+      "info_type/info.off",
+      "info_type/info.dat",
+      "keyword/keyword.off",
+      "keyword/keyword.dat",
+      "movie_keyword/movie_id.bin",
+      "_idx/movie_keyword__keyword_id__offsets.bin",
+      "_idx/movie_keyword__keyword_id__rowids.bin",
+      "title/production_year.bin",
+      "title/title.off",
+      "title/title.dat",
+      "movie_info_idx/info_type_id.bin",
+      "movie_info_idx/info.off",
+      "movie_info_idx/info.dat",
+      "_idx/movie_info_idx__movie_id__offsets.bin"
+    ]
+  },
+  "execution_target": "cpp"
+}

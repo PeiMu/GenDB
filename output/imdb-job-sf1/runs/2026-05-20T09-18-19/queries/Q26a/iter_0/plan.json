@@ -1,0 +1,126 @@
+{
+  "query_id": "Q26a",
+  "pipeline": [
+    "build_dim_sets",
+    "scan_title_driver",
+    "probe_movie_keyword",
+    "probe_complete_cast",
+    "probe_movie_info_idx",
+    "probe_cast_info",
+    "min_aggregate"
+  ],
+  "dim_builds": [
+    {
+      "name": "cast_id",
+      "source": "comp_cast_type",
+      "predicate": "kind == 'cast'",
+      "output": "scalar int32"
+    },
+    {
+      "name": "complete_status_ids",
+      "source": "comp_cast_type",
+      "predicate": "kind LIKE '%complete%' (memmem)",
+      "output": "small flat array<int32> (expected 1-2 ids)"
+    },
+    {
+      "name": "it2_id",
+      "source": "info_type",
+      "predicate": "info == 'rating'",
+      "output": "scalar int32"
+    },
+    {
+      "name": "movie_kind_id",
+      "source": "kind_type",
+      "predicate": "kind == 'movie'",
+      "output": "scalar int32"
+    },
+    {
+      "name": "kw_set",
+      "source": "keyword",
+      "predicate": "keyword IN (10 literals)",
+      "output": "flat_hash_set<int32> (expected ~10 ids)"
+    },
+    {
+      "name": "chn_set",
+      "source": "char_name",
+      "predicate": "name IS NOT NULL AND (memmem(name,'man') OR memmem(name,'Man'))",
+      "output": "bitset(3140340) of chn_id",
+      "estimated_cardinality": 100000
+    }
+  ],
+  "join_order": [
+    {
+      "build": "title(filtered: production_year>2000 AND kind_id==movie_kind_id)",
+      "probe": "movie_keyword via movie_keyword__movie_id offsets",
+      "type": "semi",
+      "strategy": "index_nested_loop + hash_set_membership(kw_set)",
+      "build_cardinality": 632000,
+      "notes": "use offsets[t_id]..offsets[t_id+1]; accept t_id if any mk row has keyword_id in kw_set"
+    },
+    {
+      "build": "surviving_t_id from mk probe",
+      "probe": "complete_cast via complete_cast__movie_id offsets",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 5000,
+      "notes": "accept t_id if any cc row has subject_id==cast_id AND status_id in complete_status_ids"
+    },
+    {
+      "build": "surviving_t_id from cc probe",
+      "probe": "movie_info_idx via movie_info_idx__movie_id offsets",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 2000,
+      "notes": "for each mi_idx row in range: info_type_id==it2_id AND info > '7.0'; project info for MIN"
+    },
+    {
+      "build": "surviving (t_id, mi_idx.info) pairs",
+      "probe": "cast_info via cast_info__movie_id offsets",
+      "type": "inner",
+      "strategy": "index_nested_loop + bitset_lookup(chn_set)",
+      "build_cardinality": 1000,
+      "notes": "for each ci row: person_role_id non-NULL AND chn_set.test(person_role_id); fetch chn.name and n.name (n via person_id-1 row) for MIN"
+    }
+  ],
+  "filters": [
+    {"table": "title", "predicate": "production_year > 2000 AND production_year != NULL_INT", "selectivity": 0.25},
+    {"table": "title", "predicate": "kind_id == movie_kind_id", "selectivity": 0.85},
+    {"table": "char_name", "predicate": "name NOT NULL AND substring 'man'/'Man'", "selectivity": 0.03},
+    {"table": "keyword", "predicate": "keyword IN (10)", "selectivity": 0.00008},
+    {"table": "movie_keyword", "predicate": "keyword_id IN kw_set", "selectivity": 0.001},
+    {"table": "complete_cast", "predicate": "subject_id==cast_id AND status_id IN complete_status_ids", "selectivity": 0.5},
+    {"table": "movie_info_idx", "predicate": "info_type_id==it2_id AND info > '7.0'", "selectivity": 0.15},
+    {"table": "cast_info", "predicate": "person_role_id IN chn_set", "selectivity": 0.03}
+  ],
+  "data_structures": {
+    "cast_id": "scalar int32",
+    "complete_status_ids": "flat_array<int32> small (<=4)",
+    "it2_id": "scalar int32",
+    "movie_kind_id": "scalar int32",
+    "kw_set": "absl::flat_hash_set<int32_t> (size ~10)",
+    "chn_set": "std::vector<uint64_t> bitset sized 3140340 bits (~384KB)",
+    "title_filter": "no materialization; on-the-fly scan",
+    "aggregation": "4 scalar best-min string_view trackers (per-thread, merged at end)"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven over title rows",
+    "threads": "auto(nproc)",
+    "morsel_size": 65536,
+    "notes": "dim builds done single-threaded before parallel phase; each thread maintains local MIN string_views (copy on improvement) and merges at end"
+  },
+  "indexes": [
+    {"index": "movie_keyword__movie_id", "purpose": "join_lookup (offsets_only)"},
+    {"index": "complete_cast__movie_id", "purpose": "join_lookup (offsets_only)"},
+    {"index": "movie_info_idx__movie_id", "purpose": "join_lookup (offsets_only)"},
+    {"index": "cast_info__movie_id", "purpose": "join_lookup (offsets_only)"}
+  ],
+  "aggregation": "scalar_min_strings (4 columns: chn.name, mi_idx.info, n.name, t.title)",
+  "min_projections": [
+    {"alias": "character_name", "source": "char_name.name via chn_id row=chn_id-1"},
+    {"alias": "rating", "source": "movie_info_idx.info at surviving mi_idx row"},
+    {"alias": "playing_actor", "source": "name.name via row=ci.person_id-1"},
+    {"alias": "complete_hero_movie", "source": "title.title at driver row"}
+  ],
+  "output": {"order_by": [], "limit": 1},
+  "execution_target": "cpp"
+}

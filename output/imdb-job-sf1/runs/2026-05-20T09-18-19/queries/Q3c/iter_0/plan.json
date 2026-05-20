@@ -1,0 +1,60 @@
+{
+  "query_id": "Q3c",
+  "pipeline": [
+    "scan_keyword_like",
+    "csr_lookup_movie_keyword",
+    "collect_candidate_movies",
+    "filter_title_production_year",
+    "scan_movie_info_per_candidate",
+    "aggregate_min_title"
+  ],
+  "join_order": [
+    {
+      "build": "keyword(filtered: keyword LIKE '%sequel%') -> seq_ids",
+      "probe": "movie_keyword via movie_keyword__keyword_id CSR",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 50,
+      "notes": "Use CSR to expand keyword_ids -> mk row positions; read movie_id_bin[mk_row] to build candidate_movies set"
+    },
+    {
+      "build": "candidate_movies (from mk lookup)",
+      "probe": "title via PK identity (dense)",
+      "type": "semi",
+      "strategy": "direct_array",
+      "build_cardinality": 50000,
+      "notes": "title.id is dense identity; check production_year[mv] > 1990 directly"
+    },
+    {
+      "build": "surviving candidate_movies (after production_year filter)",
+      "probe": "movie_info via movie_info__movie_id offsets_only",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 30000,
+      "notes": "For each surviving mv, walk mi rows in [off[mv], off[mv+1]); length-prefilter then hash-probe IN-set on info string_view"
+    }
+  ],
+  "filters": [
+    {"table": "keyword", "predicate": "keyword LIKE '%sequel%'", "selectivity": 0.0004},
+    {"table": "title", "predicate": "production_year != INT32_MIN AND production_year > 1990", "selectivity": 0.55},
+    {"table": "movie_info", "predicate": "info IN ('Sweden','Norway','Germany','Denmark','Swedish','Denish','Norwegian','German','USA','American')", "selectivity": 0.05}
+  ],
+  "data_structures": {
+    "seq_ids": "std::vector<int32_t> (small, ~tens of ids)",
+    "candidate_movies": "flat_hash_set<int32_t> (pre-reserved ~100k)",
+    "in_set": "flat_hash_set<std::string_view> over 10 literals; length bitmap over lengths {3,6,7,8,9}",
+    "min_title": "scalar std::string_view tracker (lexicographic min)"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "notes": "Parallelize keyword LIKE scan (134k rows trivial; can be single-threaded). Parallelize final per-candidate movie_info scan across candidate_movies partitioned by movie_id ranges; reduce local MIN(title) per thread."
+  },
+  "indexes": [
+    {"index": "movie_keyword__keyword_id", "purpose": "join_lookup: keyword_id -> mk rowids (CSR)"},
+    {"index": "movie_info__movie_id", "purpose": "join_lookup: movie_id -> mi row range (offsets_only)"}
+  ],
+  "aggregation": "scalar_min",
+  "output": {"order_by": [], "limit": 1, "projection": ["MIN(t.title) AS movie_title"]},
+  "execution_target": "cpp"
+}

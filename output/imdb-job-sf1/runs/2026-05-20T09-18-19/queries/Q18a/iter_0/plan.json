@@ -1,0 +1,90 @@
+{
+  "query_id": "Q18a",
+  "pipeline": [
+    "resolve_dims",
+    "filter_name",
+    "csr_lookup_ci_by_person",
+    "filter_ci_note",
+    "range_probe_mi_budget",
+    "range_probe_mi_idx_votes",
+    "aggregate_min"
+  ],
+  "dim_resolution": [
+    {"table": "info_type", "scan": "info.{off,dat}", "outputs": ["it_budget", "it_votes"]},
+    {"table": "name.gender", "scan": "gender.dict.{off,dat}", "output": "g_m"}
+  ],
+  "join_order": [
+    {
+      "step": 1,
+      "build": "name(gender='m' AND name LIKE '%Tim%') -> pid_set",
+      "probe": "cast_info via cast_info__person_id CSR",
+      "type": "inner",
+      "strategy": "csr_walk",
+      "build_cardinality": 9062,
+      "notes": "Sampled: 9062 pids. Iterate pids, walk CSR slice cipid_off[pid]..cipid_off[pid+1]."
+    },
+    {
+      "step": 2,
+      "build": "ci rows from CSR walk",
+      "probe": "ci.note IN ('(producer)','(executive producer)')",
+      "type": "inner",
+      "strategy": "inline_predicate",
+      "build_cardinality": 6719,
+      "notes": "Length-prune then memcmp; sampled 6719 surviving rows -> 6589 distinct movies."
+    },
+    {
+      "step": 3,
+      "build": "movie_ids from surviving ci rows",
+      "probe": "movie_info via movie_info__movie_id offsets_only; filter info_type_id==it_budget",
+      "type": "semi",
+      "strategy": "range_scan_offsets_only",
+      "build_cardinality": 6589,
+      "notes": "Per-movie tight range; check existence and track MIN(mi.info)."
+    },
+    {
+      "step": 4,
+      "build": "movie_ids surviving budget probe",
+      "probe": "movie_info_idx via movie_info_idx__movie_id offsets_only; filter info_type_id==it_votes",
+      "type": "semi",
+      "strategy": "range_scan_offsets_only",
+      "build_cardinality": 394,
+      "notes": "Per-movie tight range; ~394 final movies survive."
+    }
+  ],
+  "filters": [
+    {"table": "info_type", "predicate": "info='budget'", "selectivity": 0.0088, "result": "it_budget=105"},
+    {"table": "info_type", "predicate": "info='votes'", "selectivity": 0.0088, "result": "it_votes=100"},
+    {"table": "name", "predicate": "gender='m'", "selectivity": 0.55},
+    {"table": "name", "predicate": "name LIKE '%Tim%'", "selectivity": 0.005, "method": "length_prune+memmem"},
+    {"table": "name", "predicate": "gender='m' AND name LIKE '%Tim%'", "selectivity_combined": 0.00217, "sampled_rows": 9062},
+    {"table": "cast_info", "predicate": "note IN ('(producer)','(executive producer)')", "selectivity": 0.0656, "method": "length_prune+memcmp"},
+    {"table": "movie_info", "predicate": "info_type_id=it_budget", "selectivity": 0.0082, "sampled_rows": 121863},
+    {"table": "movie_info_idx", "predicate": "info_type_id=it_votes", "selectivity": 0.333, "sampled_rows": 459925}
+  ],
+  "data_structures": {
+    "pid_set": "flat_vector<int32_t> (sorted append from name scan; ~9K entries)",
+    "ci_csr": "pre_built_index cast_info__person_id (offsets + rowids)",
+    "mi_offsets": "pre_built_index movie_info__movie_id (offsets_only)",
+    "mi_idx_offsets": "pre_built_index movie_info_idx__movie_id (offsets_only)",
+    "min_budget": "std::string_view tracking smallest mi.info (lex order)",
+    "min_votes": "std::string_view tracking smallest mi_idx.info (lex order)",
+    "min_title": "std::string_view tracking smallest t.title (lex order)",
+    "per_thread_locals": "thread-local mins reduced at end"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "parallel_over": "pid_set chunks",
+    "threads": "auto(nproc)",
+    "rationale": "Outer pid loop is independent per pid; CSR slices are disjoint. Aggregation is associative MIN."
+  },
+  "indexes": [
+    {"index": "cast_info__person_id (CSR)", "purpose": "join_lookup pid->ci rows"},
+    {"index": "movie_info__movie_id (offsets_only)", "purpose": "join_lookup movie_id->mi rows"},
+    {"index": "movie_info_idx__movie_id (offsets_only)", "purpose": "join_lookup movie_id->mi_idx rows"}
+  ],
+  "aggregation": "scalar_min_three_columns",
+  "output": {"select": ["MIN(mi.info)", "MIN(mi_idx.info)", "MIN(t.title)"], "order_by": [], "limit": null},
+  "execution_target": "cpp",
+  "estimated_final_rows": 394,
+  "sampling_notes": "Empirical sampling (sample.cpp, <1s): it_budget=105, it_votes=100, g_m=1, pids=9062, post pid+note ci=6719, distinct mv=6589, final mv=394."
+}

@@ -1,0 +1,127 @@
+{
+  "query_id": "Q17e",
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 8.586666666666666,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 8.586666666666666,
+      "validation": "fail",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "data_loading": 0.38,
+        "resolve_kid": 0.01,
+        "resolve_us_code": 0,
+        "mk_csr_scan": 1.2,
+        "main_scan": 5.97,
+        "output": 0.08,
+        "total": 7.7
+      }
+    },
+    {
+      "iteration": 1,
+      "improved": false,
+      "categories": [],
+      "timing_ms": 8.663333333333332,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 8.663333333333332,
+      "validation": "fail",
+      "strategy": "",
+      "operation_timings": {
+        "data_loading": 0.37,
+        "resolve_kid": 0.01,
+        "resolve_us_code": 0,
+        "mk_csr_scan": 1.2,
+        "main_scan": 6.6,
+        "output": 0.08,
+        "total": 8.31
+      }
+    },
+    {
+      "iteration": 2,
+      "improved": true,
+      "categories": [],
+      "timing_ms": 8.103333333333333,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 8.103333333333333,
+      "validation": "fail",
+      "strategy": "",
+      "operation_timings": {
+        "data_loading": 0.38,
+        "resolve_kid": 0.01,
+        "resolve_us_code": 0,
+        "mk_csr_scan": 1.2,
+        "main_scan": 6.23,
+        "output": 0.08,
+        "total": 7.96
+      }
+    },
+    {
+      "iteration": 3,
+      "improved": false,
+      "categories": [
+        "escalation"
+      ],
+      "timing_ms": 8.76,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 8.76,
+      "validation": "fail",
+      "strategy": "escalation to opus",
+      "operation_timings": {
+        "data_loading": 0.38,
+        "resolve_kid": 0.01,
+        "resolve_us_code": 0,
+        "mk_csr_scan": 1.19,
+        "main_scan": 6.6,
+        "output": 0.08,
+        "total": 8.31
+      }
+    },
+    {
+      "iteration": 4,
+      "improved": false,
+      "categories": [
+        "escalation"
+      ],
+      "timing_ms": 8.336666666666668,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 8.336666666666668,
+      "validation": "fail",
+      "strategy": "escalation to opus",
+      "operation_timings": {
+        "data_loading": 0.36,
+        "resolve_kid": 0.01,
+        "resolve_us_code": 0,
+        "mk_csr_scan": 1.17,
+        "main_scan": 6.47,
+        "output": 0.08,
+        "total": 8.15
+      }
+    },
+    {
+      "iteration": 5,
+      "improved": false,
+      "categories": [
+        "escalation"
+      ],
+      "timing_ms": 8.953333333333333,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 8.953333333333333,
+      "validation": "fail",
+      "strategy": "escalation to opus",
+      "operation_timings": {
+        "data_loading": 0.35,
+        "resolve_kid": 0.01,
+        "resolve_us_code": 0,
+        "mk_csr_scan": 1.19,
+        "main_scan": 7.16,
+        "output": 0.07,
+        "total": 8.85
+      }
+    }
+  ]
+}

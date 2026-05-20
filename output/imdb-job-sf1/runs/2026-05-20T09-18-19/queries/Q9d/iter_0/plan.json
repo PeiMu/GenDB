@@ -1,0 +1,108 @@
+{
+  "query_id": "Q9d",
+  "pipeline": [
+    "resolve_dict_codes",
+    "build_voice_note_set",
+    "scan_cast_info_via_role_csr",
+    "filter_note_in_set",
+    "filter_person_role_id_valid",
+    "filter_name_gender_female",
+    "filter_aka_name_exists",
+    "probe_movie_companies_for_us_company",
+    "update_min_aggregates"
+  ],
+  "join_order": [
+    {
+      "build": "role_type(role='actress')",
+      "probe": "cast_info",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 1,
+      "notes": "Use cast_info__role_id CSR; enumerate ci rows where role_id = rt_id_actress."
+    },
+    {
+      "build": "ci.note IN voice-set",
+      "probe": "cast_info(actress slice)",
+      "type": "semi",
+      "strategy": "flat_hash_set<string_view>",
+      "build_cardinality": 4,
+      "notes": "IN-set of 4 voice notes; check via varlen offsets/dat lookup."
+    },
+    {
+      "build": "name.gender bin",
+      "probe": "ci.person_id",
+      "type": "semi",
+      "strategy": "direct_array",
+      "build_cardinality": 4167491,
+      "notes": "n_gender[pid-1] == f_code; single-byte dereference."
+    },
+    {
+      "build": "aka_name__person_id offsets",
+      "probe": "pid",
+      "type": "semi",
+      "strategy": "offsets_only_range_check",
+      "build_cardinality": 4167492,
+      "notes": "Check offsets[pid] < offsets[pid+1] (non-empty aka_name range)."
+    },
+    {
+      "build": "company_name.country_code (us_code)",
+      "probe": "mc.company_id (via movie_companies__movie_id range)",
+      "type": "semi",
+      "strategy": "direct_array",
+      "build_cardinality": 234997,
+      "notes": "For each ci.movie_id mv: walk mc offsets[mv..mv+1], check cn_cc[company_id-1]==us_code."
+    },
+    {
+      "build": "title (dense PK)",
+      "probe": "mv",
+      "type": "inner",
+      "strategy": "direct_array",
+      "build_cardinality": 2528312,
+      "notes": "MIN(t.title) deref title.name[mv-1] only when row qualifies."
+    },
+    {
+      "build": "char_name (dense PK)",
+      "probe": "ci.person_role_id",
+      "type": "inner",
+      "strategy": "direct_array",
+      "build_cardinality": 3140339,
+      "notes": "MIN(chn.name) deref char_name[chn_id-1] only when row qualifies."
+    }
+  ],
+  "filters": [
+    {"table": "role_type", "predicate": "role = 'actress'", "selectivity": 0.083},
+    {"table": "cast_info", "predicate": "role_id = rt_id_actress", "selectivity": 0.08},
+    {"table": "cast_info", "predicate": "note IN (4 voice notes)", "selectivity": 0.02},
+    {"table": "cast_info", "predicate": "person_role_id != NULL", "selectivity": 0.9},
+    {"table": "name", "predicate": "gender = 'f'", "selectivity": 0.33},
+    {"table": "aka_name", "predicate": "person_id exists for n.id", "selectivity": 0.2},
+    {"table": "company_name", "predicate": "country_code = '[us]'", "selectivity": 0.35},
+    {"table": "movie_companies", "predicate": "company_id ∈ us-company set (via cn_cc deref)", "selectivity": 0.35}
+  ],
+  "data_structures": {
+    "voice_note_set": "flat_hash_set<string_view> (4 entries)",
+    "rt_actress_code": "int32_t scalar",
+    "us_code": "int16_t scalar",
+    "f_code": "int8_t scalar",
+    "ci_role_csr": "pre-built CSR (cast_info__role_id offsets+rowids)",
+    "mc_movie_offsets": "pre-built offsets_only (movie_companies__movie_id)",
+    "an_person_offsets": "pre-built offsets_only (aka_name__person_id)",
+    "n_gender_array": "int8 column (direct deref)",
+    "cn_country_code_array": "int16 column (direct deref)",
+    "aggregation": "4 thread-local min<string_view> reduced at end"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "morsel_dimension": "cast_info row range [crid_off[rt_id_actress], crid_off[rt_id_actress+1])",
+    "notes": "Partition the CSR slice into ~64K-row morsels; each thread maintains local MIN string_views and merges at the end."
+  },
+  "indexes": [
+    {"index": "cast_info__role_id (CSR)", "purpose": "driver_scan_actress_slice"},
+    {"index": "movie_companies__movie_id (offsets_only)", "purpose": "join_lookup_mc_by_movie"},
+    {"index": "aka_name__person_id (offsets_only)", "purpose": "semi_join_existence_and_min_name"}
+  ],
+  "aggregation": "global_min_reduction",
+  "output": {"order_by": [], "limit": 1},
+  "execution_target": "cpp"
+}

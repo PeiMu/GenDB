@@ -1,0 +1,27 @@
+{
+  "compile": {
+    "status": "pass"
+  },
+  "run": {
+    "status": "pass",
+    "duration_ms": 56
+  },
+  "validation": {
+    "status": "pass"
+  },
+  "optimization_target": "hot",
+  "timing_ms": 53.48333333333333,
+  "hot_timing_ms": 53.48333333333333,
+  "operation_timings": {
+    "data_loading": 0.15,
+    "resolve_constants": 0.01,
+    "build_cn_us_bitset": 0.58,
+    "build_mc_movie_has_us_bitset": 3.35,
+    "build_ci_voice_bitset": 21.18,
+    "build_name_pid_bitset": 2,
+    "build_driver_list": 3.66,
+    "probe_per_pid": 1.07,
+    "output": 0.17,
+    "total": 53.4
+  }
+}

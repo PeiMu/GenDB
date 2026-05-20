@@ -1,0 +1,108 @@
+{
+  "query_id": "Q31a",
+  "pipeline": [
+    "resolve_dims",
+    "scan_cn_lionsgate",
+    "drive_mc_by_company_csr",
+    "probe_mk_movieid_filter_keyword",
+    "probe_mi_movieid_filter_genre_horror_thriller",
+    "probe_mi_idx_movieid_filter_votes",
+    "probe_ci_movieid_filter_writer_note_gender",
+    "aggregate_min4"
+  ],
+  "filters": [
+    {"table": "company_name", "predicate": "name LIKE 'Lionsgate%' (memcmp 9 bytes)", "selectivity": 0.00005, "notes": "anchored prefix; yields ~10 cn_ids"},
+    {"table": "info_type", "predicate": "info = 'genres'", "selectivity": 0.0089, "notes": "scan 113 rows -> it1_id"},
+    {"table": "info_type", "predicate": "info = 'votes'", "selectivity": 0.0089, "notes": "scan 113 rows -> it2_id"},
+    {"table": "keyword", "predicate": "keyword IN ('murder','violence','blood','gore','death','female-nudity','hospital')", "selectivity": 0.000052, "notes": "scan 134170 rows -> k_ids (7)"},
+    {"table": "name", "predicate": "gender = 'm' (dict m_code)", "selectivity": 0.4, "notes": "resolved via gender dict at runtime"},
+    {"table": "cast_info", "predicate": "note IN 5 writer literals", "selectivity": 0.02, "notes": "applied during ci probe"},
+    {"table": "movie_info", "predicate": "info_type_id == it1_id AND info IN ('Horror','Thriller')", "selectivity": 0.002},
+    {"table": "movie_info_idx", "predicate": "info_type_id == it2_id", "selectivity": 0.35}
+  ],
+  "join_order": [
+    {
+      "build": "company_name(filtered Lionsgate%)",
+      "probe": "movie_companies via CSR movie_companies__company_id",
+      "type": "inner",
+      "strategy": "csr_index_drive",
+      "build_cardinality": 10,
+      "notes": "Use _idx/movie_companies__company_id__{offsets,rowids}.bin; collect candidate movie_ids into mv_set (hash_set) plus cn_ids small bitset/array. Expected candidate movies ~ a few thousand."
+    },
+    {
+      "build": "candidate_movie_ids (mv_set)",
+      "probe": "movie_keyword via offsets-only movie_keyword__movie_id__offsets",
+      "type": "semi",
+      "strategy": "index_nested_loop_semi",
+      "build_cardinality": 5000,
+      "notes": "For each mv: lo=off[mv], hi=off[mv+1]; require any keyword_id in k_ids (small set: hash_set or sorted linear). Retain mv that pass; semi-join."
+    },
+    {
+      "build": "mv_set_after_mk",
+      "probe": "movie_info via offsets-only movie_info__movie_id__offsets",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 2000,
+      "notes": "For each mv: scan range; require info_type_id==it1_id AND info IN ('Horror','Thriller') (memcmp on off/dat). Captured rows feed MIN(mi.info) and define surviving mv_set for next steps."
+    },
+    {
+      "build": "mv_set_after_mi",
+      "probe": "movie_info_idx via offsets-only movie_info_idx__movie_id__offsets",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 500,
+      "notes": "For each surviving mv: scan range; require info_type_id==it2_id. Capture mi_idx.info for MIN(mi_idx.info)."
+    },
+    {
+      "build": "mv_set_after_mi_idx",
+      "probe": "cast_info via offsets-only cast_info__movie_id__offsets",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 500,
+      "notes": "For each mv: scan range; require ci.note IN 5 writer literals (varlen compare via off/dat); fetch person_id."
+    },
+    {
+      "build": "person_id from ci row",
+      "probe": "name (n) via id (identity PK)",
+      "type": "inner",
+      "strategy": "direct_array_lookup",
+      "build_cardinality": 1,
+      "notes": "Lookup name.gender[pid]==m_code; if pass, fetch name via name.{off,dat}; feed MIN(n.name)."
+    },
+    {
+      "build": "mv (passing all probes)",
+      "probe": "title.title via id (identity PK)",
+      "type": "inner",
+      "strategy": "direct_array_lookup",
+      "build_cardinality": 1,
+      "notes": "Once mv qualifies (at least one ci+name passes), fetch t.title[mv-1] for MIN(t.title). t.id is identity, so movie_id maps directly."
+    }
+  ],
+  "data_structures": {
+    "cn_ids": "small_int32_vector (~10 entries)",
+    "k_ids": "sorted_int32_array (7 entries) with linear/binary search",
+    "it1_id_it2_id": "int32 scalars",
+    "m_code": "int8 scalar from gender dict resolve",
+    "writer_notes": "5-literal precomputed (length,bytes) array for memcmp",
+    "horror_thriller": "2-literal precomputed (length,bytes) array",
+    "mv_set_candidates": "flat_hash_set<int32> (or sorted vector) sized to a few thousand initial",
+    "mv_set_after_mk": "flat_hash_set<int32>",
+    "mv_set_after_mi": "flat_hash_set<int32>",
+    "aggregation": "scalar MIN registers: 4x (varlen current best + length); use lexicographic memcmp; thread-local then merged"
+  },
+  "parallelism": {
+    "strategy": "partition_parallel_over_cn_ids_then_serial_inner",
+    "threads": "auto(nproc)",
+    "notes": "cn_ids is tiny (~10); parallelism is more useful inside: after gathering candidate movie_ids, distribute mv_set across threads via morsel_driven loop. Each thread maintains local MIN registers; final reduction across threads. Avoid parallel scan of giant cast_info because we drive by mv ranges (index_nested_loop), naturally bounded."
+  },
+  "indexes": [
+    {"index": "movie_companies__company_id (CSR)", "purpose": "drive from cn_ids to candidate movie_ids"},
+    {"index": "movie_keyword__movie_id (offsets_only)", "purpose": "range scan mk rows per mv for keyword_id semi-check"},
+    {"index": "movie_info__movie_id (offsets_only)", "purpose": "range scan mi rows per mv for info_type+info filter"},
+    {"index": "movie_info_idx__movie_id (offsets_only)", "purpose": "range scan mi_idx rows per mv for info_type filter"},
+    {"index": "cast_info__movie_id (offsets_only)", "purpose": "range scan ci rows per mv for note+person_id"}
+  ],
+  "aggregation": "scalar_min_4_columns",
+  "output": {"order_by": [], "limit": 1, "projection": ["MIN(mi.info) AS movie_budget", "MIN(mi_idx.info) AS movie_votes", "MIN(n.name) AS writer", "MIN(t.title) AS violent_liongate_movie"]},
+  "execution_target": "cpp"
+}

@@ -1,0 +1,29 @@
+{
+  "total_wall_clock_ms": 236217,
+  "total_tokens": {
+    "input": 286,
+    "output": 10822,
+    "cache_read": 474057,
+    "cache_creation": 91462
+  },
+  "total_cost_usd": 1.080646,
+  "phases": {
+    "phase1": {
+      "total_ms": 236031,
+      "agents": {
+        "workload_analyzer": {
+          "duration_ms": 236031,
+          "tokens": {
+            "input": 286,
+            "output": 10822,
+            "cache_read": 474057,
+            "cache_creation": 91462
+          },
+          "cost_usd": 1.080646
+        }
+      }
+    }
+  },
+  "status": "failed",
+  "error": "Workload analysis failed — could not read/parse workload_analysis.json."
+}

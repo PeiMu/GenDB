@@ -1,0 +1,76 @@
+{
+  "compile": {
+    "status": "pass"
+  },
+  "run": {
+    "status": "pass",
+    "duration_ms": 24
+  },
+  "validation": {
+    "status": "fail",
+    "details": {
+      "match": false,
+      "queries": {
+        "Q22c": {
+          "rows_expected": 1,
+          "rows_actual": 1,
+          "match": false,
+          "error": "1 row(s) differ",
+          "sample_mismatches": [
+            {
+              "row": 0,
+              "expected": [
+                "01 Distribution",
+                "1.90",
+                "(#1.1)"
+              ],
+              "actual": [
+                "01 Distribuzione",
+                "1.20",
+                "$100 a Tooth"
+              ],
+              "cell_details": [
+                {
+                  "expected": "01 Distribution",
+                  "actual": "01 Distribuzione",
+                  "pattern": "string_mismatch",
+                  "col": 0
+                },
+                {
+                  "expected": "1.90",
+                  "actual": "1.20",
+                  "abs_diff": 0.7,
+                  "magnitude": 1.9,
+                  "relative_diff": 0.36842105,
+                  "pattern": "value_mismatch",
+                  "col": 1
+                },
+                {
+                  "expected": "(#1.1)",
+                  "actual": "$100 a Tooth",
+                  "pattern": "string_mismatch",
+                  "col": 2
+                }
+              ]
+            }
+          ],
+          "mismatch_patterns": {
+            "string_mismatch": 2,
+            "value_mismatch": 1
+          }
+        }
+      }
+    }
+  },
+  "optimization_target": "hot",
+  "timing_ms": 20.776666666666667,
+  "hot_timing_ms": 20.776666666666667,
+  "operation_timings": {
+    "data_loading": 0.19,
+    "resolve_dims": 0.56,
+    "build_cn_ok": 0.37,
+    "main_scan": 7.5,
+    "output": 0.14,
+    "total": 20.86
+  }
+}

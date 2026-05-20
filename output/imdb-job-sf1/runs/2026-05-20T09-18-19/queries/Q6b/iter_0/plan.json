@@ -1,0 +1,69 @@
+{
+  "query_id": "Q6b",
+  "pipeline": [
+    "scan_keyword_filter",
+    "scan_name_filter",
+    "csr_expand_movie_keyword",
+    "dedupe_t_ids",
+    "filter_title_year",
+    "probe_cast_info_offsets",
+    "semi_join_name",
+    "min_aggregate"
+  ],
+  "join_order": [
+    {
+      "build": "keyword(IN 8 literals) -> target_k_ids + k_keyword_by_id",
+      "probe": "movie_keyword via CSR movie_keyword__keyword_id",
+      "type": "inner",
+      "strategy": "csr_index_lookup",
+      "build_cardinality": 8,
+      "notes": "8 keyword ids; CSR fetches matching mk rows directly, yields (k_id, t_id) pairs"
+    },
+    {
+      "build": "name(LIKE %Downey%Robert%) -> downey_robert_ids",
+      "probe": "cast_info via cast_info__movie_id offsets per surviving t_id",
+      "type": "semi",
+      "strategy": "hash_set_probe",
+      "build_cardinality": 50,
+      "notes": "Very selective LIKE; tiny set probed inside ci range per t_id"
+    },
+    {
+      "build": "title.production_year > 2014",
+      "probe": "candidate t_ids from mk expansion",
+      "type": "inner",
+      "strategy": "direct_array_lookup",
+      "build_cardinality": 2528312,
+      "notes": "Direct bin lookup at t_id-1; ~5% pass year filter"
+    }
+  ],
+  "filters": [
+    {"table": "keyword", "predicate": "keyword IN (8 literals)", "selectivity": 0.00006},
+    {"table": "name", "predicate": "name LIKE '%Downey%Robert%'", "selectivity": 0.00001},
+    {"table": "title", "predicate": "production_year > 2014 AND != INT32_MIN", "selectivity": 0.05}
+  ],
+  "data_structures": {
+    "keyword_filter": "flat_hash_set<int32_t> target_k_ids (cap 8) + vector<string> k_keyword_by_id keyed by k_id for MIN tracking",
+    "name_filter": "flat_hash_set<int32_t> downey_robert_ids (expected <100)",
+    "t_id_dedupe": "flat_hash_map<int32_t, int32_t> t_id -> best_k_id (smallest matching keyword string), pre-reserved ~200000",
+    "min_tracking": "three string buffers (movie_keyword, actor_name, hero_movie) updated lexicographically"
+  },
+  "parallelism": {
+    "strategy": "serial_outer_parallel_name_scan",
+    "threads": "auto(nproc)",
+    "notes": "Parallelize the 4.16M name LIKE scan across 12 threads with per-thread local sets merged at end. Keyword scan (134k) is serial. CSR expansion + ci probing is serial; total CSR/ci work is small after keyword filter."
+  },
+  "indexes": [
+    {"index": "movie_keyword__keyword_id", "purpose": "join_lookup: k_id -> mk rows"},
+    {"index": "cast_info__movie_id", "purpose": "join_lookup: t_id -> ci rows (offsets_only)"}
+  ],
+  "aggregation": "scalar_min_three_strings",
+  "output": {"order_by": [], "limit": 1, "columns": ["MIN(k.keyword)", "MIN(n.name)", "MIN(t.title)"]},
+  "execution_target": "cpp",
+  "notes": [
+    "Track per-keyword string when building target_k_ids so MIN(k.keyword) reflects the actual matched k_id that produced an output row.",
+    "Dedupe t_id during CSR expansion: keep mapping t_id -> lexicographically smallest matching k.keyword string seen, to avoid re-probing cast_info for the same movie.",
+    "For each surviving (t_id, k_keyword_str): check production_year[t_id-1] > 2014 && != INT32_MIN; then iterate ci_off[t_id]..ci_off[t_id+1]; if any ci_person ∈ downey_robert_ids, update three MINs (resolve t.title from offsets, n.name from offsets, use stored k_keyword_str).",
+    "MIN(n.name) only needs to update with min over downey_robert_ids that actually appeared in a surviving match; track via per-match n.id, but since LIKE set is tiny, can precompute min name string offline and gate by membership in winning set; simplest: update MIN(n.name) on each accepted ci row.",
+    "Estimated final work: ~8 keyword ids -> a few thousand mk rows -> few thousand unique t_ids -> ~5% pass year -> short ci ranges with semi-join against ~50-element hash set. Total runtime dominated by parallel name LIKE scan."
+  ]
+}

@@ -1,0 +1,51 @@
+{
+  "query_id": "Q20c",
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 75.48333333333333,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 75.48333333333333,
+      "validation": "pass",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "data_loading": 0.16,
+        "resolve_dims": 0.12,
+        "scan_complete_cast": 1.04,
+        "filter_title": 0.89,
+        "filter_movie_keyword": 2.32,
+        "build_chn_bitset": 36.27,
+        "probe_cast_info": 22.83,
+        "main_scan": 0,
+        "output": 0.08,
+        "total": 72.77
+      }
+    },
+    {
+      "iteration": 1,
+      "improved": true,
+      "categories": [],
+      "timing_ms": 35.73,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 35.73,
+      "validation": "pass",
+      "strategy": "",
+      "operation_timings": {
+        "data_loading": 0.15,
+        "resolve_dims": 0.12,
+        "scan_complete_cast": 1.1,
+        "filter_title": 0.88,
+        "filter_movie_keyword": 2.31,
+        "build_chn_bitset": 22.23,
+        "probe_cast_info": 1.05,
+        "main_scan": 0,
+        "output": 0.08,
+        "total": 35.17
+      }
+    }
+  ]
+}

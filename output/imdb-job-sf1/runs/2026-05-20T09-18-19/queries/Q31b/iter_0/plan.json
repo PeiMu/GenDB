@@ -1,0 +1,129 @@
+{
+  "query_id": "Q31b",
+  "pipeline": [
+    "scan_dims",
+    "filter_title_driver",
+    "probe_movie_companies",
+    "probe_movie_keyword",
+    "probe_movie_info",
+    "probe_movie_info_idx",
+    "probe_cast_info",
+    "lookup_name",
+    "aggregate_min"
+  ],
+  "dim_prep": [
+    {
+      "table": "company_name",
+      "filter": "name LIKE 'Lionsgate%' (memcmp first 9 bytes)",
+      "output": "cn_ids: hash_set<int32>",
+      "estimated_cardinality": 20
+    },
+    {
+      "table": "info_type",
+      "filter": "info='genres' OR info='votes'",
+      "output": "it1_id, it2_id (int32 scalars)",
+      "estimated_cardinality": 2
+    },
+    {
+      "table": "keyword",
+      "filter": "keyword IN ('murder','violence','blood','gore','death','female-nudity','hospital')",
+      "output": "k_ids: hash_set<int32>",
+      "estimated_cardinality": 7
+    }
+  ],
+  "driver": {
+    "table": "title",
+    "filters": [
+      "production_year > 2000",
+      "title LIKE '%Freddy%' OR title LIKE '%Jason%' OR title LIKE 'Saw%' (memmem for Freddy/Jason; memcmp 3 bytes for Saw)"
+    ],
+    "output": "mv_set: vector<int32> of qualifying movie_ids",
+    "estimated_cardinality": 150,
+    "parallelism": "morsel_parallel scan of title with per-thread vectors, merged at end"
+  },
+  "join_order": [
+    {
+      "build": "cn_ids (Lionsgate company_name)",
+      "probe": "movie_companies (range per mv via movie_id offsets)",
+      "type": "semi",
+      "strategy": "hash_set_lookup + memmem(note,'(Blu-ray)')",
+      "build_cardinality": 20,
+      "notes": "Per driver mv, scan mc rows via offsets index; require company_id ∈ cn_ids AND note LIKE %(Blu-ray)%. Substring filter with length>=9 prefilter."
+    },
+    {
+      "build": "k_ids (keyword set)",
+      "probe": "movie_keyword (range per mv via movie_id offsets)",
+      "type": "semi",
+      "strategy": "hash_set_lookup",
+      "build_cardinality": 7,
+      "notes": "Per mv, scan mk rows; require keyword_id ∈ k_ids."
+    },
+    {
+      "build": "it1_id scalar + {'Horror','Thriller'} set",
+      "probe": "movie_info (range per mv via movie_id offsets)",
+      "type": "inner",
+      "strategy": "scalar_eq + small_set_membership",
+      "build_cardinality": 2,
+      "notes": "Filter info_type_id==it1_id; info IN {Horror,Thriller}; capture info string for MIN."
+    },
+    {
+      "build": "it2_id scalar",
+      "probe": "movie_info_idx (range per mv via movie_id offsets)",
+      "type": "inner",
+      "strategy": "scalar_eq",
+      "build_cardinality": 1,
+      "notes": "Filter info_type_id==it2_id; capture info string for MIN."
+    },
+    {
+      "build": "writer note set {'(writer)','(head writer)','(written by)','(story)','(story editor)'}",
+      "probe": "cast_info (range per mv via movie_id offsets)",
+      "type": "inner",
+      "strategy": "small_set_membership_on_varlen_note",
+      "build_cardinality": 5,
+      "notes": "Per mv, scan ci rows; require note ∈ writer-set; emit (person_id) pairs."
+    },
+    {
+      "build": "person_ids surviving above",
+      "probe": "name (random access by id; gender filter)",
+      "type": "inner",
+      "strategy": "direct_array_lookup",
+      "build_cardinality": "varies",
+      "notes": "name.id is identity; index gender.bin[pid]==male_code; capture n.name for MIN."
+    }
+  ],
+  "filters": [
+    {"table": "company_name", "predicate": "name LIKE 'Lionsgate%'", "selectivity": 0.0001},
+    {"table": "info_type", "predicate": "info='genres' or 'votes'", "selectivity": 0.018},
+    {"table": "keyword", "predicate": "7-IN set", "selectivity": 0.00005},
+    {"table": "title", "predicate": "production_year>2000 AND title LIKE OR-set", "selectivity": 0.00006},
+    {"table": "movie_companies", "predicate": "note LIKE '%(Blu-ray)%' AND company_id ∈ cn_ids", "selectivity": 0.000001},
+    {"table": "movie_info", "predicate": "info IN ('Horror','Thriller') AND it1", "selectivity": 0.001},
+    {"table": "cast_info", "predicate": "note IN writer-5-set", "selectivity": 0.03},
+    {"table": "name", "predicate": "gender='m'", "selectivity": 0.55}
+  ],
+  "data_structures": {
+    "cn_ids": "hash_set<int32> (~20 elems) — small open-addressing or sorted vector + binary_search",
+    "k_ids": "hash_set<int32> (~7 elems) — flat sorted array + linear scan",
+    "writer_notes": "compiled multi-literal matcher (length-bucketed memcmp) for 5 fixed strings",
+    "horror_thriller": "compiled 2-literal matcher (length 6 vs 8 fast path)",
+    "mv_set": "vector<int32> (driver outputs)",
+    "name_gender_dict_code": "uint8 male_code resolved once from gender.dict",
+    "aggregation": "4 scalar MIN registers: 3 string MINs (movie_budget, movie_votes, writer) held as best-so-far (length+ptr); 1 string MIN (violent_liongate_movie)"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc=12)",
+    "details": "Phase 1: parallel dim scans (cn, it, k). Phase 2: parallel title scan to build mv_set. Phase 3: partition mv_set across 12 threads; each thread runs full per-mv probe pipeline producing local MIN registers; final reduction merges 4 MINs."
+  },
+  "indexes": [
+    {"index": "movie_companies__movie_id (offsets_only)", "purpose": "join_lookup per mv"},
+    {"index": "movie_keyword__movie_id (offsets_only)", "purpose": "join_lookup per mv"},
+    {"index": "movie_info__movie_id (offsets_only)", "purpose": "join_lookup per mv"},
+    {"index": "movie_info_idx__movie_id (offsets_only)", "purpose": "join_lookup per mv"},
+    {"index": "cast_info__movie_id (offsets_only)", "purpose": "join_lookup per mv"},
+    {"index": "name.id identity", "purpose": "direct array access by person_id"}
+  ],
+  "aggregation": "scalar_min_registers (4 string MINs maintained as best-so-far ptr+len, lexicographic compare)",
+  "output": {"order_by": [], "limit": 1},
+  "execution_target": "cpp"
+}

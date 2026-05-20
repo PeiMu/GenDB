@@ -1,0 +1,88 @@
+{
+  "query_id": "Q13a",
+  "pipeline": [
+    "resolve_dims",
+    "scan_filter_company_name_de",
+    "expand_movie_companies_via_csr",
+    "filter_company_type",
+    "filter_title_kind",
+    "probe_movie_info_idx_for_rating",
+    "probe_movie_info_for_release_date",
+    "min_aggregate"
+  ],
+  "dim_resolution": [
+    {"table": "company_name", "column": "country_code", "value": "[de]", "output": "de_code", "type": "int16_dict"},
+    {"table": "company_type", "column": "kind", "value": "production companies", "output": "ct_id", "type": "varlen_scan"},
+    {"table": "info_type", "column": "info", "value": "rating", "output": "it_id", "type": "varlen_scan"},
+    {"table": "info_type", "column": "info", "value": "release dates", "output": "it2_id", "type": "varlen_scan"},
+    {"table": "kind_type", "column": "kind", "value": "movie", "output": "kt_id", "type": "varlen_scan"}
+  ],
+  "join_order": [
+    {
+      "build": "company_name(country_code==de_code)",
+      "probe": "movie_companies via CSR(company_id)",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 2000,
+      "notes": "Drive from German companies; expand via movie_companies__company_id CSR"
+    },
+    {
+      "build": "mc rows (filtered by company_type_id==ct_id)",
+      "probe": "title via id (mid-1)",
+      "type": "inner",
+      "strategy": "direct_array",
+      "build_cardinality": 30000,
+      "notes": "Apply t.kind_id==kt_id filter on title lookup"
+    },
+    {
+      "build": "qualifying mids",
+      "probe": "movie_info_idx via offsets_only index on movie_id",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 25000,
+      "notes": "Filter rows by info_type_id==it_id; capture MIN(miidx.info)"
+    },
+    {
+      "build": "qualifying mids",
+      "probe": "movie_info via offsets_only index on movie_id",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 25000,
+      "notes": "Filter rows by info_type_id==it2_id; capture MIN(mi.info)"
+    }
+  ],
+  "filters": [
+    {"table": "company_name", "predicate": "country_code == de_code", "selectivity": 0.01},
+    {"table": "company_type", "predicate": "kind == 'production companies'", "selectivity": 0.25},
+    {"table": "movie_companies", "predicate": "company_type_id == ct_id", "selectivity": 0.5, "applied_during": "csr_expansion"},
+    {"table": "title", "predicate": "kind_id == kt_id", "selectivity": 0.85, "applied_during": "title_lookup"},
+    {"table": "movie_info_idx", "predicate": "info_type_id == it_id (rating)", "selectivity": 0.1, "applied_during": "offsets_probe"},
+    {"table": "movie_info", "predicate": "info_type_id == it2_id (release dates)", "selectivity": 0.05, "applied_during": "offsets_probe"}
+  ],
+  "data_structures": {
+    "dim_resolution": "scalar ids (de_code int16, ct_id int32, it_id int32, it2_id int32, kt_id int32)",
+    "cn_de_list": "std::vector<int32_t> (sorted ascending)",
+    "mc_csr": "pre_built_index movie_companies__company_id (offsets + rowids)",
+    "mi_offsets": "pre_built_index movie_info__movie_id (offsets_only)",
+    "miidx_offsets": "pre_built_index movie_info_idx__movie_id (offsets_only)",
+    "aggregation": "three scalar MIN accumulators (release_date varlen, rating varlen, german_movie varlen)"
+  },
+  "parallelism": {
+    "strategy": "partition_parallel_over_cn_de",
+    "threads": "auto(nproc)",
+    "notes": "Partition cn_de list across threads; each thread maintains thread-local MIN accumulators that are merged at the end"
+  },
+  "indexes": [
+    {"index": "movie_companies__company_id", "purpose": "join_lookup", "kind": "csr_offsets+rowids"},
+    {"index": "movie_info__movie_id", "purpose": "join_lookup", "kind": "offsets_only"},
+    {"index": "movie_info_idx__movie_id", "purpose": "join_lookup", "kind": "offsets_only"}
+  ],
+  "aggregation": "scalar_min_three_columns",
+  "min_aggregation_details": {
+    "release_date": {"source": "movie_info.info", "column_files": "movie_info/info.off|.dat", "compare": "lexicographic_bytewise"},
+    "rating": {"source": "movie_info_idx.info", "column_files": "movie_info_idx/info.off|.dat", "compare": "lexicographic_bytewise"},
+    "german_movie": {"source": "title.title", "column_files": "title/title.off|.dat", "compare": "lexicographic_bytewise", "notes": "Update once per qualifying mid (after both probes succeed)"}
+  },
+  "output": {"order_by": [], "limit": 1, "columns": ["release_date", "rating", "german_movie"]},
+  "execution_target": "cpp"
+}

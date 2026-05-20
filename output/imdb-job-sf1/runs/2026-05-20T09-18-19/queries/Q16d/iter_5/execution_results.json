@@ -1,0 +1,65 @@
+{
+  "compile": {
+    "status": "pass"
+  },
+  "run": {
+    "status": "pass",
+    "duration_ms": 7
+  },
+  "validation": {
+    "status": "fail",
+    "details": {
+      "match": false,
+      "queries": {
+        "Q16d": {
+          "rows_expected": 1,
+          "rows_actual": 1,
+          "match": false,
+          "error": "1 row(s) differ",
+          "sample_mismatches": [
+            {
+              "row": 0,
+              "expected": [
+                "\"Brooklyn\" Tony Danza",
+                "(#1.5)"
+              ],
+              "actual": [
+                "Adhik, Avinash",
+                "2Shy"
+              ],
+              "cell_details": [
+                {
+                  "expected": "\"Brooklyn\" Tony Danza",
+                  "actual": "Adhik, Avinash",
+                  "pattern": "string_mismatch",
+                  "col": 0
+                },
+                {
+                  "expected": "(#1.5)",
+                  "actual": "2Shy",
+                  "pattern": "string_mismatch",
+                  "col": 1
+                }
+              ]
+            }
+          ],
+          "mismatch_patterns": {
+            "string_mismatch": 2
+          }
+        }
+      }
+    }
+  },
+  "optimization_target": "hot",
+  "timing_ms": 4.196666666666666,
+  "hot_timing_ms": 4.196666666666666,
+  "operation_timings": {
+    "data_loading": 0.12,
+    "resolve_us_code": 0,
+    "resolve_k_id": 0.01,
+    "build_cn_us_bitset": 0.2,
+    "main_scan": 1.85,
+    "output": 0.18,
+    "total": 4.13
+  }
+}

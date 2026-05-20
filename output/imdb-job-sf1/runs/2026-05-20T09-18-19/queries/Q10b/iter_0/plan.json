@@ -1,0 +1,85 @@
+{
+  "query_id": "Q10b",
+  "pipeline": [
+    "resolve_dict_ids",
+    "filter_company_name_ru",
+    "walk_mc_company_id_csr_to_movies",
+    "dedupe_movies",
+    "filter_title_year_gt_2010",
+    "walk_ci_movie_id_offsets",
+    "filter_ci_role_and_note_producer",
+    "min_aggregate_chn_name_and_title"
+  ],
+  "join_order": [
+    {
+      "build": "company_name(country_code=[ru]) -> ru_company_ids",
+      "probe": "movie_companies via __company_id CSR",
+      "type": "inner",
+      "strategy": "pre_built_index",
+      "build_cardinality": 400,
+      "notes": "Russian companies are few hundred; CSR walk yields candidate movie rows directly"
+    },
+    {
+      "build": "candidate_movies (deduped bitset over title rows)",
+      "probe": "title.production_year",
+      "type": "semi",
+      "strategy": "direct_array",
+      "build_cardinality": 10000,
+      "notes": "Filter movies by production_year > 2010 via direct column deref"
+    },
+    {
+      "build": "filtered_movies",
+      "probe": "cast_info via __movie_id offsets_only",
+      "type": "inner",
+      "strategy": "pre_built_index",
+      "build_cardinality": 5000,
+      "notes": "For each movie, iterate ci rows in [lo,hi); ci is sorted by movie_id"
+    },
+    {
+      "build": "ci rows passing role_id=actor AND note contains '(producer)'",
+      "probe": "char_name[ci.person_role_id-1]",
+      "type": "inner",
+      "strategy": "direct_array",
+      "build_cardinality": 1000,
+      "notes": "Direct deref into dense-PK char_name; update MIN aggregates"
+    }
+  ],
+  "filters": [
+    {"table": "role_type", "predicate": "role = 'actor'", "selectivity": 0.083},
+    {"table": "company_name", "predicate": "country_code = '[ru]'", "selectivity": 0.0017},
+    {"table": "title", "predicate": "production_year > 2010", "selectivity": 0.25},
+    {"table": "cast_info", "predicate": "note LIKE '%(producer)%'", "selectivity": 0.005},
+    {"table": "cast_info", "predicate": "role_id = rt_id_actor", "selectivity": 0.083},
+    {"table": "cast_info", "predicate": "person_role_id IS NOT NULL", "selectivity": 0.1}
+  ],
+  "data_structures": {
+    "ru_company_ids": "vector<int32_t> (sorted by id; ~400 entries)",
+    "candidate_movies": "vector<uint8_t> bitset over title rows (2,528,312 bits)",
+    "filtered_movies": "implicit (iterate bitset and apply year filter inline)",
+    "ci_indexes": "use cast_info__movie_id offsets_only index for movie-id range scan",
+    "mc_company_index": "use movie_companies__company_id CSR (offsets + rowids)",
+    "aggregation": "two scalar MIN holders: std::string min_chn_name, std::string min_title"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "morsel_unit": "ru_company_ids partitioned across threads; per-thread local MINs reduced at end",
+    "notes": "Only ~400 companies but each expands to thousands of mc rows; parallelize the outer driver loop"
+  },
+  "indexes": [
+    {"index": "movie_companies__company_id (CSR)", "purpose": "join_lookup: cn.id -> mc rows"},
+    {"index": "cast_info__movie_id (offsets_only)", "purpose": "join_lookup: title.id -> ci rows"}
+  ],
+  "aggregation": "scalar_min_min",
+  "output": {"order_by": [], "limit": 1, "projection": ["MIN(chn.name)", "MIN(t.title)"]},
+  "execution_target": "cpp",
+  "notes": [
+    "Resolve rt_id_actor and ru_code via dict scans at startup.",
+    "Driver loop: for cid in ru_company_ids -> walk mc CSR -> set bit in movie bitset.",
+    "Second pass: for each set bit mv, check production_year[mv-1] > 2010, then walk ci offsets [lo,hi).",
+    "Per ci row r: check role_id[r] == rt_id_actor; if so, memmem note[off[r]..off[r+1]] for '(producer)'; if hit, deref person_role_id[r]; update MINs.",
+    "Per-thread local MIN strings to avoid contention; merge sequentially after parallel region.",
+    "Loads required columns: cn.country_code, mc.movie_id, mc.company_id (via CSR), title.production_year, title.title (off+dat), ci.role_id, ci.note (off+dat), ci.person_role_id, char_name.name (off+dat).",
+    "Skip company_type entirely: ct has no predicate and ct.id is dense-PK so the join with mc.company_type_id is structurally satisfied (mc rows always have valid ct id); no need to load company_type files."
+  ]
+}

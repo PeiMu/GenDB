@@ -1,0 +1,25 @@
+{
+  "query_id": "Q13c",
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 3.373333333333333,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 3.373333333333333,
+      "validation": "pass",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "dim_resolution": 0.14,
+        "data_loading": 0.1,
+        "main_scan": 1.94,
+        "probe_and_aggregate": 0.16,
+        "output": 0.06,
+        "total": 3.3
+      }
+    }
+  ]
+}

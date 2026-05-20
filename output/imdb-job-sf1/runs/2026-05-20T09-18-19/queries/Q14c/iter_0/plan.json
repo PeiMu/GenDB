@@ -1,0 +1,105 @@
+{
+  "query_id": "Q14c",
+  "pipeline": [
+    "resolve_dim_ids",
+    "build_keyword_id_set",
+    "build_country_info_set",
+    "scan_title_filter_kind_year",
+    "semi_join_movie_keyword",
+    "semi_join_movie_info_country",
+    "join_movie_info_idx_aggregate"
+  ],
+  "join_order": [
+    {
+      "build": "kind_type(kind IN ('movie','episode'))",
+      "probe": "title",
+      "type": "semi",
+      "strategy": "small_id_set(2)",
+      "build_cardinality": 2,
+      "notes": "Resolve 2 kt ids; filter title.kind_id via 2-element check"
+    },
+    {
+      "build": "title(production_year>2005 AND kind_id in kt_ids)",
+      "probe": "movie_keyword via offsets_only",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 600000,
+      "notes": "~25% of 2.5M titles survive year+kind filter; per-title probe mk offsets"
+    },
+    {
+      "build": "keyword(keyword IN (4 values))",
+      "probe": "movie_keyword.keyword_id",
+      "type": "semi",
+      "strategy": "small_id_set(<=4)",
+      "build_cardinality": 4,
+      "notes": "Tiny set; linear check inside mk range per title"
+    },
+    {
+      "build": "info_type(info='countries')",
+      "probe": "movie_info via offsets_only",
+      "type": "semi",
+      "strategy": "scalar_id_equality + offsets_only",
+      "build_cardinality": 1,
+      "notes": "Resolve it1_id once; per-surviving-title scan mi range"
+    },
+    {
+      "build": "country_set (10 strings)",
+      "probe": "movie_info.info",
+      "type": "semi",
+      "strategy": "hash_set<string_view>",
+      "build_cardinality": 10,
+      "notes": "Check mi rows where info_type_id==it1_id"
+    },
+    {
+      "build": "info_type(info='rating')",
+      "probe": "movie_info_idx via offsets_only",
+      "type": "inner",
+      "strategy": "scalar_id_equality + offsets_only",
+      "build_cardinality": 1,
+      "notes": "Per surviving title scan mi_idx range, filter lex_lt(info,'8.5'); update MINs"
+    }
+  ],
+  "filters": [
+    {"table": "info_type AS it1", "predicate": "info = 'countries'", "selectivity": 0.009},
+    {"table": "info_type AS it2", "predicate": "info = 'rating'", "selectivity": 0.009},
+    {"table": "kind_type", "predicate": "kind IN ('movie','episode')", "selectivity": 0.286},
+    {"table": "keyword", "predicate": "keyword IN ('murder','murder-in-title','blood','violence')", "selectivity": 0.00003},
+    {"table": "title", "predicate": "production_year > 2005 AND kind_id IN kt_ids", "selectivity": 0.07},
+    {"table": "movie_info", "predicate": "info_type_id=it1_id AND info IN (10 countries)", "selectivity": 0.01},
+    {"table": "movie_info_idx", "predicate": "info_type_id=it2_id AND lex_lt(info,'8.5')", "selectivity": 0.45}
+  ],
+  "data_structures": {
+    "kt_ids": "int32 small_array[2]",
+    "k_ids": "int32 small_array[<=4]",
+    "country_info_set": "flat_hash_set<string_view>(10)",
+    "it1_id": "int32 scalar",
+    "it2_id": "int32 scalar",
+    "mk_offsets": "mmap int32 array (2528314)",
+    "mi_offsets": "mmap int32 array (2528314)",
+    "mi_idx_offsets": "mmap int32 array (2528314)",
+    "title_kind_id": "mmap int32 array",
+    "title_production_year": "mmap int32 array (NULL=INT32_MIN)",
+    "title_title_off_dat": "mmap varlen",
+    "aggregation": "per_thread {min_rating: string, min_title: string} reduced at end"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven over title row-id range",
+    "threads": "auto(nproc)",
+    "morsel_rows": 16384,
+    "notes": "12 cores; partition title scan; merge per-thread MIN strings at end"
+  },
+  "indexes": [
+    {"index": "movie_keyword__movie_id__offsets", "purpose": "join_lookup"},
+    {"index": "movie_info__movie_id__offsets", "purpose": "join_lookup"},
+    {"index": "movie_info_idx__movie_id__offsets", "purpose": "join_lookup"}
+  ],
+  "aggregation": "global_min_two_strings",
+  "output": {"order_by": [], "limit": 1},
+  "execution_target": "cpp",
+  "execution_notes": [
+    "Resolve it1_id, it2_id, kt_ids[2], k_ids[<=4], country_set up front (single-threaded).",
+    "If it1_id, it2_id, or kt_ids/k_ids empty, return NULL MINs immediately.",
+    "Per title r: (1) check production_year[r] != INT32_MIN && >2005 && kind_id[r] in kt_ids; (2) probe mk[mkmid[r]..mkmid[r+1]) for any keyword_id in k_ids — short-circuit; (3) probe mi[mimid[r]..mimid[r+1]) for any row with info_type_id==it1_id && country_set.contains(info) — short-circuit; (4) probe mi_idx[..]: for each row with info_type_id==it2_id && lex_lt(info,'8.5'), update min_rating; if any matched, also update min_title with t.title[r] (avoid string copy unless smaller than current).",
+    "Order of probes matters: keyword probe is cheapest (4-row mk filter, ~1.8 mk rows/title avg), country probe next, then mi_idx scan which performs the aggregation."
+  ]
+}

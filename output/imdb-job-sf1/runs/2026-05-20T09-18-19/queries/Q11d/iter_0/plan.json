@@ -1,0 +1,80 @@
+{
+  "query_id": "Q11d",
+  "pipeline": [
+    "resolve_dict_codes",
+    "build_K_movies_from_movie_keyword_csr",
+    "scan_movie_link_filter_by_K_movies",
+    "probe_title_production_year",
+    "probe_movie_companies_offsets",
+    "filter_mc_note_and_ct",
+    "probe_company_name_country_code",
+    "aggregate_min"
+  ],
+  "join_order": [
+    {
+      "build": "K (keyword ids for {sequel, revenge, based-on-novel})",
+      "probe": "movie_keyword via CSR movie_keyword__keyword_id",
+      "type": "semi",
+      "strategy": "csr_index_lookup",
+      "build_cardinality": 3,
+      "notes": "Walk CSR per kid to collect distinct movie_ids into K_movies hash_set"
+    },
+    {
+      "build": "K_movies (hash_set<int32>)",
+      "probe": "movie_link.movie_id (29997 rows sequential)",
+      "type": "semi",
+      "strategy": "hash_set_probe",
+      "build_cardinality": 400000,
+      "notes": "ml drives — only 29997 probes; produce distinct candidate mids. lt join is structural (any non-NULL link_type_id qualifies)."
+    },
+    {
+      "build": "candidate mids from ml ∩ K_movies",
+      "probe": "title[mid-1].production_year",
+      "type": "inner",
+      "strategy": "direct_array_lookup",
+      "build_cardinality": 20000,
+      "notes": "py != INT32_MIN && py > 1950"
+    },
+    {
+      "build": "qualifying mids",
+      "probe": "movie_companies via movie_companies__movie_id offsets",
+      "type": "inner",
+      "strategy": "csr_offsets_lookup",
+      "build_cardinality": 15000,
+      "notes": "For each qualifying mid, iterate mc rows; filter note non-empty AND ct_id != pc_id AND ct_id != 0"
+    },
+    {
+      "build": "filtered mc rows",
+      "probe": "company_name[cid-1].country_code",
+      "type": "inner",
+      "strategy": "direct_array_lookup",
+      "build_cardinality": 100000,
+      "notes": "cc != pl_code && cc != 0"
+    }
+  ],
+  "filters": [
+    {"table": "keyword", "predicate": "keyword IN ('sequel','revenge','based-on-novel')", "selectivity": 0.0000224},
+    {"table": "title", "predicate": "production_year > 1950 AND production_year != INT32_MIN", "selectivity": 0.9},
+    {"table": "movie_companies", "predicate": "note IS NOT NULL (note.off[i+1] > note.off[i])", "selectivity": 0.35},
+    {"table": "company_type", "predicate": "kind != 'production companies' AND kind IS NOT NULL", "selectivity": 0.75},
+    {"table": "company_name", "predicate": "country_code != '[pl]' AND country_code != 0", "selectivity": 0.7}
+  ],
+  "data_structures": {
+    "K_keyword_ids": "small_vector<int32>(3)",
+    "K_movies": "hash_set<int32> (flat_hash_set, reserved ~500000)",
+    "candidate_mids": "vector<int32> then dedup via sort-unique OR rely on ml being mostly distinct movie_ids",
+    "aggregation": "three scalar MIN state variables (byte-wise memcmp on varlen)"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "notes": "Phase 1 (CSR walk for K_movies) is small (~400k inserts) — single thread is fine. Phase 2 (ml scan 29997 rows) trivially parallel but small. Phase 3 (per-mid mc/cn probes) parallel over candidate mids with per-thread MIN state, merged at end."
+  },
+  "indexes": [
+    {"index": "movie_keyword__keyword_id", "purpose": "join_lookup: K -> movie_ids"},
+    {"index": "movie_companies__movie_id", "purpose": "join_lookup: mid -> mc rows"}
+  ],
+  "aggregation": "scalar_min_three_columns",
+  "output": {"order_by": [], "limit": 1},
+  "execution_target": "cpp"
+}

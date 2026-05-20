@@ -1,0 +1,24 @@
+{
+  "compile": {
+    "status": "pass"
+  },
+  "run": {
+    "status": "pass",
+    "duration_ms": 26
+  },
+  "validation": {
+    "status": "pass"
+  },
+  "optimization_target": "hot",
+  "timing_ms": 24.959999999999997,
+  "hot_timing_ms": 24.959999999999997,
+  "operation_timings": {
+    "data_loading": 0.21,
+    "us_mask_build": 0.64,
+    "mk_csr_enum": 1.71,
+    "us_semi_join": 3.6,
+    "main_scan": 11.35,
+    "output": 0.07,
+    "total": 23.89
+  }
+}

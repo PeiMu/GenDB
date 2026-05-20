@@ -1,0 +1,112 @@
+{
+  "query_id": "Q33c",
+  "pipeline": [
+    "resolve_dims",
+    "build_cn1_bitset",
+    "build_kt_title_bitmap",
+    "iterate_ml_via_link_type_csr",
+    "filter_t1_kind_t2_kind_t2_year",
+    "probe_mc1_for_cn1",
+    "probe_mc2_for_cn2",
+    "probe_mi_idx1_rating",
+    "probe_mi_idx2_rating_lt35",
+    "aggregate_min6"
+  ],
+  "join_order": [
+    {
+      "build": "link_type(filtered: link IN {sequel,follows,followed by})",
+      "probe": "movie_link via CSR movie_link__link_type_id",
+      "type": "inner",
+      "strategy": "csr_index_lookup",
+      "build_cardinality": 3,
+      "notes": "Driver. ~few hundred ml rows total."
+    },
+    {
+      "build": "ml row (t1_id=movie_id, t2_id=linked_movie_id)",
+      "probe": "title (t1 and t2 via dense PK dereference)",
+      "type": "inner",
+      "strategy": "direct_array",
+      "build_cardinality": 30000,
+      "notes": "Dense PK: title[t1_id-1], title[t2_id-1]."
+    },
+    {
+      "build": "kt_ids set (2 ids: tv series, episode)",
+      "probe": "title.kind_id[t1_id-1] and title.kind_id[t2_id-1]",
+      "type": "semi",
+      "strategy": "bitset_membership",
+      "build_cardinality": 2,
+      "notes": "Pre-build kt_title bitmap (rows=2528312) via title__kind_id CSR; O(1) check."
+    },
+    {
+      "build": "year window [2000,2010]",
+      "probe": "title.production_year[t2_id-1]",
+      "type": "semi",
+      "strategy": "direct_array",
+      "build_cardinality": 1,
+      "notes": "Range check on t2 only."
+    },
+    {
+      "build": "cn1_ids = {company_id : country_code != us_code && != 0}",
+      "probe": "mc1 rows for t1_id via movie_companies__movie_id offsets",
+      "type": "semi",
+      "strategy": "bitset_membership",
+      "build_cardinality": 234997,
+      "notes": "Build bitset over company_name rows; check mc1.company_id membership."
+    },
+    {
+      "build": "mc2 rows for t2_id via movie_companies__movie_id offsets",
+      "probe": "company_name (any row, for MIN(cn2.name))",
+      "type": "inner",
+      "strategy": "offsets_walk",
+      "build_cardinality": 1,
+      "notes": "No country filter on cn2; pick any to capture MIN(name)."
+    },
+    {
+      "build": "rating_id (it.info='rating')",
+      "probe": "mi_idx1 via movie_info_idx__movie_id[t1_id] filtered by info_type_id==rating_id",
+      "type": "inner",
+      "strategy": "offsets_walk_then_filter",
+      "build_cardinality": 1
+    },
+    {
+      "build": "rating_id (same)",
+      "probe": "mi_idx2 via movie_info_idx__movie_id[t2_id] filtered by info_type_id==rating_id AND info < '3.5'",
+      "type": "inner",
+      "strategy": "offsets_walk_then_filter",
+      "build_cardinality": 1,
+      "notes": "Byte-wise lex compare on info varlen."
+    }
+  ],
+  "filters": [
+    {"table": "company_name (cn1)", "predicate": "country_code != '[us]' AND country_code != 0", "selectivity": 0.5},
+    {"table": "info_type", "predicate": "info = 'rating'", "selectivity": 0.0088},
+    {"table": "kind_type", "predicate": "kind IN ('tv series','episode')", "selectivity": 0.286},
+    {"table": "link_type", "predicate": "link IN ('sequel','follows','followed by')", "selectivity": 0.167},
+    {"table": "title (t1)", "predicate": "kind_id IN kt_ids", "selectivity": 0.3},
+    {"table": "title (t2)", "predicate": "kind_id IN kt_ids AND production_year BETWEEN 2000 AND 2010", "selectivity": 0.1},
+    {"table": "movie_info_idx (mi_idx2)", "predicate": "info_type_id=rating_id AND info < '3.5' (lex)", "selectivity": 0.15}
+  ],
+  "data_structures": {
+    "cn1_bitset": "bitset(234998) indexed by company_id",
+    "kt_title_bitmap": "bitset(2528313) indexed by title_id (pre-built from title__kind_id CSR over kt_ids)",
+    "lt_ids": "flat_array<int32> (<=3)",
+    "kt_ids": "flat_array<int32> (==2)",
+    "rating_id": "scalar int32",
+    "us_code": "scalar int16",
+    "aggregation": "six scalar MIN holders (string_view + owned-min materialized at end)"
+  },
+  "parallelism": {
+    "strategy": "single_thread",
+    "threads": 1,
+    "notes": "Driver cardinality (ml rows after lt filter) is small (few hundred to few thousand); single-thread avoids sync overhead. Pre-build of kt_title_bitmap and cn1_bitset is O(N) sequential scans, also single-threaded."
+  },
+  "indexes": [
+    {"index": "movie_link__link_type_id (CSR)", "purpose": "driver: iterate ml rows by lt_id"},
+    {"index": "title__kind_id (CSR)", "purpose": "pre-build kt_title bitmap"},
+    {"index": "movie_companies__movie_id (offsets_only)", "purpose": "walk mc1[t1_id] and mc2[t2_id]"},
+    {"index": "movie_info_idx__movie_id (offsets_only)", "purpose": "walk mi_idx1[t1_id] and mi_idx2[t2_id]"}
+  ],
+  "aggregation": "scalar_min_six",
+  "output": {"order_by": [], "limit": 1},
+  "execution_target": "cpp"
+}

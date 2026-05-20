@@ -1,0 +1,61 @@
+{
+  "compile": {
+    "status": "pass"
+  },
+  "run": {
+    "status": "pass",
+    "duration_ms": 102
+  },
+  "validation": {
+    "status": "fail",
+    "details": {
+      "match": false,
+      "queries": {
+        "Q18c": {
+          "rows_expected": 1,
+          "rows_actual": 1,
+          "match": false,
+          "error": "1 row(s) differ",
+          "sample_mismatches": [
+            {
+              "row": 0,
+              "expected": [
+                "Action",
+                "10.00",
+                "#PostModem"
+              ],
+              "actual": [
+                "Action",
+                "10.00",
+                "$lowdown"
+              ],
+              "cell_details": [
+                {
+                  "expected": "#PostModem",
+                  "actual": "$lowdown",
+                  "pattern": "string_mismatch",
+                  "col": 2
+                }
+              ]
+            }
+          ],
+          "mismatch_patterns": {
+            "string_mismatch": 1
+          }
+        }
+      }
+    }
+  },
+  "optimization_target": "hot",
+  "timing_ms": 73.23333333333333,
+  "hot_timing_ms": 73.23333333333333,
+  "operation_timings": {
+    "data_loading": 0.75,
+    "resolve_constants": 0,
+    "scan_movie_info_genres_filter": 50.77,
+    "build_movie_set_T": 3.91,
+    "main_scan": 14.14,
+    "output": 0.07,
+    "total": 73.17
+  }
+}

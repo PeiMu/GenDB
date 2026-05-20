@@ -1,0 +1,103 @@
+{
+  "query_id": "Q14a",
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 137.8033333333333,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 137.8033333333333,
+      "validation": "pass",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "data_loading": 130.32,
+        "main_scan": 2.1,
+        "output": 0.08,
+        "total": 136.88
+      }
+    },
+    {
+      "iteration": 1,
+      "improved": true,
+      "categories": [],
+      "timing_ms": 132.39333333333332,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 132.39333333333332,
+      "validation": "pass",
+      "strategy": "",
+      "operation_timings": {
+        "data_loading": 124.19,
+        "main_scan": 2.31,
+        "output": 0.11,
+        "total": 131.01
+      }
+    },
+    {
+      "iteration": 2,
+      "improved": false,
+      "categories": [],
+      "timing_ms": 133.40333333333334,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 133.40333333333334,
+      "validation": "pass",
+      "strategy": "",
+      "operation_timings": {
+        "data_loading": 125.12,
+        "main_scan": 2.49,
+        "output": 0.08,
+        "total": 132.06
+      }
+    },
+    {
+      "iteration": 3,
+      "improved": false,
+      "categories": [],
+      "timing_ms": 134.30666666666664,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 134.30666666666664,
+      "validation": "pass",
+      "strategy": "",
+      "operation_timings": {
+        "data_loading": 125.32,
+        "main_scan": 2.31,
+        "output": 0.08,
+        "total": 132.1
+      }
+    },
+    {
+      "iteration": 4,
+      "improved": false,
+      "categories": [],
+      "timing_ms": 132.59666666666666,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 132.59666666666666,
+      "validation": "pass",
+      "strategy": "",
+      "operation_timings": {
+        "data_loading": 124.88,
+        "main_scan": 2.22,
+        "output": 0.09,
+        "total": 131.58
+      }
+    },
+    {
+      "iteration": 5,
+      "improved": false,
+      "categories": [],
+      "timing_ms": 133.1233333333333,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 133.1233333333333,
+      "validation": "pass",
+      "strategy": "",
+      "operation_timings": {
+        "data_loading": 124.89,
+        "main_scan": 2.07,
+        "output": 0.08,
+        "total": 131.48
+      }
+    }
+  ]
+}

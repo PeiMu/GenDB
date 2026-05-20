@@ -1,0 +1,74 @@
+{
+  "query_id": "Q12b",
+  "pipeline": [
+    "resolve_dims",
+    "drive_mi_idx_csr",
+    "probe_title",
+    "probe_movie_info",
+    "probe_movie_companies",
+    "aggregate_min"
+  ],
+  "join_order": [
+    {
+      "build": "mi_idx(info_type_id=it2_id)",
+      "probe": "title(via t.id = mid)",
+      "type": "inner",
+      "strategy": "csr_index_drive",
+      "build_cardinality": 5000,
+      "notes": "Drive from movie_info_idx CSR on info_type_id; 'bottom 10 rank' is extremely rare"
+    },
+    {
+      "build": "title(filtered: py>2000 AND LIKE)",
+      "probe": "movie_info(via movie_id offsets)",
+      "type": "inner",
+      "strategy": "offsets_index_scan",
+      "build_cardinality": 500,
+      "notes": "For each surviving mid, scan mi rows by movie_id offsets, filter info_type_id==it1_id"
+    },
+    {
+      "build": "title(filtered)",
+      "probe": "movie_companies(via movie_id offsets)",
+      "type": "inner",
+      "strategy": "offsets_index_scan",
+      "build_cardinality": 500,
+      "notes": "For each surviving mid, scan mc rows by movie_id offsets, filter company_type_id in CT, then check company_name.country_code"
+    }
+  ],
+  "filters": [
+    {"table": "company_name", "predicate": "country_code == us_code", "selectivity": 0.4},
+    {"table": "company_type", "predicate": "kind IN ('production companies','distributors')", "selectivity": 0.5},
+    {"table": "info_type", "predicate": "info == 'budget'", "selectivity": 0.009},
+    {"table": "info_type", "predicate": "info == 'bottom 10 rank'", "selectivity": 0.009},
+    {"table": "title", "predicate": "production_year > 2000 (non-NULL)", "selectivity": 0.25},
+    {"table": "title", "predicate": "title LIKE 'Birdemic%' OR title LIKE '%Movie%'", "selectivity": 0.01},
+    {"table": "movie_info_idx", "predicate": "info_type_id == it2_id", "selectivity": 0.004}
+  ],
+  "data_structures": {
+    "ct_set": "flat_array(int32, <=2 ids)",
+    "dim_scalars": "int32 (us_code, it1_id, it2_id)",
+    "mi_idx_drive": "csr(movie_info_idx__info_type_id)",
+    "mi_probe": "offsets_only(movie_info__movie_id)",
+    "mc_probe": "offsets_only(movie_companies__movie_id)",
+    "aggregation": "scalar_min_bytes (MIN(mi.info), MIN(t.title))"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "morsel_axis": "mi_idx CSR rowid range [lo,hi) for it2_id; per-thread local mins, merged at end"
+  },
+  "indexes": [
+    {"index": "movie_info_idx__info_type_id", "purpose": "drive: enumerate mi_idx rows for 'bottom 10 rank'"},
+    {"index": "movie_info__movie_id", "purpose": "join_lookup: probe mi rows for candidate movie ids"},
+    {"index": "movie_companies__movie_id", "purpose": "join_lookup: probe mc rows for candidate movie ids"}
+  ],
+  "aggregation": "scalar_min",
+  "output": {"projection": ["MIN(mi.info) AS budget", "MIN(t.title) AS unsuccsessful_movie"], "limit": 1},
+  "execution_target": "cpp",
+  "notes": [
+    "Resolve us_code from cn.country_code dict; resolve it1_id ('budget'), it2_id ('bottom 10 rank') from info_type.info varlen; resolve CT ids from company_type.kind varlen.",
+    "For each mid (title row index = mid-1): check py != INT32_MIN && py > 2000; check title bytes via len-prune + memcmp for 'Birdemic' prefix OR memmem for 'Movie' substring.",
+    "Only after title filter passes, probe mi offsets to find any row with info_type_id==it1_id capturing mi.info; and probe mc offsets to find any row with company_type_id in CT and cn.country_code[company_id-1]==us_code.",
+    "Both probes must produce at least one qualifying row (inner join). For MIN(mi.info), capture every qualifying mi.info to fold into running MIN; MIN(t.title) folds when both side existence checks succeed.",
+    "Lexicographic MIN over byte strings (length-then-bytes or full memcmp per implementation)."
+  ]
+}

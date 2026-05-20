@@ -1,0 +1,24 @@
+{
+  "query_id": "Q5c",
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 22.149999999999995,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 22.149999999999995,
+      "validation": "pass",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "resolve_ct": 0.04,
+        "data_loading": 0.37,
+        "main_scan": 16.48,
+        "output": 1.42,
+        "total": 18.33
+      }
+    }
+  ]
+}

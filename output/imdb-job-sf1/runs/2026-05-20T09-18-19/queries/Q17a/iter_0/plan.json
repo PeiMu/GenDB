@@ -1,0 +1,143 @@
+{
+  "query_id": "Q17a",
+  "summary": "Keyword 'character-name-in-title' is extremely selective (10 mk rows, 10 unique movies). Drive from mk CSR, intersect with US-company movies, probe cast_info, look up name LIKE 'B%'. Whole probe pipeline is tiny; only the b_prefix scan over 4.17M names is non-trivial.",
+  "sampled_cardinalities": {
+    "k_id_0based": 116,
+    "us_code_dict_index": 1,
+    "us_companies": 9775,
+    "b_prefix_names": 343399,
+    "mk_rows_for_keyword": 10,
+    "unique_movies_after_keyword": 10,
+    "movies_with_us_company_and_keyword": 1,
+    "ci_rows_scanned": 72,
+    "b_prefix_ci_matches": 9
+  },
+  "pipeline": [
+    "resolve_dict_ids",
+    "build_b_prefix_bitset",
+    "scan_mk_csr_for_keyword",
+    "dedup_movies",
+    "probe_mc_for_us_company",
+    "probe_ci_for_b_prefix_person",
+    "min_aggregate_name"
+  ],
+  "resolve_constants": [
+    {
+      "name": "k_id",
+      "source": "keyword/keyword.off + keyword/keyword.dat",
+      "method": "linear scan; match exact bytes 'character-name-in-title' (length 23)",
+      "expected_value_0based": 116
+    },
+    {
+      "name": "us_code",
+      "source": "company_name/country_code.dict.off + .dict.dat",
+      "method": "linear scan; match exact bytes '[us]' (length 4); result is int16 dict id",
+      "expected_value": 1
+    }
+  ],
+  "filters": [
+    {"table": "keyword", "predicate": "keyword = 'character-name-in-title'", "selectivity": "1/134170", "applied_via": "constant resolution"},
+    {"table": "company_name", "predicate": "country_code = '[us]'", "selectivity": 0.0416, "applied_via": "direct int16 compare against us_code on cn.country_code[cid-1]"},
+    {"table": "name", "predicate": "name LIKE 'B%'", "selectivity": 0.0824, "applied_via": "precomputed uint8 b_prefix array indexed by id-1; check 1st byte == 'B'"}
+  ],
+  "join_order": [
+    {
+      "step": 1,
+      "build": "k_id (scalar)",
+      "probe": "movie_keyword via CSR _idx/movie_keyword__keyword_id__{offsets,rowids}.bin",
+      "type": "semi",
+      "strategy": "csr_lookup",
+      "build_cardinality": 1,
+      "output_cardinality_est": 10,
+      "notes": "single CSR slice; load movie_keyword/movie_id.bin and gather mk_mv[rowid] for each rowid in [lo,hi)"
+    },
+    {
+      "step": 2,
+      "build": "movie set from step 1",
+      "probe": "self (dedup)",
+      "type": "semi",
+      "strategy": "small_unordered_set_or_sort_unique",
+      "build_cardinality": 10,
+      "output_cardinality_est": 10,
+      "notes": "tiny; use std::vector + std::sort + std::unique, or a small hash set"
+    },
+    {
+      "step": 3,
+      "build": "company_name.country_code (full array as filter)",
+      "probe": "movie_companies via offsets_only _idx/movie_companies__movie_id__offsets.bin, then mc.company_id[r]",
+      "type": "semi",
+      "strategy": "offsets_lookup_with_inline_filter",
+      "build_cardinality": 234997,
+      "output_cardinality_est": 1,
+      "notes": "for each candidate movie mv, iterate mc rows [mc_off[mv-1], mc_off[mv]); break on first cid whose cn_cc[cid-1]==us_code"
+    },
+    {
+      "step": 4,
+      "build": "b_prefix bitset over names (size 4167491 bytes)",
+      "probe": "cast_info via offsets_only _idx/cast_info__movie_id__offsets.bin, then ci.person_id[r]",
+      "type": "semi_then_lookup",
+      "strategy": "offsets_lookup_with_bitset_check",
+      "build_cardinality": 4167491,
+      "output_cardinality_est": 9,
+      "notes": "for each surviving mv, iterate ci rows; for each person_id pid, if b_prefix[pid-1] then load n.name[pid-1] and update MIN"
+    }
+  ],
+  "data_structures": {
+    "k_id": "int32 scalar",
+    "us_code": "int16 scalar",
+    "b_prefix": "std::vector<uint8_t> of size 4167491 (one byte per name, value = (name_off[i+1]-name_off[i] >= 1 && name_dat[name_off[i]] == 'B'))",
+    "cn_cc": "mmapped int16 array (234997) — random access by company_id-1",
+    "mk_k_off": "mmapped int32 array (134171) — CSR offsets keyed by k_id",
+    "mk_k_row": "mmapped int32 array (4523930) — CSR row ids",
+    "mk_mv": "mmapped int32 array (4523930) — movie_keyword.movie_id.bin",
+    "mc_mv_off": "mmapped int32 array (2528314) — offsets_only per movie_id",
+    "mc_cid": "mmapped int32 array (2609129) — movie_companies.company_id",
+    "ci_mv_off": "mmapped int32 array (2528314) — offsets_only per movie_id",
+    "ci_pid": "mmapped int32 array (36244344) — cast_info.person_id",
+    "candidate_movies": "small std::vector<int32_t>; sort+unique in place (cap ~10)",
+    "min_name": "std::string (held as std::string_view during scan, materialized at the end)"
+  },
+  "parallelism": {
+    "strategy": "partial_parallel",
+    "threads": "auto(nproc)",
+    "details": [
+      "Parallelize the b_prefix build over 4.17M names using a parallel for over equal row ranges (12 threads). This is the dominant scan.",
+      "All other steps (10 movies after keyword filter) are trivially sequential — DO NOT spawn threads for them."
+    ]
+  },
+  "indexes": [
+    {"index": "_idx/movie_keyword__keyword_id__{offsets,rowids}.bin", "purpose": "join_lookup: CSR slice for k_id"},
+    {"index": "_idx/movie_companies__movie_id__offsets.bin", "purpose": "join_lookup: offsets_only per movie"},
+    {"index": "_idx/cast_info__movie_id__offsets.bin", "purpose": "join_lookup: offsets_only per movie"}
+  ],
+  "aggregation": {
+    "type": "scalar_min",
+    "expression": "MIN(n.name)",
+    "implementation": "Track current minimum as std::string (or std::string_view referencing mmapped name.dat). On each match, compare candidate name bytes via std::string_view::compare; replace if smaller. Both output columns (member_in_charnamed_american_movie, a1) emit the same MIN value.",
+    "notes": "Both projected columns are MIN(n.name); compute once, project twice."
+  },
+  "output": {
+    "columns": [
+      {"name": "member_in_charnamed_american_movie", "source": "min_name"},
+      {"name": "a1", "source": "min_name"}
+    ],
+    "order_by": [],
+    "limit": null,
+    "row_count_est": 1
+  },
+  "execution_target": "cpp",
+  "memory_budget_bytes": {
+    "b_prefix": 4167491,
+    "candidate_movies": 80,
+    "mmap_only_arrays": "no resident-set growth; OS page cache",
+    "total_resident_est_mb": 5
+  },
+  "implementation_notes": [
+    "Skip all unnecessary work: do NOT materialize movie sets via hash maps — use a small sorted vector (size ~10).",
+    "Break out of mc loop on first US-company hit (semi-join).",
+    "For ci probe, do NOT break — must find min over all matching B-prefix persons.",
+    "Resolve k_id and us_code BEFORE any heavy scan; if either is not found, emit NULL/empty result and exit.",
+    "Use mmap for all *.bin files; avoid copying.",
+    "For MIN comparison, compare raw byte lengths via std::string_view to avoid std::string copies until final emit."
+  ]
+}

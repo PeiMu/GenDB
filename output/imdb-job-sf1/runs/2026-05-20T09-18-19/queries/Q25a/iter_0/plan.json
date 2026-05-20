@@ -1,0 +1,147 @@
+{
+  "query_id": "Q25a",
+  "pipeline": [
+    "resolve_dims",
+    "build_valid_persons_bitset",
+    "driver_scan_title",
+    "probe_mk_range",
+    "probe_mi_idx_range",
+    "probe_mi_range",
+    "probe_ci_range",
+    "name_lookup",
+    "aggregate_min"
+  ],
+  "pre_pass": [
+    {
+      "step": "resolve_it1_id",
+      "table": "info_type",
+      "predicate": "info = 'genres'",
+      "output": "int32 it1_id",
+      "expected_cardinality": 1
+    },
+    {
+      "step": "resolve_it2_id",
+      "table": "info_type",
+      "predicate": "info = 'votes'",
+      "output": "int32 it2_id",
+      "expected_cardinality": 1
+    },
+    {
+      "step": "resolve_kw_ids",
+      "table": "keyword",
+      "predicate": "keyword IN ('hero','martial-arts','hand-to-hand-combat')",
+      "output": "flat_hash_set<int32> kw_ids",
+      "expected_cardinality": 3,
+      "notes": "Template parameter set; size <= 5. Small hash set; could be linear scan."
+    },
+    {
+      "step": "resolve_m_code",
+      "table": "name",
+      "predicate": "gender dict lookup for 'm'",
+      "output": "uint8 m_code"
+    },
+    {
+      "step": "build_valid_persons",
+      "table": "name",
+      "predicate": "gender_bin[i] == m_code",
+      "output": "bitset valid_persons[4167491]",
+      "parallel": true,
+      "notes": "Dense bitset over name PK (1-indexed)."
+    }
+  ],
+  "join_order": [
+    {
+      "build": "title_driver",
+      "probe": "movie_keyword(range by movie_id)",
+      "type": "semi",
+      "strategy": "offsets_only_range_scan + hash_set_membership",
+      "filter": "kw_ids.contains(mk.keyword_id)",
+      "build_cardinality": 2528312,
+      "notes": "Cheapest filter first: 3/134170 keyword ids very selective."
+    },
+    {
+      "build": "title_driver(survives_mk)",
+      "probe": "movie_info_idx(range by movie_id)",
+      "type": "semi",
+      "strategy": "offsets_only_range_scan + equality_filter",
+      "filter": "info_type_id == it2_id",
+      "notes": "~1/113 of mi_idx rows match votes info_type."
+    },
+    {
+      "build": "title_driver(survives_mk_mi_idx)",
+      "probe": "movie_info(range by movie_id)",
+      "type": "semi",
+      "strategy": "offsets_only_range_scan + equality_filter + hash_set_membership",
+      "filter": "info_type_id == it1_id AND info ∈ {Horror,Action,Sci-Fi,Thriller,Crime,War}",
+      "notes": "Two-stage filter: cheap int compare first, then string set check."
+    },
+    {
+      "build": "title_driver(survives_mk_mi_idx_mi)",
+      "probe": "cast_info(range by movie_id)",
+      "type": "semi",
+      "strategy": "offsets_only_range_scan + hash_set_membership + bitset_probe",
+      "filter": "note ∈ writer_set AND valid_persons[person_id-1]",
+      "notes": "Writer set: 5 literals via flat_hash_set<string_view> with length prefilter. Bitset probe O(1)."
+    },
+    {
+      "build": "ci.person_id",
+      "probe": "name",
+      "type": "inner",
+      "strategy": "direct_pk_lookup",
+      "notes": "name.off[person_id-1..person_id] for MIN(n.name)."
+    }
+  ],
+  "filters": [
+    {"table": "info_type", "predicate": "info = 'genres'", "selectivity": 0.0088},
+    {"table": "info_type", "predicate": "info = 'votes'", "selectivity": 0.0088},
+    {"table": "keyword", "predicate": "keyword IN (3 literals)", "selectivity": 0.0000224},
+    {"table": "name", "predicate": "gender = 'm'", "selectivity": 0.55},
+    {"table": "movie_keyword", "predicate": "keyword_id ∈ kw_ids", "selectivity": 0.00003},
+    {"table": "movie_info_idx", "predicate": "info_type_id = it2_id", "selectivity": 0.36},
+    {"table": "movie_info", "predicate": "info_type_id = it1_id AND info ∈ 6-set", "selectivity": 0.04},
+    {"table": "cast_info", "predicate": "note ∈ writer_set", "selectivity": 0.03}
+  ],
+  "data_structures": {
+    "it1_id": "int32 scalar",
+    "it2_id": "int32 scalar",
+    "kw_ids": "flat_hash_set<int32> (size=3)",
+    "writer_notes": "flat_hash_set<string_view> (size=5) with length prefilter",
+    "mi_info_set": "flat_hash_set<string_view> (size=6) with length prefilter",
+    "valid_persons": "std::vector<uint64_t> bitset (size=name_rows)",
+    "mk_offsets": "mmap int32[2528314] (movie_keyword__movie_id__offsets.bin)",
+    "mi_idx_offsets": "mmap int32[2528314] (movie_info_idx__movie_id__offsets.bin)",
+    "mi_offsets": "mmap int32[2528314] (movie_info__movie_id__offsets.bin)",
+    "ci_offsets": "mmap int32[2528314] (cast_info__movie_id__offsets.bin)",
+    "aggregation": "4x scalar running mins (movie_budget, movie_votes, male_writer, violent_movie_title)"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven over title PK range",
+    "threads": "auto(nproc)",
+    "morsel_size": 4096,
+    "reduction": "per-thread local 4-tuple of running MINs; final reduce across threads",
+    "notes": "12-core HDD machine; sequential offset-driven probes give good locality."
+  },
+  "indexes": [
+    {"index": "movie_keyword__movie_id__offsets", "purpose": "range_scan_for_movie"},
+    {"index": "movie_info_idx__movie_id__offsets", "purpose": "range_scan_for_movie"},
+    {"index": "movie_info__movie_id__offsets", "purpose": "range_scan_for_movie"},
+    {"index": "cast_info__movie_id__offsets", "purpose": "range_scan_for_movie"},
+    {"index": "name.off (dense PK)", "purpose": "name string lookup by person_id"}
+  ],
+  "aggregation": "scalar_min_4tuple",
+  "output": {
+    "projections": [
+      "MIN(mi.info) AS movie_budget",
+      "MIN(mi_idx.info) AS movie_votes",
+      "MIN(n.name) AS male_writer",
+      "MIN(t.title) AS violent_movie_title"
+    ],
+    "order_by": [],
+    "limit": null
+  },
+  "short_circuit": {
+    "per_movie": "skip remaining fact probes once any required side has zero matches; only accumulate MINs after all four fact predicates have at least one matching row for this movie",
+    "notes": "For each title v, evaluate cheapest-first (mk, mi_idx, mi, ci). If any returns empty set, continue to next v. If all non-empty, iterate cross-product of survivors per-table to update running MINs."
+  },
+  "execution_target": "cpp"
+}

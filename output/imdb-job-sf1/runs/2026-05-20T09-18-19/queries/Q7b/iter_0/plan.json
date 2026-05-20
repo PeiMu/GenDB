@@ -1,0 +1,110 @@
+{
+  "query_id": "Q7b",
+  "pipeline": [
+    "resolve_dim_codes",
+    "driver_person_info_slice",
+    "filter_note_volker_boehm",
+    "filter_name_pcode_cf_D",
+    "filter_gender_m",
+    "semi_join_aka_name_like_a",
+    "expand_cast_info_by_pid",
+    "filter_title_year_1980_1984",
+    "expand_movie_link_by_tid",
+    "filter_link_type_features",
+    "min_aggregate"
+  ],
+  "join_order": [
+    {
+      "build": "info_type(info='mini biography')",
+      "probe": "person_info via person_info__info_type_id CSR",
+      "type": "inner",
+      "strategy": "direct_array",
+      "build_cardinality": 1,
+      "notes": "scan info_type 113 rows to resolve target_it_id; CSR slice yields pi rows"
+    },
+    {
+      "build": "pi rows with note='Volker Boehm'",
+      "probe": "name (id == pid)",
+      "type": "inner",
+      "strategy": "direct_array",
+      "build_cardinality": 5,
+      "notes": "pi.note='Volker Boehm' is very rare; expect tiny number of pids; lookup name attrs directly by pid-1"
+    },
+    {
+      "build": "surviving pids (gender='m' AND name_pcode_cf LIKE 'D%')",
+      "probe": "aka_name via aka_name__person_id offsets-only",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 5,
+      "notes": "for each pid, scan aka_name rows in pid range and test name LIKE '%a%' via memmem; first hit qualifies"
+    },
+    {
+      "build": "qualified pids",
+      "probe": "cast_info via cast_info__person_id CSR",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 5,
+      "notes": "expand to t_id list"
+    },
+    {
+      "build": "t_id (production_year in [1980,1984])",
+      "probe": "title.production_year",
+      "type": "inner",
+      "strategy": "direct_array",
+      "build_cardinality": 1,
+      "notes": "year filter via direct lookup title.production_year[t_id-1]"
+    },
+    {
+      "build": "link_type(link='features')",
+      "probe": "movie_link via movie_link__linked_movie_id CSR + link_type_id == target_lt_id",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 1,
+      "notes": "scan link_type 18 rows to resolve target_lt_id; CSR slice on t_id, filter ml.link_type_id"
+    }
+  ],
+  "filters": [
+    {"table": "info_type", "predicate": "info = 'mini biography'", "selectivity": 0.0088},
+    {"table": "link_type", "predicate": "link = 'features'", "selectivity": 0.0556},
+    {"table": "person_info", "predicate": "info_type_id == target_it_id", "selectivity": 0.05},
+    {"table": "person_info", "predicate": "note = 'Volker Boehm'", "selectivity": 0.00001},
+    {"table": "name", "predicate": "name_pcode_cf LIKE 'D%'", "selectivity": 0.04},
+    {"table": "name", "predicate": "gender = 'm'", "selectivity": 0.55},
+    {"table": "aka_name", "predicate": "name LIKE '%a%'", "selectivity": 0.85},
+    {"table": "title", "predicate": "production_year BETWEEN 1980 AND 1984", "selectivity": 0.025},
+    {"table": "movie_link", "predicate": "link_type_id == target_lt_id", "selectivity": 0.1}
+  ],
+  "data_structures": {
+    "dim_codes": "scalar int32 (target_it_id, target_lt_id)",
+    "gender_code": "scalar int8 (code_m resolved from name/gender.dict)",
+    "pid_set": "std::vector<int32_t> (very small, ~5)",
+    "tid_set": "std::vector<int32_t> (small, expanded from ci CSR)",
+    "aggregation": "two scalars: min_name (string_view), min_title (string_view)"
+  },
+  "parallelism": {
+    "strategy": "single_threaded",
+    "threads": 1,
+    "notes": "driver cardinality ~5 pids after note filter; no benefit from parallelism, sync overhead would dominate"
+  },
+  "indexes": [
+    {"index": "person_info__info_type_id", "purpose": "join_lookup: enumerate pi rows with target info type"},
+    {"index": "aka_name__person_id", "purpose": "join_lookup: enumerate aka rows per pid for semi-join"},
+    {"index": "cast_info__person_id", "purpose": "join_lookup: enumerate ci rows per pid"},
+    {"index": "movie_link__linked_movie_id", "purpose": "join_lookup: enumerate ml rows per t_id"}
+  ],
+  "aggregation": "scalar_min (two MIN aggregates, no GROUP BY)",
+  "output": {"order_by": [], "limit": null, "projections": ["MIN(n.name)", "MIN(t.title)"]},
+  "execution_target": "cpp",
+  "implementation_notes": [
+    "Resolve target_it_id by scanning info_type/info.off+dat for 'mini biography' (length 14).",
+    "Resolve target_lt_id by scanning link_type/link.off+dat for 'features' (length 8).",
+    "Resolve code_m from name/gender.dict.off+dat.",
+    "Driver path: for j in [pi_it_off[target_it_id], pi_it_off[target_it_id+1]): pi_row = pi_it_rowids[j]; check pi.note length==12 && memcmp=='Volker Boehm'; pid = pi_person_id[pi_row].",
+    "Per pid: check name.name_pcode_cf[pid-1] starts with 'D' via off/dat; check name.gender[pid-1] == code_m.",
+    "Per surviving pid: aka semi-join: scan an rows in [an_off[pid], an_off[pid+1]) for any aka_name.name containing 'a'; break on first hit.",
+    "Per qualified pid: enumerate ci rows from cast_info__person_id CSR; t_id = ci_movie_id[ci_row].",
+    "Per t_id: check production_year[t_id-1] in [1980,1984] and != INT32_MIN.",
+    "Per matched t_id: enumerate ml rows from movie_link__linked_movie_id CSR; if ml.link_type_id[ml_row] == target_lt_id, fold n.name and t.title into MIN aggregates.",
+    "Maintain min_name and min_title as best string_view seen; compare via lexicographic comparison of (length, bytes)."
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "timestamp": "2026-05-20T09-00-07",
+  "startedAt": "2026-05-20T09:00:07.918Z",
+  "status": "failed",
+  "dataDir": "/home/pei/Project/GenDB/benchmarks/imdb-job/data/sf1",
+  "gendbDir": "/home/pei/Project/GenDB/output/imdb-job-sf1/storage",
+  "scaleFactor": 1,
+  "maxIterations": 5,
+  "model": "opus",
+  "agentProvider": "claude-code",
+  "optimizationTarget": "hot",
+  "phase1": {
+    "status": "failed",
+    "steps": {
+      "workload_analysis": {
+        "status": "failed",
+        "startedAt": "2026-05-20T09:00:07.965Z"
+      },
+      "storage_design": {
+        "status": "pending"
+      },
+      "data_ingestion": {
+        "status": "pending"
+      },
+      "index_building": {
+        "status": "pending"
+      }
+    }
+  },
+  "completedAt": "2026-05-20T09:04:04.003Z",
+  "error": "Workload analysis failed — could not read/parse workload_analysis.json."
+}

@@ -1,0 +1,99 @@
+{
+  "query_id": "Q23b",
+  "pipeline": [
+    "resolve_dims",
+    "scan_title_driver",
+    "probe_cc_via_offsets",
+    "probe_mk_via_offsets",
+    "probe_mc_via_offsets",
+    "probe_mi_via_offsets",
+    "aggregate_min"
+  ],
+  "dim_resolution": [
+    {"table": "comp_cast_type", "filter": "kind = 'complete+verified'", "output": "cct1_id (int32)"},
+    {"table": "company_name", "filter": "country_code = '[us]'", "output": "us_code_id (int32 dict id)"},
+    {"table": "info_type", "filter": "info = 'release dates'", "output": "it1_id (int32)"},
+    {"table": "kind_type", "filter": "kind = 'movie'", "output": "kt_id (int32), kt_kind_str = 'movie'"},
+    {"table": "keyword", "filter": "keyword IN ('nerd','loner','alienation','dignity')", "output": "kw_ids (flat_hash_set<int32_t>, ~4 entries)"}
+  ],
+  "driver": {
+    "table": "title",
+    "filters": ["kind_id == kt_id", "production_year > 2000"],
+    "estimated_survivors": 600000,
+    "parallel": true
+  },
+  "join_order": [
+    {
+      "build": "cct1_id (scalar)",
+      "probe": "complete_cast via offsets[movie_id]",
+      "type": "semi",
+      "strategy": "index_nested_loop + scalar_filter",
+      "build_cardinality": 1,
+      "notes": "Use complete_cast__movie_id offsets; keep title row if any cc.status_id == cct1_id. Highly selective."
+    },
+    {
+      "build": "kw_ids (flat_hash_set, ~4)",
+      "probe": "movie_keyword via offsets[movie_id]",
+      "type": "semi",
+      "strategy": "index_nested_loop + hash_set_lookup",
+      "build_cardinality": 4,
+      "notes": "Keep title row if any mk.keyword_id in kw_ids. Very selective (4/134170 keywords)."
+    },
+    {
+      "build": "company_name.country_code precomputed bitset[cn_id-1] == us_code",
+      "probe": "movie_companies via offsets[movie_id]",
+      "type": "semi",
+      "strategy": "index_nested_loop + direct_array_lookup",
+      "build_cardinality": 234997,
+      "notes": "Precompute bitset<234997> us_company_ids from company_name. Keep title row if any mc with us_company_ids[mc.company_id-1]. ct join is trivial (ct.id present for all). No ct filter."
+    },
+    {
+      "build": "it1_id (scalar) + LIKE patterns",
+      "probe": "movie_info via offsets[movie_id]",
+      "type": "semi",
+      "strategy": "index_nested_loop + scalar_filter + memcmp/memmem",
+      "build_cardinality": 1,
+      "notes": "Filter mi.info_type_id == it1_id; mi.note memmem('internet'); mi.info memcmp prefix 'USA:' + memmem(' 200'). Most expensive predicate — placed last."
+    }
+  ],
+  "filters": [
+    {"table": "title", "predicate": "production_year > 2000", "selectivity": 0.35},
+    {"table": "title", "predicate": "kind_id == kt_id (movie)", "selectivity": 0.70},
+    {"table": "complete_cast", "predicate": "status_id == cct1_id", "selectivity": 0.5},
+    {"table": "movie_keyword", "predicate": "keyword_id in kw_ids (4 ids)", "selectivity": 0.0001},
+    {"table": "movie_companies", "predicate": "country_code[company_id-1] == us_code", "selectivity": 0.5},
+    {"table": "movie_info", "predicate": "info_type_id == it1_id", "selectivity": 0.05},
+    {"table": "movie_info", "predicate": "note LIKE '%internet%'", "selectivity": 0.005},
+    {"table": "movie_info", "predicate": "info LIKE 'USA:% 200%'", "selectivity": 0.1}
+  ],
+  "data_structures": {
+    "kw_ids": "flat_hash_set<int32_t> (size ~4)",
+    "us_company_ids": "std::vector<uint8_t> bitset sized 234997 (1 byte per company), set where country_code dict id == us_code",
+    "title_driver": "morsel-parallel scan, no materialization; each thread tracks local (min_title)",
+    "aggregation": "scalar min reduction (MIN(kt.kind) is constant 'movie'; MIN(t.title) reduced per-thread then merged)"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "morsel_size": 65536,
+    "notes": "Parallel scan over title rows; per-thread local min, final reduction"
+  },
+  "indexes": [
+    {"index": "complete_cast__movie_id (offsets_only)", "purpose": "join_lookup cc by movie_id"},
+    {"index": "movie_keyword__movie_id (offsets_only)", "purpose": "join_lookup mk by movie_id"},
+    {"index": "movie_companies__movie_id (offsets_only)", "purpose": "join_lookup mc by movie_id"},
+    {"index": "movie_info__movie_id (offsets_only)", "purpose": "join_lookup mi by movie_id"}
+  ],
+  "aggregation": "scalar_min_reduction",
+  "output": {
+    "select": ["MIN(kt.kind) AS movie_kind", "MIN(t.title) AS complete_nerdy_internet_movie"],
+    "order_by": [],
+    "limit": null,
+    "notes": "MIN(kt.kind) is constant 'movie' (since kt filter resolves to single row); only MIN(t.title) needs per-thread tracking."
+  },
+  "early_termination": {
+    "enabled": true,
+    "notes": "For each surviving title, break out of fact-table probes as soon as a single matching row found (semi-join short-circuit)."
+  },
+  "execution_target": "cpp"
+}

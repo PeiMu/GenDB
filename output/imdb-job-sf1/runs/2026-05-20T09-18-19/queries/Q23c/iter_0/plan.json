@@ -1,0 +1,101 @@
+{
+  "query_id": "Q23c",
+  "pipeline": [
+    "resolve_dims",
+    "scan_title_driver",
+    "probe_cc_offsets",
+    "probe_mk_offsets",
+    "probe_mc_offsets_us",
+    "probe_mi_offsets_filtered",
+    "aggregate_min"
+  ],
+  "startup_resolution": [
+    {"name": "cct1_id", "source": "comp_cast_type", "predicate": "kind = 'complete+verified'", "expected_rows": 1},
+    {"name": "us_code", "source": "company_name.country_code dictionary", "predicate": "code = '[us]'", "expected_rows": 1, "notes": "Resolve dictionary code id; then country_code[company_id-1] == us_code probe is O(1)."},
+    {"name": "it1_id", "source": "info_type", "predicate": "info = 'release dates'", "expected_rows": 1},
+    {"name": "kt_ids", "source": "kind_type", "predicate": "kind IN ('movie','tv movie','video movie','video game')", "expected_rows": 4, "structure": "flat_array<int32_t,4> + small lookup table indexed by kind_id (kt rows = 7) mapping kind_id -> kt.kind string for MIN projection"}
+  ],
+  "join_order": [
+    {
+      "build": "title(filtered by kt_ids AND production_year>1990)",
+      "probe": "driver_scan",
+      "type": "driver",
+      "strategy": "sequential_scan",
+      "build_cardinality": 2528312,
+      "notes": "Driver. Estimated surviving titles ~1.0M (4 of 7 kinds ~ wide; year>1990 keeps majority)."
+    },
+    {
+      "build": "complete_cast (filtered status_id == cct1_id)",
+      "probe": "title_survivor.id",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 135086,
+      "notes": "Use complete_cast__movie_id offsets[v..v+1]. Inside the range filter status_id==cct1_id. Existence required."
+    },
+    {
+      "build": "movie_keyword",
+      "probe": "title_survivor.id",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 4523930,
+      "notes": "Existence only (no k.keyword predicate). Use movie_keyword__movie_id offsets; first hit short-circuits."
+    },
+    {
+      "build": "movie_companies (probe company_name.country_code[company_id-1]==us_code)",
+      "probe": "title_survivor.id",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 2609129,
+      "notes": "Use movie_companies__movie_id offsets. Per fact row check country_code dict code == us_code. company_type filter trivially satisfied (FK valid)."
+    },
+    {
+      "build": "movie_info (filter info_type_id==it1_id AND note LIKE %internet% AND info LIKE 'USA:% 199%' OR 'USA:% 200%')",
+      "probe": "title_survivor.id",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 14835720,
+      "notes": "Use movie_info__movie_id offsets. Order checks: cheap int eq (info_type_id) first, then memcmp 'USA:' prefix on info, then memmem ' 199'/' 200' on info, then memmem 'internet' on note. Short-circuit on first match per movie."
+    }
+  ],
+  "filters": [
+    {"table": "title", "predicate": "kt_ids.contains(kind_id) AND production_year > 1990", "selectivity": 0.40},
+    {"table": "complete_cast", "predicate": "status_id == cct1_id", "selectivity": 0.5},
+    {"table": "movie_companies", "predicate": "country_code[company_id-1] == us_code", "selectivity": 0.5},
+    {"table": "movie_info", "predicate": "info_type_id == it1_id AND note LIKE '%internet%' AND (info LIKE 'USA:% 199%' OR 'USA:% 200%')", "selectivity": 0.0005}
+  ],
+  "data_structures": {
+    "kt_ids": "flat_array<int32_t,4> (linear scan, 4 entries)",
+    "kt_kind_by_id": "flat_array<string_view,8> indexed by kind_id (1..7)",
+    "cn_country_code": "preloaded int16/int32 column array (random access by company_id)",
+    "cc_offsets": "preloaded int32_t[N+1] from complete_cast__movie_id__offsets.bin",
+    "mk_offsets": "preloaded int32_t[N+1] from movie_keyword__movie_id__offsets.bin",
+    "mc_offsets": "preloaded int32_t[N+1] from movie_companies__movie_id__offsets.bin",
+    "mi_offsets": "preloaded int32_t[N+1] from movie_info__movie_id__offsets.bin",
+    "aggregation": "two scalars: min_kt_kind (string_view), min_title (string_view) with thread-local + final reduce"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "morsel_unit": "title row range (e.g., 16384 rows)",
+    "notes": "Each worker holds thread-local (min_kt_kind, min_title); merge at end."
+  },
+  "indexes": [
+    {"index": "complete_cast__movie_id (offsets_only)", "purpose": "join_lookup"},
+    {"index": "movie_keyword__movie_id (offsets_only)", "purpose": "join_lookup"},
+    {"index": "movie_companies__movie_id (offsets_only)", "purpose": "join_lookup"},
+    {"index": "movie_info__movie_id (offsets_only)", "purpose": "join_lookup"}
+  ],
+  "execution_notes": {
+    "per_title_evaluation_order": [
+      "1. Driver filter: kt_ids.contains(kind_id) AND production_year > 1990 (cheap; reject early).",
+      "2. cc existence with status_id == cct1_id (smallest fact table; most selective companion).",
+      "3. mi filter (most selective overall; resolve first among remaining facts).",
+      "4. mc existence with us_code.",
+      "5. mk existence (free; cheapest last to allow earlier rejections)."
+    ],
+    "min_aggregation": "Per surviving title: candidate (kt_kind_by_id[kind_id], title). Update thread-local mins lex-min."
+  },
+  "aggregation": "scalar_min_reduce",
+  "output": {"projections": ["MIN(kt.kind) AS movie_kind", "MIN(t.title) AS complete_us_internet_movie"], "order_by": [], "limit": 1},
+  "execution_target": "cpp"
+}

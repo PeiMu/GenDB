@@ -1,0 +1,127 @@
+{
+  "query_id": "Q21c",
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 13.406666666666666,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 13.406666666666666,
+      "validation": "fail",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "data_loading": 0.18,
+        "resolve_dims": 0.02,
+        "build_cn_bitset": 9.73,
+        "build_seq_movies_bitset": 1,
+        "main_scan": 0.23,
+        "output": 0.04,
+        "total": 12.05
+      }
+    },
+    {
+      "iteration": 1,
+      "improved": true,
+      "categories": [],
+      "timing_ms": 11.950000000000001,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 11.950000000000001,
+      "validation": "fail",
+      "strategy": "",
+      "operation_timings": {
+        "data_loading": 0.18,
+        "resolve_dims": 0.02,
+        "build_cn_bitset": 9.61,
+        "build_seq_movies_bitset": 0.97,
+        "main_scan": 0.22,
+        "output": 0.04,
+        "total": 11.87
+      }
+    },
+    {
+      "iteration": 2,
+      "improved": true,
+      "categories": [],
+      "timing_ms": 11.9,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 11.9,
+      "validation": "fail",
+      "strategy": "",
+      "operation_timings": {
+        "data_loading": 0.18,
+        "resolve_dims": 0.02,
+        "build_cn_bitset": 9.56,
+        "build_seq_movies_bitset": 0.94,
+        "main_scan": 0.22,
+        "output": 0.04,
+        "total": 11.77
+      }
+    },
+    {
+      "iteration": 3,
+      "improved": true,
+      "categories": [
+        "escalation"
+      ],
+      "timing_ms": 11.850000000000001,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 11.850000000000001,
+      "validation": "fail",
+      "strategy": "escalation to opus",
+      "operation_timings": {
+        "data_loading": 0.18,
+        "resolve_dims": 0.02,
+        "build_cn_bitset": 9.61,
+        "build_seq_movies_bitset": 0.91,
+        "main_scan": 0.22,
+        "output": 0.04,
+        "total": 11.83
+      }
+    },
+    {
+      "iteration": 4,
+      "improved": true,
+      "categories": [
+        "escalation"
+      ],
+      "timing_ms": 11.833333333333334,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 11.833333333333334,
+      "validation": "fail",
+      "strategy": "escalation to opus",
+      "operation_timings": {
+        "data_loading": 0.17,
+        "resolve_dims": 0.02,
+        "build_cn_bitset": 9.54,
+        "build_seq_movies_bitset": 0.83,
+        "main_scan": 0.21,
+        "output": 0.03,
+        "total": 11.63
+      }
+    },
+    {
+      "iteration": 5,
+      "improved": false,
+      "categories": [
+        "escalation"
+      ],
+      "timing_ms": 11.843333333333334,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 11.843333333333334,
+      "validation": "fail",
+      "strategy": "escalation to opus",
+      "operation_timings": {
+        "data_loading": 0.18,
+        "resolve_dims": 0.02,
+        "build_cn_bitset": 9.38,
+        "build_seq_movies_bitset": 1.05,
+        "main_scan": 0.25,
+        "output": 0.04,
+        "total": 11.85
+      }
+    }
+  ]
+}

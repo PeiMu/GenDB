@@ -1,0 +1,116 @@
+{
+  "query_id": "Q24b",
+  "pipeline": [
+    "resolve_dims",
+    "prepass_valid_persons",
+    "scan_title_driver",
+    "probe_mc_by_movie",
+    "probe_mk_by_movie",
+    "probe_mi_by_movie",
+    "probe_ci_by_movie",
+    "probe_aka_existence",
+    "fetch_chn_name",
+    "running_min_aggregation"
+  ],
+  "pre_resolution": [
+    {"step": "resolve us_code", "source": "company_name.country_code.dict", "literal": "[us]"},
+    {"step": "resolve target_cn_id", "source": "company_name.name", "literal": "DreamWorks Animation", "result_type": "single_id"},
+    {"step": "verify country_code[target_cn_id-1] == us_code"},
+    {"step": "resolve it_id", "source": "info_type.info", "literal": "release dates"},
+    {"step": "resolve kw_ids", "source": "keyword.keyword", "literals": ["hero","martial-arts","hand-to-hand-combat","computer-animated-movie","kung-fu"], "result_type": "small_set(up_to_5)"},
+    {"step": "resolve rt_id", "source": "role_type.role", "literal": "actress"},
+    {"step": "resolve f_code", "source": "name.gender.dict", "literal": "f"},
+    {"step": "build valid_persons bitset", "source": "name", "predicate": "gender == f_code AND name LIKE '%An%'", "size": 4167491, "method": "memmem on name.dat for 'An'"}
+  ],
+  "join_order": [
+    {
+      "build": "title(prefix='Kung Fu Panda%' AND production_year>2010)",
+      "probe": "title_driver",
+      "type": "filter",
+      "strategy": "sequential_scan_with_prefix_memcmp",
+      "build_cardinality": 10,
+      "notes": "title prefix is 13 bytes; memcmp on title.off|.dat; production_year>2010 second"
+    },
+    {
+      "build": "target_cn_id (single)",
+      "probe": "movie_companies via movie_companies__movie_id offsets",
+      "type": "inner",
+      "strategy": "index_nested_loop_with_scalar_filter",
+      "build_cardinality": 1,
+      "notes": "for each surviving title, scan mc range; require company_id == target_cn_id"
+    },
+    {
+      "build": "kw_ids (5)",
+      "probe": "movie_keyword via movie_keyword__movie_id offsets",
+      "type": "semi",
+      "strategy": "index_nested_loop_with_small_set_check",
+      "build_cardinality": 5,
+      "notes": "exists keyword_id in kw_ids; inline 5-way compare"
+    },
+    {
+      "build": "it_id (single)",
+      "probe": "movie_info via movie_info__movie_id offsets",
+      "type": "inner",
+      "strategy": "index_nested_loop_with_scalar_filter_then_LIKE",
+      "build_cardinality": 1,
+      "notes": "filter info_type_id == it_id, then memcmp prefix Japan:/USA: + memmem '201'"
+    },
+    {
+      "build": "rt_id, valid_persons, voice_note_set",
+      "probe": "cast_info via cast_info__movie_id offsets",
+      "type": "inner",
+      "strategy": "index_nested_loop_multi_filter",
+      "build_cardinality": 1,
+      "notes": "filter role_id == rt_id, valid_persons[person_id-1], note in 4-elem voice set, person_role_id != INT32_MIN"
+    },
+    {
+      "build": "aka_name__person_id offsets",
+      "probe": "ci.person_id",
+      "type": "semi",
+      "strategy": "offsets_existence_check",
+      "build_cardinality": 901343,
+      "notes": "exists if off[pid+1] > off[pid]"
+    },
+    {
+      "build": "char_name.name (direct PK)",
+      "probe": "ci.person_role_id",
+      "type": "inner",
+      "strategy": "direct_array_lookup",
+      "build_cardinality": 3140339,
+      "notes": "chn.name[person_role_id - 1] via off|dat"
+    }
+  ],
+  "filters": [
+    {"table": "title", "predicate": "title LIKE 'Kung Fu Panda%'", "selectivity": 0.000005, "method": "13-byte memcmp"},
+    {"table": "title", "predicate": "production_year > 2010", "selectivity": 0.5, "applied_after_prefix": true},
+    {"table": "company_name", "predicate": "name = 'DreamWorks Animation' AND country_code = '[us]'", "selectivity": "single_id"},
+    {"table": "movie_companies", "predicate": "company_id == target_cn_id", "selectivity": 0.0001},
+    {"table": "movie_keyword", "predicate": "keyword_id IN kw_ids(5)", "selectivity": 0.001},
+    {"table": "movie_info", "predicate": "info_type_id == it_id AND (info LIKE 'Japan:%201%' OR info LIKE 'USA:%201%')", "selectivity": 0.02},
+    {"table": "cast_info", "predicate": "role_id == rt_id AND note IN voice_set AND valid_persons[person_id-1] AND person_role_id != INT32_MIN", "selectivity": 0.001},
+    {"table": "name", "predicate": "gender == f_code AND name LIKE '%An%'", "selectivity": 0.1, "applied_in_prepass": true}
+  ],
+  "data_structures": {
+    "valid_persons": "bitset(4167491)",
+    "kw_ids": "flat_array<int32,5> (linear scan)",
+    "voice_note_set": "inline 4-string switch on note offsets/length",
+    "mc_probe": "scalar_compare(company_id == target_cn_id)",
+    "title_survivors": "small_vector<int32> (~1-10 entries)",
+    "aggregation": "scalar running_min for 3 string columns (compare via off|dat memcmp lexicographic)"
+  },
+  "parallelism": {
+    "strategy": "single_threaded",
+    "threads": 1,
+    "notes": "Driver title scan is 2.5M rows but only memcmp on 13 bytes; output size <10. Parallelism overhead exceeds benefit. Pre-pass valid_persons bitset can optionally be parallel over name rows but cheap."
+  },
+  "indexes": [
+    {"index": "movie_companies__movie_id", "purpose": "join_lookup by t.id"},
+    {"index": "movie_keyword__movie_id", "purpose": "join_lookup by t.id"},
+    {"index": "movie_info__movie_id", "purpose": "join_lookup by t.id"},
+    {"index": "cast_info__movie_id", "purpose": "join_lookup by t.id"},
+    {"index": "aka_name__person_id", "purpose": "semi_join existence by person_id"}
+  ],
+  "aggregation": "scalar_running_min",
+  "output": {"order_by": [], "limit": 1, "projection": ["MIN(chn.name)", "MIN(n.name)", "MIN(t.title)"]},
+  "execution_target": "cpp"
+}

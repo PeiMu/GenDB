@@ -1,0 +1,24 @@
+{
+  "query_id": "Q10c",
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 47.26333333333333,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 47.26333333333333,
+      "validation": "pass",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "resolve_us_code": 0.04,
+        "data_loading": 0.08,
+        "main_scan": 25.99,
+        "output": 0.08,
+        "total": 40.07
+      }
+    }
+  ]
+}

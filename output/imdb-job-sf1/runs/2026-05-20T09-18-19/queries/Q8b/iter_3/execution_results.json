@@ -1,0 +1,25 @@
+{
+  "compile": {
+    "status": "pass"
+  },
+  "run": {
+    "status": "pass",
+    "duration_ms": 88
+  },
+  "validation": {
+    "status": "pass"
+  },
+  "optimization_target": "hot",
+  "timing_ms": 80.19333333333334,
+  "hot_timing_ms": 80.19333333333334,
+  "operation_timings": {
+    "data_loading": 0.14,
+    "resolve_codes": 0,
+    "build_cn_is_jp": 0.04,
+    "title_driver": 7.02,
+    "build_name_ok": 65.06,
+    "main_scan": 0.07,
+    "output": 0.09,
+    "total": 76.92
+  }
+}

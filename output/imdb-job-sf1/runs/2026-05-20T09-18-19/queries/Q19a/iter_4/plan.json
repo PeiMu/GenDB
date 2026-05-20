@@ -1,0 +1,123 @@
+{
+  "query_id": "Q19a",
+  "pipeline": [
+    "resolve_dict_constants",
+    "build_name_candidate_set_P",
+    "build_title_set_T_by_year",
+    "for_each_mv_in_T_probe_mc_mi_ci",
+    "aggregate_min"
+  ],
+  "join_order": [
+    {
+      "build": "title(production_year BETWEEN 2005 AND 2009)",
+      "probe": "driver",
+      "type": "scan",
+      "strategy": "parallel_scan",
+      "build_cardinality": 126000,
+      "notes": "Driver set T (~5% of 2.5M titles). Keep as boolean bitset over title.id domain for O(1) membership."
+    },
+    {
+      "build": "name(gender='f' AND name LIKE '%Ang%')",
+      "probe": "P_set",
+      "type": "scan",
+      "strategy": "parallel_scan_to_bitset",
+      "build_cardinality": 20000,
+      "notes": "P = bitset over name.id domain (4.17M). gender int8 dict check + memmem on name varlen."
+    },
+    {
+      "build": "role_type(role='actress')",
+      "probe": "scalar",
+      "type": "scalar_resolve",
+      "strategy": "linear_scan",
+      "build_cardinality": 1,
+      "notes": "Resolve rt_actress (single int32 id)."
+    },
+    {
+      "build": "info_type(info='release dates')",
+      "probe": "scalar",
+      "type": "scalar_resolve",
+      "strategy": "linear_scan",
+      "build_cardinality": 1,
+      "notes": "Resolve it_rd (single int32 id)."
+    },
+    {
+      "build": "company_name.country_code dict",
+      "probe": "scalar",
+      "type": "scalar_resolve",
+      "strategy": "dict_lookup",
+      "build_cardinality": 1,
+      "notes": "Resolve cc_us int16 code from country_code dict."
+    },
+    {
+      "build": "name.gender dict",
+      "probe": "scalar",
+      "type": "scalar_resolve",
+      "strategy": "dict_lookup",
+      "build_cardinality": 1,
+      "notes": "Resolve g_f int8 code."
+    },
+    {
+      "build": "T (driver)",
+      "probe": "movie_companies via movie_companies__movie_id offsets",
+      "type": "inner",
+      "strategy": "index_range_probe",
+      "build_cardinality": 126000,
+      "notes": "For each mv in T, iterate mc range. Apply mc.note non-null AND (memmem '(USA)' OR memmem '(worldwide)') AND cn_country_code[company_id-1]==cc_us. If no row qualifies, skip mv."
+    },
+    {
+      "build": "T (driver)",
+      "probe": "movie_info via movie_info__movie_id offsets",
+      "type": "inner",
+      "strategy": "index_range_probe",
+      "build_cardinality": 126000,
+      "notes": "For each surviving mv, iterate mi range. Apply info_type_id==it_rd AND info non-null AND (prefix 'Japan:' && memmem '200' in tail, OR prefix 'USA:' && memmem '200' in tail). If none, skip."
+    },
+    {
+      "build": "T (driver)",
+      "probe": "cast_info via cast_info__movie_id offsets",
+      "type": "inner",
+      "strategy": "index_range_probe",
+      "build_cardinality": 126000,
+      "notes": "For each surviving mv, iterate ci range. Apply note IN {4 voice strings} (length-prefix dispatch then memcmp), role_id==rt_actress, person_id ∈ P (bitset O(1)), person_role_id != INT32_MIN."
+    },
+    {
+      "build": "P-survivors",
+      "probe": "aka_name via aka_name__person_id offsets",
+      "type": "semi",
+      "strategy": "offsets_existence_check",
+      "build_cardinality": 1,
+      "notes": "Existence: off[pid+1] > off[pid]. O(1) per probe."
+    }
+  ],
+  "filters": [
+    {"table": "title", "predicate": "production_year BETWEEN 2005 AND 2009", "selectivity": 0.05},
+    {"table": "name", "predicate": "gender='f' AND name LIKE '%Ang%'", "selectivity": 0.005},
+    {"table": "role_type", "predicate": "role='actress'", "selectivity": 0.083},
+    {"table": "info_type", "predicate": "info='release dates'", "selectivity": 0.0088},
+    {"table": "company_name", "predicate": "country_code='[us]'", "selectivity": 0.35},
+    {"table": "cast_info", "predicate": "note IN (4 voice strings)", "selectivity": 0.005},
+    {"table": "movie_companies", "predicate": "note NOT NULL AND (LIKE '%(USA)%' OR LIKE '%(worldwide)%')", "selectivity": 0.08},
+    {"table": "movie_info", "predicate": "info_type_id=it_rd AND (LIKE 'Japan:%200%' OR LIKE 'USA:%200%')", "selectivity": 0.003}
+  ],
+  "data_structures": {
+    "T_title_set": "bitset(2528312) over title.id domain",
+    "P_name_set": "bitset(4167491) over name.id domain",
+    "voice_note_set": "inline length-prefix dispatch + memcmp (4 strings)",
+    "dict_constants": "scalar int16/int8/int32",
+    "aggregation": "two scalar accumulators (best_name_off/best_name_len ptr; best_title_off/best_title_len ptr) updated under thread-local then merged"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "morsel": "partition T over title.id range; each thread accumulates thread-local MIN(name), MIN(title); final reduce across threads"
+  },
+  "indexes": [
+    {"index": "movie_companies__movie_id", "purpose": "range probe per mv"},
+    {"index": "movie_info__movie_id", "purpose": "range probe per mv"},
+    {"index": "cast_info__movie_id", "purpose": "range probe per mv"},
+    {"index": "aka_name__person_id", "purpose": "semi-join existence check"}
+  ],
+  "aggregation": "scalar_min_two_strings",
+  "output": {"order_by": [], "limit": 1, "projection": ["MIN(n.name) AS voicing_actress", "MIN(t.title) AS voiced_movie"]},
+  "execution_target": "cpp"
+}

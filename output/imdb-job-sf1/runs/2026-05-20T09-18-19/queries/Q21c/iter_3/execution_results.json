@@ -1,0 +1,61 @@
+{
+  "compile": {
+    "status": "pass"
+  },
+  "run": {
+    "status": "pass",
+    "duration_ms": 14
+  },
+  "validation": {
+    "status": "fail",
+    "details": {
+      "match": false,
+      "queries": {
+        "Q21c": {
+          "rows_expected": 1,
+          "rows_actual": 1,
+          "match": false,
+          "error": "1 row(s) differ",
+          "sample_mismatches": [
+            {
+              "row": 0,
+              "expected": [
+                "Churchill Films",
+                "followed by",
+                "Batman Beyond"
+              ],
+              "actual": [
+                "Churchill Films",
+                "followed by",
+                "Hämndens pris"
+              ],
+              "cell_details": [
+                {
+                  "expected": "Batman Beyond",
+                  "actual": "Hämndens pris",
+                  "pattern": "string_mismatch",
+                  "col": 2
+                }
+              ]
+            }
+          ],
+          "mismatch_patterns": {
+            "string_mismatch": 1
+          }
+        }
+      }
+    }
+  },
+  "optimization_target": "hot",
+  "timing_ms": 11.850000000000001,
+  "hot_timing_ms": 11.850000000000001,
+  "operation_timings": {
+    "data_loading": 0.18,
+    "resolve_dims": 0.02,
+    "build_cn_bitset": 9.61,
+    "build_seq_movies_bitset": 0.91,
+    "main_scan": 0.22,
+    "output": 0.04,
+    "total": 11.83
+  }
+}

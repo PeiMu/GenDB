@@ -1,0 +1,102 @@
+{
+  "query_id": "Q15d",
+  "pipeline": [
+    "resolve_dict_us_code",
+    "resolve_it1_id_release_dates",
+    "load_title_columns",
+    "load_company_name_country_code",
+    "load_offsets_only_indexes",
+    "csr_iterate_mi_by_info_type_id",
+    "filter_mi_note_like_internet",
+    "filter_title_production_year_gt_1990",
+    "semi_join_mc_with_cn_us",
+    "semi_join_mk_existence",
+    "scan_at1_range_min_title",
+    "update_min_t_title",
+    "emit_aggregates"
+  ],
+  "join_order": [
+    {
+      "build": "info_type(info='release dates')",
+      "probe": "movie_info via CSR(info_type_id)",
+      "type": "inner",
+      "strategy": "csr_index_scan",
+      "build_cardinality": 1,
+      "notes": "Driver: iterate mi rows with info_type_id==it1_id using prebuilt CSR"
+    },
+    {
+      "build": "mi rows surviving note LIKE '%internet%'",
+      "probe": "title via direct array (movie_id-1)",
+      "type": "inner",
+      "strategy": "direct_array",
+      "build_cardinality": 50000,
+      "notes": "title dense PK; filter production_year > 1990 inline"
+    },
+    {
+      "build": "mv candidate",
+      "probe": "movie_companies via offsets_only index",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 1,
+      "notes": "Probe mc range for mv; verify any company has cn.country_code=='[us]' via cn_cc[company_id-1]==us_code"
+    },
+    {
+      "build": "mv candidate",
+      "probe": "movie_keyword via offsets_only index",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 1,
+      "notes": "Existence-only: check mk_off[mv] < mk_off[mv+1]"
+    },
+    {
+      "build": "mv surviving",
+      "probe": "aka_title via offsets_only index",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 1,
+      "notes": "MIN(at1.title) requires scanning all at1 rows for mv; lex-compare against running min. If no at1 rows, row drops."
+    }
+  ],
+  "filters": [
+    {"table": "company_name", "predicate": "country_code = '[us]'", "selectivity": 0.30},
+    {"table": "info_type", "predicate": "info = 'release dates'", "selectivity": 0.0088},
+    {"table": "movie_info", "predicate": "note LIKE '%internet%'", "selectivity": 0.001},
+    {"table": "title", "predicate": "production_year > 1990 AND NOT NULL", "selectivity": 0.65}
+  ],
+  "data_structures": {
+    "us_code_resolution": "scalar_int16",
+    "it1_id_resolution": "scalar_int32",
+    "title_production_year": "mmap_int32_array",
+    "title_title_offsets_dat": "mmap_varlen",
+    "cn_country_code": "mmap_int16_array",
+    "mc_company_id": "mmap_int32_array",
+    "mi_movie_id": "mmap_int32_array",
+    "mi_note_offsets_dat": "mmap_varlen",
+    "at1_title_offsets_dat": "mmap_varlen",
+    "csr_mi_info_type_id": "prebuilt_csr(offsets+rowids)",
+    "mc_movie_id_index": "offsets_only",
+    "mk_movie_id_index": "offsets_only",
+    "at1_movie_id_index": "offsets_only",
+    "aggregation": "two_scalar_min_strings_per_thread_then_reduce"
+  },
+  "parallelism": {
+    "strategy": "partition_parallel_over_csr_range",
+    "threads": "auto(nproc)",
+    "notes": "Split [lo,hi) of mi_it_row evenly across 12 threads; each thread maintains local MIN(at1.title) and MIN(t.title); final reduce takes lex-min across threads."
+  },
+  "indexes": [
+    {"index": "movie_info__info_type_id (CSR)", "purpose": "driver: iterate mi rows for it1_id"},
+    {"index": "movie_companies__movie_id (offsets_only)", "purpose": "semi_join probe + cn[us] check"},
+    {"index": "movie_keyword__movie_id (offsets_only)", "purpose": "semi_join existence"},
+    {"index": "aka_title__movie_id (offsets_only)", "purpose": "fetch at1 rows for MIN(at1.title)"}
+  ],
+  "aggregation": "scalar_min_two_strings",
+  "output": {"order_by": [], "limit": 1, "select": ["MIN(at1.title) AS aka_title", "MIN(t.title) AS internet_movie_title"]},
+  "execution_target": "cpp",
+  "notes": [
+    "ct and k are unfiltered existence-only joins on dense PKs; mk_movie_id_index covers k join (every mk row has valid keyword_id); ct join is implicit (every mc row has valid company_type_id since ct is dense-PK with 4 rows). Skip explicit ct/k probes.",
+    "Row drops if at1 range is empty (INNER on at1).",
+    "Use memmem for 'internet' substring search on mi.note.",
+    "Title is also a dense PK: production_year[mv-1] direct access."
+  ]
+}

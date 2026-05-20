@@ -1,0 +1,134 @@
+{
+  "query_id": "Q29b",
+  "pipeline": [
+    "resolve_dims",
+    "build_chn_set",
+    "build_cn_us_set",
+    "scan_title_driver",
+    "probe_mk",
+    "probe_cc",
+    "probe_mc",
+    "probe_mi",
+    "probe_ci",
+    "per_person_filter_n",
+    "probe_an_existence",
+    "probe_pi_existence",
+    "aggregate_min"
+  ],
+  "join_order": [
+    {
+      "build": "title(title='Shrek 2' AND year BETWEEN 2000 AND 2005)",
+      "probe": "movie_keyword[movie_id]",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 5,
+      "notes": "driver: very narrow title filter; iterate matched movie_ids; for each, slice mk via movie_keyword__movie_id and require keyword_id == cam_kw_id"
+    },
+    {
+      "build": "matched_movie_ids",
+      "probe": "complete_cast[movie_id]",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 5,
+      "notes": "slice cc via complete_cast__movie_id offsets; require subject_id==cast_id AND status_id==verified_id"
+    },
+    {
+      "build": "matched_movie_ids",
+      "probe": "movie_companies[movie_id]",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 5,
+      "notes": "slice mc via movie_companies__movie_id offsets; require company_id ∈ cn_us_set"
+    },
+    {
+      "build": "matched_movie_ids",
+      "probe": "movie_info[movie_id]",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 5,
+      "notes": "slice mi via movie_info__movie_id offsets; require info_type_id==it_id AND info has prefix 'USA:' AND memmem('200') in remainder"
+    },
+    {
+      "build": "matched_movie_ids",
+      "probe": "cast_info[movie_id]",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 5,
+      "notes": "slice ci via cast_info__movie_id offsets; require role_id==actress_id AND person_role_id ∈ chn_set AND note ∈ {'(voice)','(voice) (uncredited)','(voice: English version)'}"
+    },
+    {
+      "build": "candidate_person_ids (from ci hits)",
+      "probe": "name[id]",
+      "type": "inner",
+      "strategy": "direct_array",
+      "build_cardinality": 50,
+      "notes": "lazy per-candidate: gender_code==f_code AND memmem(name,'An')"
+    },
+    {
+      "build": "qualified_person_ids",
+      "probe": "aka_name[person_id]",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 20,
+      "notes": "existence via aka_name__person_id offsets (hi>lo)"
+    },
+    {
+      "build": "qualified_person_ids",
+      "probe": "person_info[person_id]",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 20,
+      "notes": "slice pi via person_info__person_id offsets; require info_type_id==it3_id (height); do NOT scan person_info globally"
+    }
+  ],
+  "filters": [
+    {"table": "title", "predicate": "title='Shrek 2' AND production_year BETWEEN 2000 AND 2005", "selectivity": 0.0000020},
+    {"table": "char_name", "predicate": "name='Queen' exact", "selectivity": 0.0000064},
+    {"table": "company_name", "predicate": "country_code='[us]'", "selectivity": 0.35},
+    {"table": "cast_info", "predicate": "role_id==actress_id AND person_role_id ∈ chn_set AND note ∈ 3-literal-set", "selectivity": 0.00001},
+    {"table": "movie_info", "predicate": "info_type_id==it_id AND info LIKE 'USA:%200%'", "selectivity": 0.005},
+    {"table": "movie_keyword", "predicate": "keyword_id==cam_kw_id", "selectivity": 0.0005},
+    {"table": "complete_cast", "predicate": "subject_id==cast_id AND status_id==verified_id", "selectivity": 0.25},
+    {"table": "name", "predicate": "gender=='f' AND name contains 'An'", "selectivity": 0.10},
+    {"table": "person_info", "predicate": "info_type_id==it3_id (height)", "selectivity": 0.05}
+  ],
+  "data_structures": {
+    "chn_set": "flat_array<int32_t> of char_name ids with name=='Queen' (sorted) + std::unordered_set<int32_t> for O(1) membership",
+    "cn_us_set": "std::vector<uint8_t> bitset(234997+1) of company_name ids with country_code=='[us]'",
+    "ci_note_set": "small array of 3 string_views compared via length-first switch",
+    "matched_movie_ids": "small std::vector<int32_t> (~1-5 entries)",
+    "candidate_person_ids": "std::vector<int32_t> from ci probe (dedup not required; can dedup with small hash set)",
+    "aggregation": "scalar mins (3 string_view tracking smallest by lexicographic compare)"
+  },
+  "parallelism": {
+    "strategy": "single_threaded",
+    "threads": 1,
+    "notes": "driver cardinality is ~1-5 movies; parallel overhead dwarfs work. char_name set build (3.1M rows) is fast; can optionally parallelize but unnecessary."
+  },
+  "indexes": [
+    {"index": "movie_keyword__movie_id", "purpose": "join_lookup"},
+    {"index": "complete_cast__movie_id", "purpose": "join_lookup"},
+    {"index": "movie_companies__movie_id", "purpose": "join_lookup"},
+    {"index": "movie_info__movie_id", "purpose": "join_lookup"},
+    {"index": "cast_info__movie_id", "purpose": "join_lookup"},
+    {"index": "aka_name__person_id", "purpose": "join_lookup"},
+    {"index": "person_info__person_id", "purpose": "join_lookup"}
+  ],
+  "aggregation": "scalar_min_3cols",
+  "output": {"order_by": [], "limit": 1, "projection": ["MIN(chn.name) AS voiced_char", "MIN(n.name) AS voicing_actress", "MIN(t.title) AS voiced_animation"]},
+  "execution_target": "cpp",
+  "runtime_resolutions": [
+    {"name": "cast_id", "source": "comp_cast_type.kind=='cast'"},
+    {"name": "verified_id", "source": "comp_cast_type.kind=='complete+verified'"},
+    {"name": "it_id", "source": "info_type.info=='release dates'"},
+    {"name": "it3_id", "source": "info_type.info=='height'"},
+    {"name": "cam_kw_id", "source": "keyword.keyword=='computer-animation'"},
+    {"name": "actress_id", "source": "role_type.role=='actress'"},
+    {"name": "f_code", "source": "name.gender dict 'f'"},
+    {"name": "us_code", "source": "company_name.country_code dict '[us]'"}
+  ],
+  "early_exit": {
+    "enabled": true,
+    "notes": "Once a per-movie probe finds zero qualified persons OR mi/mc/cc/mk fails, skip movie. Order probes cheap-to-expensive: mk → cc → mc → mi → ci."
+  }
+}

@@ -1,0 +1,94 @@
+{
+  "query_id": "Q11b",
+  "pipeline": [
+    "resolve_dims",
+    "scan_title_filter",
+    "probe_movie_link",
+    "probe_movie_keyword",
+    "probe_movie_companies",
+    "lookup_company_name",
+    "min_aggregate"
+  ],
+  "dim_resolution": [
+    {"name": "pl_code", "source": "company_name.country_code dict lookup '[pl]'"},
+    {"name": "ct_id", "source": "scan company_type.kind == 'production companies' (4 rows)"},
+    {"name": "k_id", "source": "scan keyword.keyword == 'sequel' (134170 rows, one-shot)"},
+    {"name": "LT_set", "source": "scan link_type.link memmem('follows') (18 rows)"}
+  ],
+  "driver": {
+    "table": "title",
+    "predicates": [
+      {"col": "production_year", "op": "==", "value": 1998, "selectivity": 0.01},
+      {"col": "title", "op": "LIKE", "value": "%Money%", "selectivity": 0.001}
+    ],
+    "expected_rows": 200,
+    "notes": "Drive from title; combined filter is highly selective. Single scan over 2.5M rows."
+  },
+  "join_order": [
+    {
+      "build": "title_candidates(mid_set)",
+      "probe": "movie_link via movie_id offsets index",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 200,
+      "notes": "For each candidate mid, scan ml[lo:hi); keep rows where link_type_id in LT_set. Capture lt.link for MIN."
+    },
+    {
+      "build": "title_candidates(survivors)",
+      "probe": "movie_keyword via movie_id offsets index",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 200,
+      "notes": "Scan mk[lo:hi); require keyword_id == k_id. Existence check only."
+    },
+    {
+      "build": "title_candidates(survivors)",
+      "probe": "movie_companies via movie_id offsets index",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 200,
+      "notes": "Scan mc[lo:hi); require note empty AND company_type_id == ct_id. Emit company_id for cn lookup."
+    },
+    {
+      "build": "mc_company_ids",
+      "probe": "company_name (direct array by id-1)",
+      "type": "inner",
+      "strategy": "direct_array",
+      "build_cardinality": 200,
+      "notes": "company_name.id is dense PK; row = id-1. Check country_code != pl_code && != 0 AND name LIKE '%Film%' OR '%Warner%'."
+    }
+  ],
+  "filters": [
+    {"table": "title", "predicate": "production_year == 1998", "selectivity": 0.01},
+    {"table": "title", "predicate": "title LIKE '%Money%'", "selectivity": 0.001},
+    {"table": "movie_companies", "predicate": "note IS NULL (off[i]==off[i+1])", "selectivity": 0.5},
+    {"table": "movie_companies", "predicate": "company_type_id == ct_id", "selectivity": 0.5},
+    {"table": "company_name", "predicate": "country_code != pl_code && != 0", "selectivity": 0.99},
+    {"table": "company_name", "predicate": "name LIKE '%Film%' OR '%Warner%'", "selectivity": 0.05}
+  ],
+  "data_structures": {
+    "LT_set": "flat_array<int32> or bitset(18) — tiny, linear scan",
+    "title_candidates": "std::vector<int32_t> mid_list",
+    "ml_offsets": "mmap int32 array (2528314 entries)",
+    "mk_offsets": "mmap int32 array",
+    "mc_offsets": "mmap int32 array",
+    "min_aggregates": "3x std::string_view (best so far), byte-wise lexicographic compare"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven on title scan",
+    "threads": "auto(nproc)",
+    "notes": "Parallelize the title scan (2.5M rows) across 12 threads in morsels of 64K rows. Each thread maintains thread-local MIN aggregates and candidate processing; final reduction merges 3 MIN strings across threads. Downstream probes are cheap per-candidate so each thread runs them inline."
+  },
+  "indexes": [
+    {"index": "movie_link__movie_id__offsets.bin", "purpose": "join_lookup ml by movie_id"},
+    {"index": "movie_keyword__movie_id__offsets.bin", "purpose": "join_lookup mk by movie_id"},
+    {"index": "movie_companies__movie_id__offsets.bin", "purpose": "join_lookup mc by movie_id"}
+  ],
+  "aggregation": "scalar_min_3way",
+  "output": {
+    "select": ["MIN(cn.name)", "MIN(lt.link)", "MIN(t.title)"],
+    "order_by": [],
+    "limit": 1
+  },
+  "execution_target": "cpp"
+}

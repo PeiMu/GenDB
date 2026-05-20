@@ -1,0 +1,96 @@
+{
+  "query_id": "Q9a",
+  "pipeline": [
+    "resolve_dict_codes",
+    "scan_name_filter_gender_and_like_Ang",
+    "scan_title_year_range_bitset",
+    "scan_company_name_us_bitset",
+    "scan_movie_companies_filter_note_us_build_movie_set",
+    "probe_cast_info_via_person_id_csr",
+    "lookup_char_name_by_id",
+    "lookup_aka_name_by_person_id",
+    "aggregate_min"
+  ],
+  "join_order": [
+    {
+      "build": "name(gender=f AND name LIKE '%Ang%') -> pids",
+      "probe": "cast_info via person_id CSR",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 5000,
+      "notes": "Person-driven: small candidate pid set drives cast_info CSR probe"
+    },
+    {
+      "build": "title(production_year BETWEEN 2005 AND 2015) -> year_ok bitset(title_rows)",
+      "probe": "ci.movie_id for each surviving ci row",
+      "type": "semi",
+      "strategy": "bitset",
+      "build_cardinality": 1300000,
+      "notes": "Direct array indexed by movie_id-1 (dense PK)"
+    },
+    {
+      "build": "company_name(country_code='[us]') -> cn_us bitset(company_rows)",
+      "probe": "mc.company_id for candidate mc rows",
+      "type": "semi",
+      "strategy": "bitset",
+      "build_cardinality": 110000,
+      "notes": "Direct array indexed by company_id-1 (dense PK)"
+    },
+    {
+      "build": "movie_companies(note non-empty AND (USA|worldwide) AND cn_us[company_id-1]) -> movie_id set",
+      "probe": "movie_id from ci",
+      "type": "semi",
+      "strategy": "bitset",
+      "build_cardinality": 200000,
+      "notes": "Build bitset(title_rows) of movie_ids passing mc/cn filters; probe by ci.movie_id"
+    },
+    {
+      "build": "aka_name__person_id offsets",
+      "probe": "pid",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 901343,
+      "notes": "Use offsets_only index; require pid range non-empty (an.person_id=n.id)"
+    },
+    {
+      "build": "char_name (dense PK)",
+      "probe": "ci.person_role_id",
+      "type": "inner",
+      "strategy": "direct_array",
+      "build_cardinality": 3140339,
+      "notes": "chn.id = ci.person_role_id -> read name at row chn_id-1"
+    }
+  ],
+  "filters": [
+    {"table": "name", "predicate": "gender = f_code", "selectivity": 0.34},
+    {"table": "name", "predicate": "name LIKE '%Ang%'", "selectivity": 0.01},
+    {"table": "title", "predicate": "production_year BETWEEN 2005 AND 2015", "selectivity": 0.5},
+    {"table": "company_name", "predicate": "country_code = '[us]'", "selectivity": 0.47},
+    {"table": "movie_companies", "predicate": "note non-empty AND (LIKE '%(USA)%' OR LIKE '%(worldwide)%')", "selectivity": 0.15},
+    {"table": "cast_info", "predicate": "note IN (4 voice variants)", "selectivity": 0.005},
+    {"table": "cast_info", "predicate": "role_id = rt_id_actress", "selectivity": 0.13},
+    {"table": "cast_info", "predicate": "person_role_id IS NOT NULL", "selectivity": 0.55},
+    {"table": "role_type", "predicate": "role = 'actress'", "selectivity": 0.083}
+  ],
+  "data_structures": {
+    "candidate_pids": "std::vector<int32_t> (sorted ascending)",
+    "year_ok": "std::vector<uint8_t> bitset sized title_rows (2528312)",
+    "cn_us": "std::vector<uint8_t> bitset sized company_name_rows (234997)",
+    "movie_ok": "std::vector<uint8_t> bitset sized title_rows (2528312); set when mc passes filters AND year_ok",
+    "ci_note_set": "absl::flat_hash_set<std::string_view> of 4 voice notes",
+    "aggregation": "three std::string_view holders for MIN (compare lex)"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "notes": "Parallelize outer loop over candidate pids; each thread maintains local 3-tuple MINs, then reduce. Build precomputed bitsets (year_ok, cn_us, movie_ok) sequentially before main loop."
+  },
+  "indexes": [
+    {"index": "cast_info__person_id (CSR offsets+rowids)", "purpose": "join_lookup: pid -> ci rows"},
+    {"index": "movie_companies__movie_id (offsets_only)", "purpose": "join_lookup: movie_id -> mc rows (used during movie_ok build)"},
+    {"index": "aka_name__person_id (offsets_only)", "purpose": "join_lookup: pid -> aka_name rows"}
+  ],
+  "aggregation": "global_min_3tuple",
+  "output": {"order_by": [], "limit": 1},
+  "execution_target": "cpp"
+}

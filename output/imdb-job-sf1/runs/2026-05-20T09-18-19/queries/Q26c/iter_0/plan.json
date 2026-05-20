@@ -1,0 +1,138 @@
+{
+  "query_id": "Q26c",
+  "pipeline": [
+    "resolve_dim_dicts",
+    "build_chn_set",
+    "build_kw_set",
+    "filter_title_driver",
+    "probe_movie_keyword_semi",
+    "probe_complete_cast_semi",
+    "probe_movie_info_idx_capture",
+    "probe_cast_info_capture",
+    "aggregate_min"
+  ],
+  "join_order": [
+    {
+      "build": "comp_cast_type(kind='cast')",
+      "probe": "scalar cast_id",
+      "type": "inner",
+      "strategy": "scalar_resolve",
+      "build_cardinality": 1,
+      "notes": "Resolve cct1.id once (single small int)"
+    },
+    {
+      "build": "comp_cast_type(kind LIKE '%complete%')",
+      "probe": "scalar complete_status_set",
+      "type": "inner",
+      "strategy": "tiny_array",
+      "build_cardinality": 3,
+      "notes": "Likely 2-3 ids (e.g. 'complete', 'complete+verified')"
+    },
+    {
+      "build": "info_type(info='rating')",
+      "probe": "scalar it2_id",
+      "type": "inner",
+      "strategy": "scalar_resolve",
+      "build_cardinality": 1
+    },
+    {
+      "build": "kind_type(kind='movie')",
+      "probe": "scalar movie_kind_id",
+      "type": "inner",
+      "strategy": "scalar_resolve",
+      "build_cardinality": 1
+    },
+    {
+      "build": "keyword(keyword IN 10 vals)",
+      "probe": "scalar kw_set",
+      "type": "inner",
+      "strategy": "flat_array",
+      "build_cardinality": 10
+    },
+    {
+      "build": "char_name(name LIKE '%man%' OR '%Man%')",
+      "probe": "chn.id lookup from ci.person_role_id",
+      "type": "semi",
+      "strategy": "bitset",
+      "build_cardinality": 100000,
+      "notes": "~3% of 3.14M char_name rows; bitset over dense PK (3.14M bits = 392KB)"
+    },
+    {
+      "build": "title(production_year>2000 AND kind_id==movie_kind_id)",
+      "probe": "driver scan",
+      "type": "inner",
+      "strategy": "driver_scan",
+      "build_cardinality": 1500000,
+      "notes": "Driver table; produce list of qualifying title ids"
+    },
+    {
+      "build": "movie_keyword via index by t.id, filter keyword_id ∈ kw_set",
+      "probe": "title driver",
+      "type": "semi",
+      "strategy": "index_nested_loop_semi",
+      "build_cardinality": 10,
+      "notes": "Per-title slice via movie_keyword__movie_id offsets; existence check on kw_set membership (10 ids → linear scan or tiny hash)"
+    },
+    {
+      "build": "complete_cast via index, filter subject_id==cast_id AND status_id ∈ complete_status_set",
+      "probe": "surviving titles",
+      "type": "semi",
+      "strategy": "index_nested_loop_semi",
+      "build_cardinality": 3
+    },
+    {
+      "build": "movie_info_idx via index, filter info_type_id==it2_id; capture info offset",
+      "probe": "surviving titles",
+      "type": "inner",
+      "strategy": "index_nested_loop_capture",
+      "notes": "No info value predicate; capture mi_idx.info varlen offset for MIN"
+    },
+    {
+      "build": "cast_info via index, filter person_role_id ∈ chn_set (skip NULLs); capture chn.name",
+      "probe": "surviving titles",
+      "type": "inner",
+      "strategy": "index_nested_loop_capture",
+      "notes": "Use cast_info__movie_id offsets; skip rows where person_role_id is NULL; bitset test on chn_set; n.id join is no-op (skip)"
+    }
+  ],
+  "filters": [
+    {"table": "comp_cast_type", "predicate": "kind = 'cast'", "selectivity": 0.25},
+    {"table": "comp_cast_type", "predicate": "kind LIKE '%complete%'", "selectivity": 0.5},
+    {"table": "info_type", "predicate": "info = 'rating'", "selectivity": 0.009},
+    {"table": "kind_type", "predicate": "kind = 'movie'", "selectivity": 0.14},
+    {"table": "keyword", "predicate": "keyword IN (10 values)", "selectivity": 0.0000745},
+    {"table": "char_name", "predicate": "name LIKE '%man%' OR '%Man%' (non-NULL)", "selectivity": 0.03},
+    {"table": "title", "predicate": "production_year > 2000 AND kind_id = movie_kind_id", "selectivity": 0.59},
+    {"table": "movie_info_idx", "predicate": "info_type_id = it2_id", "selectivity": 0.5},
+    {"table": "cast_info", "predicate": "person_role_id IS NOT NULL AND person_role_id ∈ chn_set", "selectivity": 0.015}
+  ],
+  "data_structures": {
+    "cast_id": "int32 scalar",
+    "complete_status_set": "fixed array<int32, 4>",
+    "it2_id": "int32 scalar",
+    "movie_kind_id": "int32 scalar",
+    "kw_set": "flat sorted array<int32, 10> (linear probe)",
+    "chn_set": "bitset(3140339) ~= 392 KB",
+    "mk_index": "pre_built_offsets(movie_keyword__movie_id)",
+    "cc_index": "pre_built_offsets(complete_cast__movie_id)",
+    "mi_idx_index": "pre_built_offsets(movie_info_idx__movie_id)",
+    "ci_index": "pre_built_offsets(cast_info__movie_id)",
+    "aggregation": "three_scalar_min (per-thread, varlen via direct strcmp on .dat slices, final reduce)"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "morsel": "title id range; each thread owns a contiguous chunk of title ids 0..N",
+    "notes": "Dim builds (chn_set, kw_set, scalar dicts) done serially before parallel region; per-thread local MIN reduced at end"
+  },
+  "indexes": [
+    {"index": "movie_keyword__movie_id", "purpose": "join_lookup"},
+    {"index": "complete_cast__movie_id", "purpose": "join_lookup"},
+    {"index": "movie_info_idx__movie_id", "purpose": "join_lookup"},
+    {"index": "cast_info__movie_id", "purpose": "join_lookup"}
+  ],
+  "aggregation": "scalar_min_three_cols",
+  "output": {"order_by": [], "limit": 1, "projection": ["MIN(chn.name)", "MIN(mi_idx.info)", "MIN(t.title)"]},
+  "execution_target": "cpp",
+  "notes": "Order chosen so cheapest semi-joins prune first: movie_keyword (10 kw_set check) before complete_cast (3 status check) before mi_idx capture before the heavy cast_info scan. Cast_info is largest (36M rows) so it must be last and only opened for titles surviving all prior checks. Skip name table entirely (no-op join, name is dense PK and ci.person_id is non-null FK; not projected)."
+}

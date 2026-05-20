@@ -1,0 +1,70 @@
+{
+  "query_id": "Q16b",
+  "pipeline": [
+    "resolve_dict_us_code",
+    "resolve_keyword_id_character_name_in_title",
+    "enumerate_mk_via_csr_keyword_id",
+    "unique_movies_from_mk",
+    "semi_join_movie_companies_us",
+    "probe_cast_info_by_movie_id",
+    "probe_aka_name_by_person_id",
+    "min_an_name_min_t_title"
+  ],
+  "join_order": [
+    {
+      "build": "keyword(filter keyword='character-name-in-title')",
+      "probe": "movie_keyword via CSR movie_keyword__keyword_id",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 1,
+      "notes": "Single k_id resolved at runtime; use CSR to fetch mk rows for this keyword. Deduplicate movie_ids into a bitset over title cardinality (2,528,312)."
+    },
+    {
+      "build": "company_name(country_code = us_code)",
+      "probe": "movie_companies (per candidate movie via offsets_only on movie_id)",
+      "type": "semi",
+      "strategy": "direct_array",
+      "build_cardinality": 70000,
+      "notes": "Build a bitset/byte-array indexed by company_id (size 234,997) marking cn rows with country_code==us_code. Per candidate movie, scan its mc rows; accept movie if ANY mc.company_id is US."
+    },
+    {
+      "build": "candidate movie set (mk ∩ has US mc)",
+      "probe": "cast_info via offsets_only on movie_id",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 50000,
+      "notes": "For each qualifying movie, iterate ci rows; emit person_id values."
+    },
+    {
+      "build": "person_id (from ci)",
+      "probe": "aka_name via offsets_only on person_id",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 0,
+      "notes": "Many pids will have no aka_name rows; offsets_only gives O(1) empty-check. an.person_id = n.id and n.id = ci.person_id collapse to direct index by pid (name has identity id, no filter)."
+    }
+  ],
+  "filters": [
+    {"table": "company_name", "predicate": "country_code = '[us]'", "selectivity": 0.3},
+    {"table": "keyword", "predicate": "keyword = 'character-name-in-title'", "selectivity": 7.45e-06}
+  ],
+  "data_structures": {
+    "us_company_mask": "uint8_array(234997) (1 if cn.country_code==us_code)",
+    "candidate_movie_bitset": "bitset(2528312) for unique mk-movie_ids that have at least one US mc",
+    "min_aggregates": "two std::string_view holders (min_an_name, min_t_title) updated lexicographically; copy to std::string only when strictly smaller"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "notes": "Partition the unique candidate movie list (after mk dedup and US-mc semi-join) across 12 threads. Each thread maintains local (min_an_name, min_t_title); reduce at end. The mk CSR enumeration and US semi-join are cheap and can be done single-threaded to build the candidate set, then parallelize the ci/aka_name probing which is the dominant cost (36M ci rows have hot movies)."
+  },
+  "indexes": [
+    {"index": "movie_keyword__keyword_id (CSR)", "purpose": "k-driven enumeration of mk rows"},
+    {"index": "movie_companies__movie_id (offsets_only)", "purpose": "per-movie US semi-join probe"},
+    {"index": "cast_info__movie_id (offsets_only)", "purpose": "per-movie person_id enumeration"},
+    {"index": "aka_name__person_id (offsets_only)", "purpose": "per-person aka_name fetch"}
+  ],
+  "aggregation": "scalar_min_two_columns",
+  "output": {"order_by": [], "limit": 1},
+  "execution_target": "cpp"
+}

@@ -1,0 +1,101 @@
+{
+  "query_id": "Q15c",
+  "pipeline": [
+    "resolve_dict_codes",
+    "scan_mi_via_info_type_csr",
+    "filter_mi_note_like_internet",
+    "filter_mi_info_usa_199_or_200",
+    "lookup_title_production_year",
+    "semi_join_movie_companies_with_us_company",
+    "semi_join_aka_title",
+    "semi_join_movie_keyword",
+    "aggregate_min_mi_info_and_title"
+  ],
+  "join_order": [
+    {
+      "build": "info_type(info='release dates')",
+      "probe": "movie_info via CSR on info_type_id",
+      "type": "inner",
+      "strategy": "csr_index_lookup",
+      "build_cardinality": 1,
+      "notes": "Drive from mi via movie_info__info_type_id CSR; expected ~few hundred thousand mi rows for it1_id"
+    },
+    {
+      "build": "filtered mi rows (note~internet, info~USA:%199/200%)",
+      "probe": "title.production_year[mv-1]",
+      "type": "inner",
+      "strategy": "direct_array_lookup",
+      "build_cardinality": 50000,
+      "notes": "After substring filters, lookup production_year by movie_id (dense PK)"
+    },
+    {
+      "build": "company_name.country_code bitset (us_code)",
+      "probe": "movie_companies via movie_id offsets",
+      "type": "semi",
+      "strategy": "offsets_index_then_direct_array",
+      "build_cardinality": 234997,
+      "notes": "Resolve us_code at runtime; check cn_cc[company_id-1]==us_code for each mc row in [off[mv], off[mv+1])"
+    },
+    {
+      "build": "movie_id (surviving)",
+      "probe": "aka_title via movie_id offsets",
+      "type": "semi",
+      "strategy": "offsets_existence_check",
+      "build_cardinality": 30000,
+      "notes": "Existence: off[mv+1] > off[mv]"
+    },
+    {
+      "build": "movie_id (surviving)",
+      "probe": "movie_keyword via movie_id offsets",
+      "type": "semi",
+      "strategy": "offsets_existence_check",
+      "build_cardinality": 30000,
+      "notes": "Existence: off[mv+1] > off[mv]; keyword and company_type joins are existence-only against dense PKs and implicitly satisfied"
+    }
+  ],
+  "filters": [
+    {"table": "info_type", "predicate": "info = 'release dates'", "selectivity": 0.0088},
+    {"table": "company_name", "predicate": "country_code = '[us]'", "selectivity": 0.3},
+    {"table": "movie_info", "predicate": "info_type_id = it1_id", "selectivity": 0.02},
+    {"table": "movie_info", "predicate": "note LIKE '%internet%'", "selectivity": 0.001},
+    {"table": "movie_info", "predicate": "info LIKE 'USA:% 199%' OR 'USA:% 200%'", "selectivity": 0.5, "notes": "applied after info_type_id filter; conditional"},
+    {"table": "title", "predicate": "production_year != INT32_MIN AND production_year > 1990", "selectivity": 0.55}
+  ],
+  "data_structures": {
+    "cn_country_code_array": "int16[234997] mmap (dense PK; direct index by id-1)",
+    "us_code_scalar": "int16 (resolved at runtime from cn dict)",
+    "it1_id_scalar": "int32 (resolved at runtime from info_type)",
+    "mi_info_type_csr_offsets": "int32[115] (movie_info__info_type_id__offsets.bin)",
+    "mi_info_type_csr_rowids": "int32[14835720] (movie_info__info_type_id__rowids.bin)",
+    "mi_info_varlen": "int64 offsets + char dat (memmem for substring)",
+    "mi_note_varlen": "int64 offsets + char dat (memmem for 'internet')",
+    "title_production_year_array": "int32[2528312] direct lookup",
+    "title_title_varlen": "int64 offsets + char dat",
+    "mc_movie_id_offsets": "int32[2528314] (offsets_only on movie_id)",
+    "mc_company_id_array": "int32[2609129]",
+    "at_movie_id_offsets": "int32[2528314]",
+    "mk_movie_id_offsets": "int32[2528314]",
+    "min_mi_info": "string_view tracker (lex min of varlen bytes)",
+    "min_t_title": "string_view tracker (lex min of varlen bytes)"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "notes": "Parallelize over [lo,hi) range of mi_it_row[] for it1_id; each thread maintains local MIN string_views, reduce at end with mutex/atomic_min"
+  },
+  "indexes": [
+    {"index": "movie_info__info_type_id (CSR)", "purpose": "drive scan to it1_id rows"},
+    {"index": "movie_companies__movie_id (offsets_only)", "purpose": "join_lookup by movie_id"},
+    {"index": "aka_title__movie_id (offsets_only)", "purpose": "existence_check"},
+    {"index": "movie_keyword__movie_id (offsets_only)", "purpose": "existence_check"}
+  ],
+  "aggregation": "scalar_min_two_varlen",
+  "output": {"order_by": [], "limit": 1},
+  "execution_target": "cpp",
+  "implementation_notes": [
+    "Resolve us_code by scanning company_name dict for '[us]'; resolve it1_id by scanning info_type for 'release dates'.",
+    "Order of per-row predicates inside the CSR loop: (1) mi_note_match (cheapest indicative substring), (2) mi_info_match (USA prefix + memmem), (3) production_year check, (4) mc semi-join with cn country_code, (5) at1 existence, (6) mk existence.",
+    "ct and k joins reduce to existence against dense PKs and are satisfied implicitly by mc.company_type_id and mk.keyword_id being valid foreign keys; no explicit probe needed.",
+    "MIN over varlen: keep best (offset, length) pair per thread; final reduction picks lex-smallest byte sequence."
+  ]
+}

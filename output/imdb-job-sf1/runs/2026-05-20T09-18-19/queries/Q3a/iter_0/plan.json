@@ -1,0 +1,81 @@
+{
+  "query_id": "Q3a",
+  "pipeline": [
+    "scan_keyword_like",
+    "csr_walk_movie_keyword_by_keyword_id",
+    "collect_candidate_movies",
+    "filter_title_production_year",
+    "probe_movie_info_existence",
+    "min_title_aggregate"
+  ],
+  "empirical_cardinalities": {
+    "seq_ids": 30,
+    "mk_csr_hits": 12951,
+    "distinct_candidate_movies": 10763,
+    "after_year_filter": 1523,
+    "mi_rows_scanned": 62880,
+    "matched_movies": 105
+  },
+  "join_order": [
+    {
+      "build": "keyword(filtered by LIKE '%sequel%')",
+      "probe": "movie_keyword via CSR movie_keyword__keyword_id",
+      "type": "inner",
+      "strategy": "index_csr_walk",
+      "build_cardinality": 30,
+      "notes": "Driver: tiny set of keyword ids → walk movie_keyword__keyword_id CSR to fetch candidate mk rows directly, then read mk.movie_id."
+    },
+    {
+      "build": "distinct candidate movie ids from mk walk",
+      "probe": "title (via dense identity id mapping)",
+      "type": "semi",
+      "strategy": "direct_array_lookup",
+      "build_cardinality": 10763,
+      "notes": "title.id is dense identity, so candidate mv → title row index = mv-1. Apply production_year > 2005 inline."
+    },
+    {
+      "build": "surviving movie ids (~1523)",
+      "probe": "movie_info via offsets_only movie_info__movie_id",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 1523,
+      "notes": "For each surviving movie, use movie_info__movie_id offsets to fetch mi rows; existence test against IN-set; early break on first hit."
+    }
+  ],
+  "filters": [
+    {"table": "keyword", "predicate": "keyword LIKE '%sequel%'", "selectivity": 0.000224, "evaluation": "varlen full scan via memmem with length>=6 prefilter"},
+    {"table": "title", "predicate": "production_year > 2005 AND production_year != INT32_MIN", "selectivity": 0.1415, "evaluation": "direct int32 compare on candidate movies only"},
+    {"table": "movie_info", "predicate": "info IN ('Sweden','Norway','Germany','Denmark','Swedish','Denish','Norwegian','German')", "selectivity": "small", "evaluation": "flat_hash_set<string_view> with length-in-{6,7,9} prefilter; existence semantics — break on first match per movie"}
+  ],
+  "data_structures": {
+    "seq_ids": "std::vector<int32_t> (~30 entries)",
+    "candidate_movies": "absl/flat_hash_set<int32_t> (or std::unordered_set) pre-sized ~16384; alternatively bitset over title.id range if memory allows (2.5M bits = 316KB)",
+    "surviving_movies": "std::vector<int32_t> sorted ascending (~1523 entries)",
+    "in_set_literals": "flat_hash_set<std::string_view> with 8 literals",
+    "aggregation": "single std::string_view holding running MIN of t.title (lex compare)"
+  },
+  "parallelism": {
+    "strategy": "single_threaded",
+    "threads": 1,
+    "rationale": "Total work is tiny (~10K candidate movies, ~63K mi varlen probes, 30 keyword CSR walks). Thread setup and synchronization overhead would exceed compute cost."
+  },
+  "indexes": [
+    {"index": "movie_keyword__keyword_id (CSR: offsets + rowids)", "purpose": "join_lookup: seq_ids → mk rows"},
+    {"index": "movie_info__movie_id (offsets_only)", "purpose": "join_lookup: candidate movie → mi row range for IN existence test"}
+  ],
+  "aggregation": "scalar_min",
+  "output": {
+    "projection": ["MIN(t.title) AS movie_title"],
+    "order_by": [],
+    "limit": null
+  },
+  "execution_notes": [
+    "Step 1: scan keyword/keyword.{off,dat} once; for each row with len>=6 run memmem for 'sequel'; collect id = row_index + 1 into seq_ids.",
+    "Step 2: for each kid in seq_ids, range [off[kid], off[kid+1]) in movie_keyword__keyword_id__rowids gives mk_row positions; read movie_keyword/movie_id.bin[mk_row] and insert into candidate_movies set.",
+    "Step 3: iterate candidate_movies; for each mv compute idx = mv-1; check title/production_year.bin[idx]: skip if INT32_MIN or <=2005; push survivors into vector.",
+    "Step 4: sort survivors ascending (so movie_info access is sequential — movie_info is FK-sorted by movie_id, improving HDD readahead and cache locality).",
+    "Step 5: for each mv in survivors, range [mi_off[mv], mi_off[mv+1]) in movie_info/info.{off,dat}; per row, len = info.off[r+1]-info.off[r]; if len not in {6,7,9} skip; else compare via flat_hash_set<string_view>. On first match, fetch t.title at idx mv-1 and update MIN; break inner loop.",
+    "Step 6: emit final MIN string (empty result handling: print NULL if no matches)."
+  ],
+  "execution_target": "cpp"
+}

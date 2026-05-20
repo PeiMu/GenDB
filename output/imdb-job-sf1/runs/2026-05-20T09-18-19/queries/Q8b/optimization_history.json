@@ -1,0 +1,127 @@
+{
+  "query_id": "Q8b",
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 91.49,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 91.49,
+      "validation": "pass",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "data_loading": 0.14,
+        "resolve_codes": 0,
+        "build_cn_is_jp": 0.04,
+        "title_driver": 7.05,
+        "build_name_ok": 71.98,
+        "main_scan": 0.07,
+        "output": 0.07,
+        "total": 83.85
+      }
+    },
+    {
+      "iteration": 1,
+      "improved": true,
+      "categories": [],
+      "timing_ms": 83.94,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 83.94,
+      "validation": "pass",
+      "strategy": "",
+      "operation_timings": {
+        "data_loading": 0.14,
+        "resolve_codes": 0,
+        "build_cn_is_jp": 0.04,
+        "title_driver": 7.98,
+        "build_name_ok": 65.59,
+        "main_scan": 0.08,
+        "output": 0.07,
+        "total": 78.49
+      }
+    },
+    {
+      "iteration": 2,
+      "improved": true,
+      "categories": [],
+      "timing_ms": 78.19666666666667,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 78.19666666666667,
+      "validation": "pass",
+      "strategy": "",
+      "operation_timings": {
+        "data_loading": 0.13,
+        "resolve_codes": 0,
+        "build_cn_is_jp": 0.05,
+        "title_driver": 7.74,
+        "build_name_ok": 65.24,
+        "main_scan": 0.07,
+        "output": 0.06,
+        "total": 77.78
+      }
+    },
+    {
+      "iteration": 3,
+      "improved": false,
+      "categories": [],
+      "timing_ms": 80.19333333333334,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 80.19333333333334,
+      "validation": "pass",
+      "strategy": "",
+      "operation_timings": {
+        "data_loading": 0.14,
+        "resolve_codes": 0,
+        "build_cn_is_jp": 0.04,
+        "title_driver": 7.02,
+        "build_name_ok": 65.06,
+        "main_scan": 0.07,
+        "output": 0.09,
+        "total": 76.92
+      }
+    },
+    {
+      "iteration": 4,
+      "improved": true,
+      "categories": [],
+      "timing_ms": 76.72333333333333,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 76.72333333333333,
+      "validation": "pass",
+      "strategy": "",
+      "operation_timings": {
+        "data_loading": 0.13,
+        "resolve_codes": 0,
+        "build_cn_is_jp": 0.05,
+        "title_driver": 7.47,
+        "build_name_ok": 63.78,
+        "main_scan": 0.07,
+        "output": 0.06,
+        "total": 76.07
+      }
+    },
+    {
+      "iteration": 5,
+      "improved": true,
+      "categories": [],
+      "timing_ms": 76.29333333333334,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 76.29333333333334,
+      "validation": "pass",
+      "strategy": "",
+      "operation_timings": {
+        "data_loading": 0.14,
+        "resolve_codes": 0,
+        "build_cn_is_jp": 0.04,
+        "title_driver": 7.1,
+        "build_name_ok": 64.01,
+        "main_scan": 0.07,
+        "output": 0.06,
+        "total": 75.79
+      }
+    }
+  ]
+}

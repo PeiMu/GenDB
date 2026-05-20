@@ -1,0 +1,91 @@
+{
+  "query_id": "Q6a",
+  "pipeline": [
+    "resolve_keyword_id",
+    "build_name_filter_set",
+    "csr_enum_mk_for_keyword",
+    "lookup_title_year_filter",
+    "probe_cast_info_by_movie",
+    "min_aggregate"
+  ],
+  "join_order": [
+    {
+      "build": "keyword.keyword == 'marvel-cinematic-universe'",
+      "probe": "movie_keyword (via CSR movie_keyword__keyword_id)",
+      "type": "inner",
+      "strategy": "csr_index_lookup",
+      "build_cardinality": 1,
+      "notes": "Single keyword id resolves to small (<100) set of mk rows; use precomputed CSR index keyed by keyword_id."
+    },
+    {
+      "build": "mk.movie_id -> t_id (PK identity)",
+      "probe": "title.production_year[t_id-1] > 2010",
+      "type": "inner",
+      "strategy": "direct_array_lookup",
+      "build_cardinality": 100,
+      "notes": "title is dense PK, direct array index by (t_id-1); also handle INT32_MIN sentinel."
+    },
+    {
+      "build": "name.name LIKE '%Downey%Robert%' -> downey_robert_ids",
+      "probe": "cast_info.person_id (for ci rows of surviving t_id via offsets_only index)",
+      "type": "semi",
+      "strategy": "hash_set_probe",
+      "build_cardinality": 50,
+      "notes": "Pre-scan name (4.17M rows) with parallel substring search; verify pos(Downey)<pos(Robert). Build flat_hash_set<int32_t>. Tiny set (<200) but use hash set for O(1) membership."
+    },
+    {
+      "build": "downey_robert_ids",
+      "probe": "cast_info via cast_info__movie_id offsets_only for each surviving t_id",
+      "type": "semi",
+      "strategy": "offsets_index_range_scan",
+      "build_cardinality": 50,
+      "notes": "For each surviving t_id, scan ci.person_id range [off[t_id], off[t_id+1]); if any pid in set, emit (t_id, pid)."
+    }
+  ],
+  "filters": [
+    {"table": "keyword", "predicate": "keyword = 'marvel-cinematic-universe'", "selectivity": 7.4e-6, "method": "linear_scan_varlen_equality"},
+    {"table": "name", "predicate": "name LIKE '%Downey%Robert%'", "selectivity": 1.2e-5, "method": "parallel_scan_memmem_ordered"},
+    {"table": "title", "predicate": "production_year > 2010 AND != INT32_MIN", "selectivity": 0.12, "method": "direct_array_check_per_t_id"}
+  ],
+  "data_structures": {
+    "target_k_id": "int32_t scalar",
+    "downey_robert_ids": "flat_hash_set<int32_t>(reserve=256)",
+    "surviving_t_ids": "small std::vector<int32_t> (driver loop only)",
+    "min_name": "std::string_view tracking min",
+    "min_title": "std::string_view tracking min"
+  },
+  "parallelism": {
+    "strategy": "parallel_name_scan_then_serial_driver",
+    "name_scan_threads": "auto(nproc=12)",
+    "driver_threads": 1,
+    "notes": "Only the 4.17M name scan is large enough to parallelize (partition by row range, per-thread local hash set, merge at end). The mk-driven outer loop is tiny (<100 t_ids), keep serial to avoid sync overhead."
+  },
+  "indexes": [
+    {"index": "movie_keyword__keyword_id", "type": "CSR", "purpose": "enumerate mk rows for target_k_id"},
+    {"index": "cast_info__movie_id", "type": "offsets_only", "purpose": "scan ci.person_id range per t_id"}
+  ],
+  "aggregation": "scalar_min_three_columns",
+  "aggregation_notes": "MIN(k.keyword) is the literal 'marvel-cinematic-universe' (single fixed k.id) — emit as constant, no scan. MIN(n.name) tracked over matched person_ids via name.off/name.dat lookup. MIN(t.title) tracked over surviving t_ids via title.off/title.dat lookup.",
+  "memory_loads": {
+    "title.production_year": "mmap full int32 array (2528312 * 4B = ~9.6 MB)",
+    "movie_keyword.movie_id": "mmap full int32 array (~17.3 MB)",
+    "movie_keyword__keyword_id offsets": "mmap (~537 KB)",
+    "movie_keyword__keyword_id rowids": "mmap (~17.3 MB) — only touched for one keyword's range",
+    "cast_info__movie_id offsets": "mmap (~9.6 MB)",
+    "cast_info.person_id": "mmap (~138 MB) — only touched for surviving t_id ranges",
+    "name.off / name.dat": "mmap; full scan for filter; spot lookups for MIN output",
+    "title.off / title.dat": "mmap; spot lookups for MIN output",
+    "keyword.off / keyword.dat": "mmap; full scan for equality"
+  },
+  "early_exit": [
+    "If target_k_id not found in keyword scan: emit NULL row and exit.",
+    "If downey_robert_ids is empty after name scan: emit NULL row and exit.",
+    "If CSR range for target_k_id is empty: emit NULL row and exit."
+  ],
+  "output": {
+    "projection": ["MIN(k.keyword)", "MIN(n.name)", "MIN(t.title)"],
+    "order_by": [],
+    "limit": 1
+  },
+  "execution_target": "cpp"
+}

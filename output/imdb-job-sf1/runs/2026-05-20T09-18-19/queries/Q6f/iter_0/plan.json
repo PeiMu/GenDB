@@ -1,0 +1,88 @@
+{
+  "query_id": "Q6f",
+  "pipeline": [
+    "scan_keyword_filter",
+    "csr_probe_movie_keyword",
+    "filter_title_year",
+    "probe_cast_info_range",
+    "min_aggregate"
+  ],
+  "join_order": [
+    {
+      "build": "keyword(filtered IN 8 literals) -> target_k_ids[]",
+      "probe": "movie_keyword via CSR index movie_keyword__keyword_id",
+      "type": "inner",
+      "strategy": "csr_index_lookup",
+      "build_cardinality": 8,
+      "notes": "Scan keyword.keyword (134170 rows), collect k_ids whose keyword matches any of 8 literals. Also compute MIN(k.keyword) over matches inline."
+    },
+    {
+      "build": "t_ids surviving keyword join (dedup via bitset over title rows)",
+      "probe": "title.production_year[t_id-1] > 2000 && != INT32_MIN",
+      "type": "semi",
+      "strategy": "bitset_filter",
+      "build_cardinality": 20000,
+      "notes": "Use bitset(2528312) over title to dedup t_ids from CSR expansion; then iterate set bits and apply year filter; survivors go into a compact vector of qualifying t_ids."
+    },
+    {
+      "build": "qualifying_t_ids[] (vector<int32_t>)",
+      "probe": "cast_info via offsets_only index cast_info__movie_id",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 7000,
+      "notes": "For each t_id, scan ci range [ci_off[t_id], ci_off[t_id+1]); accumulate (t_id, pid) work. Also maintain candidate MIN(t.title) over qualifying t_ids."
+    },
+    {
+      "build": "name dimension (4167491 rows, no filter)",
+      "probe": "pid from ci rows",
+      "type": "inner",
+      "strategy": "direct_array_lookup",
+      "build_cardinality": 4167491,
+      "notes": "name.id is identity/dense; name_row = pid - 1. Maintain a bitset(4167491) of seen pids to skip duplicate varlen reads when comparing against current MIN(n.name)."
+    }
+  ],
+  "filters": [
+    {
+      "table": "keyword",
+      "predicate": "keyword IN ('superhero','sequel','second-part','marvel-comics','based-on-comic','tv-special','fight','violence')",
+      "selectivity": 0.00006
+    },
+    {
+      "table": "title",
+      "predicate": "production_year > 2000 AND production_year != INT32_MIN",
+      "selectivity": 0.33
+    }
+  ],
+  "data_structures": {
+    "keyword_literals": "small sorted array of 8 std::string_view + per-row strcmp during scan",
+    "target_k_ids": "std::vector<int32_t> (<=8 entries)",
+    "t_id_dedup": "bitset of size 2528312 over title row space",
+    "qualifying_t_ids": "std::vector<int32_t> (post year filter)",
+    "seen_pid": "bitset of size 4167491 to avoid repeated name varlen reads",
+    "min_keyword": "thread-local std::string_view, final reduce",
+    "min_name": "thread-local std::string_view, final reduce",
+    "min_title": "thread-local std::string_view, final reduce"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "notes": "Phase A (keyword scan + CSR expansion + year filter): single-threaded; output is small (~thousands of t_ids). Phase B (per-t_id cast_info probe with name MIN): parallelize over qualifying_t_ids in morsels; each thread keeps local seen_pid bitset (4167491 bits ~520KB ok) and local mins; reduce mins at end. seen_pid may also be a shared atomic bitset to reduce duplicate work but per-thread is simpler and acceptable."
+  },
+  "indexes": [
+    {
+      "index": "movie_keyword__keyword_id",
+      "purpose": "join_lookup: keyword_id -> mk row ids (CSR offsets + rowids)"
+    },
+    {
+      "index": "cast_info__movie_id",
+      "purpose": "join_lookup: movie_id -> ci row range (offsets_only)"
+    }
+  ],
+  "aggregation": "scalar_min_reduce",
+  "output": {
+    "columns": ["MIN(k.keyword) AS movie_keyword", "MIN(n.name) AS actor_name", "MIN(t.title) AS hero_movie"],
+    "order_by": [],
+    "limit": 1
+  },
+  "execution_target": "cpp"
+}

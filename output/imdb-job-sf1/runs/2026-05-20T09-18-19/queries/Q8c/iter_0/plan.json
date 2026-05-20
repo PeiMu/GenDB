@@ -1,0 +1,93 @@
+{
+  "query_id": "Q8c",
+  "pipeline": [
+    "resolve_dict_codes",
+    "build_is_us_company_bitset",
+    "enumerate_ci_writer_csr",
+    "probe_movie_companies_us",
+    "probe_aka_name_exists",
+    "min_aggregate_title_and_aka_name",
+    "merge_partial_mins"
+  ],
+  "join_order": [
+    {
+      "build": "role_type(role='writer') -> rt_id_writer (scalar)",
+      "probe": "cast_info via CSR cast_info__role_id",
+      "type": "semi",
+      "strategy": "csr_index_lookup",
+      "build_cardinality": 1,
+      "notes": "Use prebuilt CSR; iterate rowids[off[rt_id]..off[rt_id+1])."
+    },
+    {
+      "build": "company_name(country_code='[us]') -> is_us bitset(234997)",
+      "probe": "movie_companies.company_id",
+      "type": "semi",
+      "strategy": "bitset_lookup",
+      "build_cardinality": 234997,
+      "notes": "Single pass over cn.country_code.bin to set bits where == us_code; ~29 KB bitset fits L1."
+    },
+    {
+      "build": "movie_companies grouped by movie_id (offsets_only index)",
+      "probe": "ci.movie_id from writer-filtered ci rows",
+      "type": "semi",
+      "strategy": "offsets_index_lookup",
+      "build_cardinality": 2528314,
+      "notes": "For each writer ci row, walk mc range for ci.movie_id; check any mc.company_id is_us bit set. Short-circuit on first hit."
+    },
+    {
+      "build": "aka_name grouped by person_id (offsets_only index)",
+      "probe": "ci.person_id from writer-filtered ci rows",
+      "type": "semi",
+      "strategy": "offsets_index_lookup",
+      "build_cardinality": 4167493,
+      "notes": "Existence test (hi>lo) since n1.id is dense-PK identity; n1 join collapses to bounds check pid in [1, 4167491]."
+    }
+  ],
+  "filters": [
+    {"table": "role_type", "predicate": "role = 'writer'", "selectivity": 0.083},
+    {"table": "company_name", "predicate": "country_code = '[us]'", "selectivity": 0.4},
+    {"table": "cast_info", "predicate": "role_id = rt_id_writer (via CSR)", "selectivity": 0.1}
+  ],
+  "data_structures": {
+    "rt_id_writer": "int32 scalar",
+    "us_code": "int16 scalar",
+    "is_us_company": "std::vector<uint8_t> bitset sized to company_name row count (234997)",
+    "ci_role_csr": "prebuilt cast_info__role_id offsets+rowids (mmap/read_vec)",
+    "mc_movie_offsets": "prebuilt movie_companies__movie_id offsets (mmap/read_vec)",
+    "ak_person_offsets": "prebuilt aka_name__person_id offsets (mmap/read_vec)",
+    "min_aggregation": "per-thread {best_title_row, best_aka_name_row} indices; final lexicographic compare via off/dat slices"
+  },
+  "parallelism": {
+    "strategy": "partition_parallel_over_ci_role_csr_range",
+    "threads": "auto(nproc)",
+    "notes": "Split [lo,hi) of csr rowids for rt_id_writer into equal chunks; each thread maintains a local min (row index into title and into aka_name range). Reduce by lexicographic comparison of varlen strings using title.off/dat and aka_name.off/dat at finalize."
+  },
+  "indexes": [
+    {"index": "cast_info__role_id (CSR)", "purpose": "enumerate writer ci rows"},
+    {"index": "movie_companies__movie_id (offsets_only)", "purpose": "join_lookup ci.movie_id -> mc rows"},
+    {"index": "aka_name__person_id (offsets_only)", "purpose": "existence_check for a1 join"}
+  ],
+  "aggregation": "scalar_min_two_varlen_columns",
+  "min_aggregate_details": {
+    "writer_pseudo_name": {
+      "source": "aka_name.name (off/dat)",
+      "candidate_rows": "any ak row in [akpid_off[pid], akpid_off[pid+1]) for qualifying ci rows",
+      "strategy": "track current best row id; compare candidate string_view < current best string_view; update if smaller"
+    },
+    "movie_title": {
+      "source": "title.title (off/dat) at row mv-1",
+      "strategy": "track current best row id; lexicographic compare and update"
+    },
+    "reduction": "merge per-thread bests by string compare"
+  },
+  "execution_notes": [
+    "Per writer ci row r: pid=ci.person_id[r]; mv=ci.movie_id[r].",
+    "Existence on aka_name: if akpid_off[pid+1] <= akpid_off[pid], skip.",
+    "Existence on movie US company: scan mc rows in [mcmid_off[mv], mcmid_off[mv+1]); any company_id where is_us_company[company_id-1] set qualifies; break on first hit.",
+    "If qualifies, update local MIN(title at row mv-1) and iterate aka_name range [akpid_off[pid], akpid_off[pid+1]) updating local MIN(name).",
+    "n1 join is degenerate: name.id is identity dense-PK; n1.id = ci.person_id = a1.person_id is implied; no probe needed beyond bounds.",
+    "Avoid materializing intermediate result set; streaming min only."
+  ],
+  "output": {"select": ["MIN(a1.name) AS writer_pseudo_name", "MIN(t.title) AS movie_title"], "order_by": [], "limit": null},
+  "execution_target": "cpp"
+}

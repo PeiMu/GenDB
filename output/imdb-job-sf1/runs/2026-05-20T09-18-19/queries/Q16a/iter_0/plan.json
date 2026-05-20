@@ -1,0 +1,143 @@
+{
+  "query_id": "Q16a",
+  "pipeline": [
+    "resolve_dict_ids",
+    "build_cn_us_bitset",
+    "enumerate_mk_by_keyword_csr",
+    "dedup_movie_ids",
+    "filter_title_episode_nr",
+    "semi_join_movie_companies_us",
+    "probe_cast_info_by_movie",
+    "probe_aka_name_by_person",
+    "min_aggregate"
+  ],
+  "resolutions": [
+    {
+      "name": "k_id",
+      "source": "keyword.keyword == 'character-name-in-title'",
+      "method": "linear_scan_varlen",
+      "expected_matches": 1,
+      "files": ["keyword/keyword.off", "keyword/keyword.dat"]
+    },
+    {
+      "name": "us_code",
+      "source": "company_name.country_code dict == '[us]'",
+      "method": "linear_scan_dict",
+      "expected_matches": 1,
+      "files": ["company_name/country_code.dict.off", "company_name/country_code.dict.dat"]
+    }
+  ],
+  "filters": [
+    {"table": "keyword",      "predicate": "keyword = 'character-name-in-title'", "selectivity": 7.45e-6, "expected_rows": 1},
+    {"table": "company_name", "predicate": "country_code = '[us]'", "selectivity": 0.0416, "expected_rows": 9775, "materialize": "bitset(234997)"},
+    {"table": "title",        "predicate": "episode_nr != NULL AND episode_nr >= 50 AND episode_nr < 100", "selectivity_after_kid_dedup": 0.00349, "expected_rows_in_pipeline": 146, "null_sentinel": "INT32_MIN"}
+  ],
+  "join_order": [
+    {
+      "step": 1,
+      "build": "k_id (scalar)",
+      "probe": "movie_keyword via CSR movie_keyword__keyword_id[k_id]",
+      "type": "inner",
+      "strategy": "csr_enumerate",
+      "build_cardinality": 1,
+      "probe_cardinality": 41840,
+      "notes": "enumerate mk rows for k_id; emit mk.movie_id"
+    },
+    {
+      "step": 2,
+      "build": "distinct mv set",
+      "probe": "title (episode_nr filter applied row-by-row via t_ep[mv-1])",
+      "type": "inner",
+      "strategy": "dedup_then_filter",
+      "build_cardinality": 41819,
+      "probe_cardinality": 41819,
+      "expected_after": 146,
+      "notes": "dedup mv using hash_set or bitset(2528312); apply title.episode_nr predicate by direct array lookup"
+    },
+    {
+      "step": 3,
+      "build": "cn_us bitset(234997)",
+      "probe": "movie_companies via offsets_only by mv (existence check)",
+      "type": "semi",
+      "strategy": "offsets_only_existence_probe",
+      "build_cardinality": 9775,
+      "probe_cardinality": 146,
+      "expected_after": 1,
+      "notes": "for each surviving mv, scan mc rows [mc_off[mv], mc_off[mv+1]); short-circuit when cn_us[mc.company_id-1] is set"
+    },
+    {
+      "step": 4,
+      "build": "surviving mv set",
+      "probe": "cast_info via offsets_only by mv",
+      "type": "inner",
+      "strategy": "offsets_only_enumerate",
+      "build_cardinality": 1,
+      "probe_cardinality": 58,
+      "notes": "for each mv, enumerate ci rows; emit ci.person_id"
+    },
+    {
+      "step": 5,
+      "build": "ci.person_id (pid) values",
+      "probe": "aka_name via offsets_only by person_id",
+      "type": "inner",
+      "strategy": "offsets_only_enumerate",
+      "build_cardinality": 58,
+      "probe_cardinality": 25,
+      "notes": "for each pid, an_off[pid]..an_off[pid+1]; update MIN(an.name) over those rows. n.id is identity dense-PK so n join is implicit (pid must be in [1, n_name]). No materialization of name table needed."
+    }
+  ],
+  "data_structures": {
+    "cn_us_filter": "bitset(234997)",
+    "mv_dedup_set": "std::unordered_set<int32_t> (expected ~41819 entries; fits in L3)",
+    "mv_survivors": "std::vector<int32_t> (~146 entries after title+US filter)",
+    "min_aggregation": "two std::string_view tracking MIN(an.name) and MIN(t.title); initialize on first non-null observation"
+  },
+  "indexes": [
+    {"index": "movie_keyword__keyword_id (CSR)", "purpose": "driver: enumerate mk rows for k_id", "files": ["_idx/movie_keyword__keyword_id__offsets.bin", "_idx/movie_keyword__keyword_id__rowids.bin"]},
+    {"index": "movie_companies__movie_id (offsets_only)", "purpose": "semi-join existence check by mv", "files": ["_idx/movie_companies__movie_id__offsets.bin"], "addressing": "offsets[mv]..offsets[mv+1]"},
+    {"index": "cast_info__movie_id (offsets_only)", "purpose": "enumerate ci rows by mv", "files": ["_idx/cast_info__movie_id__offsets.bin"], "addressing": "offsets[mv]..offsets[mv+1]"},
+    {"index": "aka_name__person_id (offsets_only)", "purpose": "enumerate an rows by pid", "files": ["_idx/aka_name__person_id__offsets.bin"], "addressing": "offsets[pid]..offsets[pid+1]"}
+  ],
+  "column_files": {
+    "movie_keyword.movie_id": "movie_keyword/movie_id.bin (int32)",
+    "title.episode_nr": "title/episode_nr.bin (int32, NULL=INT32_MIN)",
+    "title.title": "title/title.off + title/title.dat (varlen)",
+    "movie_companies.company_id": "movie_companies/company_id.bin (int32)",
+    "company_name.country_code": "company_name/country_code.bin (int16 dict)",
+    "cast_info.person_id": "cast_info/person_id.bin (int32)",
+    "aka_name.name": "aka_name/name.off + aka_name/name.dat (varlen)"
+  },
+  "parallelism": {
+    "strategy": "single_threaded",
+    "threads": 1,
+    "rationale": "final cardinality is tiny (146 mv after title filter, 1 after US filter, 25 aka_name rows). Driver enumerates ~42K mk rows which completes in microseconds; thread-spawn overhead dominates any parallel benefit."
+  },
+  "aggregation": "scalar_min_two_columns",
+  "output": {
+    "projections": [
+      {"alias": "cool_actor_pseudonym", "expr": "MIN(an.name)"},
+      {"alias": "series_named_after_char", "expr": "MIN(t.title)"}
+    ],
+    "order_by": [],
+    "limit": 1,
+    "rows": 1
+  },
+  "name_table_join": {
+    "table": "name",
+    "strategy": "implicit_identity",
+    "notes": "name.id is dense-PK identity. The join n.id = ci.person_id AND n.id = an.person_id is satisfied automatically when ci.person_id maps to a valid aka_name entry; no materialization or probe of name needed since the query only requires MIN(an.name)."
+  },
+  "execution_target": "cpp",
+  "empirical_sample": {
+    "k_id": 117,
+    "us_code": 1,
+    "cn_us_count": 9775,
+    "mk_rows_for_kid": 41840,
+    "distinct_mv": 41819,
+    "mv_after_title_filter": 146,
+    "mv_after_us_company": 1,
+    "ci_rows_total": 58,
+    "matched_persons": 18,
+    "an_rows_total": 25
+  }
+}

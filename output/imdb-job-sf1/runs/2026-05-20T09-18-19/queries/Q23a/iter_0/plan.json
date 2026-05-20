@@ -1,0 +1,97 @@
+{
+  "query_id": "Q23a",
+  "pipeline": [
+    "resolve_dim_ids",
+    "scan_title_driver",
+    "probe_complete_cast",
+    "probe_movie_keyword",
+    "probe_movie_companies",
+    "probe_movie_info",
+    "aggregate_min"
+  ],
+  "dim_resolution": [
+    {"table": "comp_cast_type", "predicate": "kind = 'complete+verified'", "output": "cct1_id (int32)"},
+    {"table": "info_type", "predicate": "info = 'release dates'", "output": "it1_id (int32)"},
+    {"table": "kind_type", "predicate": "kind = 'movie'", "output": "kt_id (int32)"},
+    {"table": "company_name", "predicate": "country_code dict resolve '[us]'", "output": "us_code (int16)"}
+  ],
+  "driver": {
+    "table": "title",
+    "scan": "sequential id=1..2528312",
+    "filters": [
+      {"predicate": "kind_id == kt_id", "selectivity": 0.45},
+      {"predicate": "production_year > 2000", "selectivity": 0.30, "notes": "skip INT32_MIN nulls"}
+    ],
+    "estimated_survivors": 340000
+  },
+  "join_order": [
+    {
+      "build": "cct1_id (scalar)",
+      "probe": "complete_cast via offsets_only(complete_cast__movie_id)",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 1,
+      "notes": "smallest fact (~135K rows); status_id == cct1_id is very selective ('complete+verified' is rare). Check first to prune aggressively."
+    },
+    {
+      "build": "(none)",
+      "probe": "movie_keyword via offsets_only(movie_keyword__movie_id)",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 0,
+      "notes": "no k.keyword predicate — existence check: lo<hi is sufficient (FK guarantees keyword exists)."
+    },
+    {
+      "build": "company_name.country_code column (us_code scalar + country_code.bin lookup)",
+      "probe": "movie_companies via offsets_only(movie_companies__movie_id)",
+      "type": "semi",
+      "strategy": "index_nested_loop_with_column_lookup",
+      "build_cardinality": 1,
+      "notes": "for each mc row in [lo,hi): check country_code_bin[company_id-1] == us_code. company_type filter is trivial (no ct.kind predicate)."
+    },
+    {
+      "build": "it1_id (scalar)",
+      "probe": "movie_info via offsets_only(movie_info__movie_id)",
+      "type": "semi",
+      "strategy": "index_nested_loop_with_string_predicates",
+      "build_cardinality": 1,
+      "notes": "largest fact (~14.8M rows); placed last. Per row: info_type_id == it1_id first; then note LIKE '%internet%' (memmem on note slice; empty=NULL fail); then info non-empty AND 4-byte 'USA:' prefix memcmp AND memmem(' 199' OR ' 200')."
+    }
+  ],
+  "filters": [
+    {"table": "title", "predicate": "kind_id == kt_id", "selectivity": 0.45},
+    {"table": "title", "predicate": "production_year > 2000", "selectivity": 0.30},
+    {"table": "complete_cast", "predicate": "status_id == cct1_id", "selectivity": 0.30},
+    {"table": "movie_companies", "predicate": "country_code[company_id-1] == us_code", "selectivity": 0.50},
+    {"table": "movie_info", "predicate": "info_type_id == it1_id", "selectivity": 0.05},
+    {"table": "movie_info", "predicate": "note LIKE '%internet%'", "selectivity": 0.01},
+    {"table": "movie_info", "predicate": "info LIKE 'USA:% 199%' OR 'USA:% 200%'", "selectivity": 0.20}
+  ],
+  "data_structures": {
+    "dim_ids": "scalar int32_t (cct1_id, it1_id, kt_id) + scalar int16_t us_code",
+    "cn_country_code": "mmap of country_code.bin (direct array lookup by company_id-1)",
+    "fact_probes": "offsets_only index arrays (mmap int32) — direct range scan via off[v], off[v+1]",
+    "aggregation": "two scalar accumulators: int32_t min_title_off=INT32_MAX (track min title via offset comparison or direct strcmp); kt.kind is constant ('movie') since single kt_id passes",
+    "result_emit": "single row if any survivor; MIN(kt.kind) is constant, MIN(t.title) tracked by lexicographic min across survivors"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "morsel": "split title id space into ~96 morsels (~26K titles each) across 12 cores",
+    "reduction": "per-thread (min_title_str, has_result) → final min reduction"
+  },
+  "indexes": [
+    {"index": "complete_cast__movie_id", "purpose": "join_lookup (offsets_only)"},
+    {"index": "movie_keyword__movie_id", "purpose": "join_lookup (offsets_only, existence)"},
+    {"index": "movie_companies__movie_id", "purpose": "join_lookup (offsets_only)"},
+    {"index": "movie_info__movie_id", "purpose": "join_lookup (offsets_only)"}
+  ],
+  "aggregation": "scalar_min",
+  "output": {
+    "projections": ["MIN(kt.kind) AS movie_kind", "MIN(t.title) AS complete_us_internet_movie"],
+    "order_by": [],
+    "limit": 1,
+    "notes": "single-row scalar aggregate; emit only if at least one survivor"
+  },
+  "execution_target": "cpp"
+}

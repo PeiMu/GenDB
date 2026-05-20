@@ -1,0 +1,97 @@
+{
+  "query_id": "Q21a",
+  "pipeline": [
+    "resolve_dim_codes",
+    "build_cn_bitset",
+    "build_lt_set",
+    "build_sequel_movie_bitset",
+    "drive_ml_by_link_type",
+    "filter_title_year",
+    "probe_mk_sequel",
+    "probe_mi_country",
+    "probe_mc_cn_ct",
+    "aggregate_min"
+  ],
+  "dimension_resolution": [
+    {"name": "ct_pc", "source": "company_type.kind == 'production companies'", "type": "scalar_id"},
+    {"name": "k_sequel", "source": "keyword.keyword == 'sequel'", "type": "scalar_id"},
+    {"name": "cc_pl", "source": "company_name.country_code dict lookup '[pl]'", "type": "int16_code"},
+    {"name": "LT_ids", "source": "link_type.link LIKE '%follow%' (scan 18 rows)", "type": "small_id_set", "expected_size": 4},
+    {"name": "MI_set", "source": "8 country literal strings", "type": "string_set"}
+  ],
+  "filters": [
+    {"table": "company_name", "predicate": "country_code != cc_pl AND country_code != 0 AND (name LIKE '%Film%' OR name LIKE '%Warner%')", "selectivity": 0.02, "output": "CN_ids bitset[234998]"},
+    {"table": "link_type", "predicate": "link LIKE '%follow%'", "selectivity": 0.22, "output": "LT_ids small set"},
+    {"table": "movie_link", "predicate": "link_type_id IN LT_ids", "selectivity": 0.25, "input_cardinality": 29997, "output_cardinality": 7500},
+    {"table": "title", "predicate": "production_year BETWEEN 1950 AND 2000 AND != INT32_MIN", "selectivity": 0.5, "applied_per_mv": true},
+    {"table": "movie_keyword", "predicate": "keyword_id == k_sequel", "via": "movie_keyword__keyword_id CSR", "output": "seq_bitset[2528313]"},
+    {"table": "movie_info", "predicate": "info IN MI_set (length-prune + equality)", "selectivity": 0.02},
+    {"table": "movie_companies", "predicate": "note IS NULL AND company_type_id == ct_pc AND CN_ids[company_id]", "selectivity_combined": 0.002}
+  ],
+  "join_order": [
+    {
+      "step": 1,
+      "driver": "movie_link",
+      "strategy": "linear_scan_with_lt_set",
+      "build": "LT_ids (small set, ~4 ids)",
+      "probe": "movie_link.link_type_id (29997 rows)",
+      "type": "semi",
+      "output": "list of (mv=movie_id, lt_id) pairs, ~7500"
+    },
+    {
+      "step": 2,
+      "build": "title.production_year range filter",
+      "probe": "mv values from step 1",
+      "type": "filter",
+      "strategy": "direct_array_lookup",
+      "output": "~3750 surviving mvs"
+    },
+    {
+      "step": 3,
+      "build": "seq_bitset (sequel-tagged movies, precomputed)",
+      "probe": "mv values from step 2",
+      "type": "semi",
+      "strategy": "bitset_lookup",
+      "build_cardinality": 2528313,
+      "notes": "bitset lookup is O(1); much faster than walking movie_keyword range per mv"
+    },
+    {
+      "step": 4,
+      "build": "MI_set (8 strings)",
+      "probe": "movie_info range per surviving mv via movie_info__movie_id offsets",
+      "type": "semi",
+      "strategy": "range_walk_with_length_prune",
+      "notes": "early-exit on first match per mv"
+    },
+    {
+      "step": 5,
+      "build": "CN_ids bitset + ct_pc scalar",
+      "probe": "movie_companies range per surviving mv via movie_companies__movie_id offsets",
+      "type": "inner",
+      "strategy": "range_walk_with_note_null_check",
+      "notes": "note IS NULL via offsets equality; emit (mv, lt_id, company_id) for aggregation"
+    }
+  ],
+  "data_structures": {
+    "CN_ids": "bitset(234998)",
+    "LT_ids": "flat_array<int32>(small ~4)",
+    "MI_set": "array of 8 (length, bytes) pairs",
+    "seq_bitset": "bitset(2528313)",
+    "aggregation": "three scalar min reducers (string MIN via lexicographic compare)"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "morsel_unit": "chunk of mv candidates from step 2",
+    "reduction": "per-thread local min triples merged at end"
+  },
+  "indexes": [
+    {"index": "movie_keyword__keyword_id (CSR)", "purpose": "precompute seq_bitset for k_sequel"},
+    {"index": "movie_info__movie_id (offsets_only)", "purpose": "per-mv range walk for country info"},
+    {"index": "movie_companies__movie_id (offsets_only)", "purpose": "per-mv range walk for mc rows"},
+    {"index": "movie_link__movie_id (offsets_only)", "purpose": "optional; driving ml linearly so unused"}
+  ],
+  "aggregation": "scalar_min_three_columns",
+  "output": {"select": ["MIN(cn.name)", "MIN(lt.link)", "MIN(t.title)"], "order_by": [], "limit": 1},
+  "execution_target": "cpp"
+}

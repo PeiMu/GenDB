@@ -1,0 +1,25 @@
+{
+  "query_id": "Q11a",
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 21.94,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 21.94,
+      "validation": "pass",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "data_loading": 0.15,
+        "resolve_dims": 0.02,
+        "filter_company_name": 11.36,
+        "main_scan": 7.54,
+        "output": 0.06,
+        "total": 21.44
+      }
+    }
+  ]
+}

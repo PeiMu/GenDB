@@ -1,0 +1,148 @@
+{
+  "query_id": "Q24a",
+  "pipeline": [
+    "resolve_dims",
+    "build_valid_persons_bitset",
+    "build_us_companies_bitset",
+    "scan_title_driver",
+    "probe_mk_kw",
+    "probe_mc_us",
+    "probe_mi_release_like",
+    "probe_ci_note_actress_person",
+    "probe_aka_existence",
+    "fetch_chn_name",
+    "aggregate_min"
+  ],
+  "pre_pass": [
+    {
+      "name": "resolve_role_type",
+      "table": "role_type",
+      "action": "scan rows; find rt_id where role == 'actress'",
+      "output": "int32 rt_id"
+    },
+    {
+      "name": "resolve_info_type",
+      "table": "info_type",
+      "action": "scan rows; find it_id where info == 'release dates'",
+      "output": "int32 it_id"
+    },
+    {
+      "name": "resolve_keywords",
+      "table": "keyword",
+      "action": "scan keyword.off/.dat; collect ids for {'hero','martial-arts','hand-to-hand-combat'}",
+      "output": "small flat_array<int32> kw_ids (size up to 3); also bitset over keyword id range or linear scan since |kw_ids|<=3"
+    },
+    {
+      "name": "resolve_us_code",
+      "table": "company_name",
+      "action": "read country_code dict to find dict code for '[us]'",
+      "output": "int8 us_code"
+    },
+    {
+      "name": "resolve_f_code",
+      "table": "name",
+      "action": "read name.gender dict to find dict code for 'f'",
+      "output": "int8 f_code"
+    },
+    {
+      "name": "build_us_companies_bitset",
+      "table": "company_name",
+      "action": "scan country_code.bin; bitset valid_companies[cn_id-1] = (country_code == us_code)",
+      "size": 234997,
+      "structure": "bitset(234997)"
+    },
+    {
+      "name": "build_valid_persons_bitset",
+      "table": "name",
+      "action": "scan name.gender and name.name; bitset valid_persons[p-1] = (gender == f_code) AND memmem(name, 'An')",
+      "size": 4167491,
+      "structure": "bitset(4167491)",
+      "parallel": true
+    },
+    {
+      "name": "build_note_set",
+      "table": "cast_info",
+      "action": "construct flat_hash_set<string_view> of 4 literals: '(voice)','(voice: Japanese version)','(voice) (uncredited)','(voice: English version)'",
+      "structure": "flat_hash_set<string_view> (4 entries) with length prefilter"
+    }
+  ],
+  "join_order": [
+    {
+      "build": "title(production_year>2010)",
+      "probe": "movie_keyword via movie_keyword__movie_id offsets",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "notes": "for each surviving t.id v, scan mk[lo..hi); filter keyword_id in kw_ids (linear over 3)"
+    },
+    {
+      "build": "valid_companies_bitset",
+      "probe": "movie_companies via movie_companies__movie_id offsets",
+      "type": "semi",
+      "strategy": "index_nested_loop + bitset_probe",
+      "notes": "for each v that survived mk, scan mc[lo..hi); accept if valid_companies[company_id-1]"
+    },
+    {
+      "build": "{it_id, japan/usa LIKE}",
+      "probe": "movie_info via movie_info__movie_id offsets",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "notes": "for each v that survived mc, scan mi[lo..hi); filter info_type_id==it_id AND info nonempty AND (memcmp prefix 'Japan:' OR 'USA:') AND memmem remainder '201'"
+    },
+    {
+      "build": "{rt_id, valid_persons, note_set}",
+      "probe": "cast_info via cast_info__movie_id offsets",
+      "type": "inner",
+      "strategy": "index_nested_loop + bitset_probe + hash_set_probe",
+      "notes": "for each v that survived mi, scan ci[lo..hi); filter role_id==rt_id AND person_role_id != INT32_MIN AND valid_persons[person_id-1] AND note_set.contains(note)"
+    },
+    {
+      "build": "aka_name__person_id offsets",
+      "probe": "ci.person_id",
+      "type": "semi",
+      "strategy": "index_lookup",
+      "notes": "accept if aka_off[p] < aka_off[p+1]"
+    },
+    {
+      "build": "char_name.name direct index",
+      "probe": "ci.person_role_id",
+      "type": "inner",
+      "strategy": "direct_array",
+      "notes": "fetch chn.name via name.off[chn_id-1]..name.off[chn_id] for running MIN"
+    }
+  ],
+  "filters": [
+    {"table": "title", "predicate": "production_year > 2010 (skip INT32_MIN)", "selectivity": 0.25},
+    {"table": "movie_keyword", "predicate": "keyword_id IN kw_ids", "selectivity": 2.2e-5},
+    {"table": "movie_companies", "predicate": "valid_companies[company_id-1]", "selectivity": 0.4},
+    {"table": "movie_info", "predicate": "info_type_id==it_id AND info LIKE 'Japan:%201%' OR 'USA:%201%'", "selectivity": 0.01},
+    {"table": "cast_info", "predicate": "role_id==rt_id AND note IN 4-set AND valid_persons[person_id-1] AND person_role_id!=NULL", "selectivity": 0.0005},
+    {"table": "aka_name", "predicate": "EXISTS via offsets", "selectivity": 0.2},
+    {"table": "name", "predicate": "gender='f' AND name LIKE '%An%'", "selectivity": 0.05},
+    {"table": "company_name", "predicate": "country_code='[us]'", "selectivity": 0.5}
+  ],
+  "data_structures": {
+    "valid_persons": "bitset(4167491)",
+    "valid_companies": "bitset(234997)",
+    "kw_ids": "flat_array<int32> (size up to 3)",
+    "note_set": "flat_hash_set<string_view> (4 entries) with length prefilter",
+    "aggregation": "running MIN scalars (3 string_view via memcpy to local owned buffer on update)"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "morsel": "title id range; each thread maintains thread-local MIN strings then merged at end",
+    "prepass_parallel": ["build_valid_persons_bitset"]
+  },
+  "indexes": [
+    {"index": "movie_keyword__movie_id", "purpose": "offsets_only by t.id for mk scan"},
+    {"index": "movie_companies__movie_id", "purpose": "offsets_only by t.id for mc scan"},
+    {"index": "movie_info__movie_id", "purpose": "offsets_only by t.id for mi scan"},
+    {"index": "cast_info__movie_id", "purpose": "offsets_only by t.id for ci scan"},
+    {"index": "aka_name__person_id", "purpose": "EXISTS check on ci.person_id"},
+    {"index": "char_name/name.off", "purpose": "direct slice for chn.name fetch"}
+  ],
+  "join_order_rationale": "Probe in order of cheapness/selectivity: mk first (only 3 kw_ids globally, kills nearly all titles), then mc (us bitset), then mi (info LIKE), then ci (heaviest fact). aka existence and chn fetch happen only for surviving ci rows.",
+  "aggregation": "scalar_min_3cols",
+  "output": {"order_by": [], "limit": 1, "projection": ["MIN(chn.name)", "MIN(n.name)", "MIN(t.title)"]},
+  "execution_target": "cpp"
+}

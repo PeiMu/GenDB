@@ -107,7 +107,7 @@ fi
 echo ""
 echo "=== Step 3: Verifying query parsing ==="
 
-node -e "
+node --input-type=module -e "
 import { parseQueryFile } from './src/gendb/shared.mjs';
 import { readFileSync } from 'fs';
 const q = parseQueryFile(readFileSync('$BENCHMARK_DIR/queries.sql', 'utf-8'));

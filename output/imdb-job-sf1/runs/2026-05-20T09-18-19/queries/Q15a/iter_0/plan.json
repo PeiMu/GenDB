@@ -1,0 +1,116 @@
+{
+  "query_id": "Q15a",
+  "pipeline": [
+    "resolve_dict_codes",
+    "build_cn_us_bitset",
+    "scan_title_filter_year",
+    "probe_aka_title_existence",
+    "probe_movie_keyword_existence",
+    "probe_movie_companies_with_filters",
+    "probe_movie_info_with_filters",
+    "aggregate_min"
+  ],
+  "join_order": [
+    {
+      "build": "info_type(info='release dates') -> it1_id scalar",
+      "probe": "scalar lookup",
+      "type": "scalar",
+      "strategy": "linear_scan_dict",
+      "build_cardinality": 1,
+      "notes": "Resolve it1_id once via linear scan of info_type.info dict (113 rows)."
+    },
+    {
+      "build": "company_name.country_code dict scan -> us_code int16",
+      "probe": "scalar lookup",
+      "type": "scalar",
+      "strategy": "linear_scan_dict",
+      "build_cardinality": 1,
+      "notes": "Resolve us_code int16 from country_code dict."
+    },
+    {
+      "build": "company_name filtered by country_code==us_code -> bitset[234997]",
+      "probe": "mc.company_id",
+      "type": "semi",
+      "strategy": "direct_array",
+      "build_cardinality": 234997,
+      "notes": "Dense-PK; build bitset (or bool[]) indexed by company_id-1 for O(1) probe."
+    },
+    {
+      "build": "title filtered (production_year>2000) -> driver",
+      "probe": "title rows",
+      "type": "driver_scan",
+      "strategy": "sequential_scan",
+      "build_cardinality": 2528312,
+      "notes": "Title is driver. ~30-40% pass year filter."
+    },
+    {
+      "build": "title driver row mv",
+      "probe": "aka_title via offsets[mv..mv+1)",
+      "type": "semi",
+      "strategy": "offsets_only_range",
+      "build_cardinality": 1,
+      "notes": "Existence check: range non-empty."
+    },
+    {
+      "build": "title driver row mv",
+      "probe": "movie_keyword via offsets[mv..mv+1)",
+      "type": "semi",
+      "strategy": "offsets_only_range",
+      "build_cardinality": 1,
+      "notes": "Existence check: any mk row matches since k has no filter."
+    },
+    {
+      "build": "title driver row mv (+ cn_us bitset)",
+      "probe": "movie_companies via offsets[mv..mv+1)",
+      "type": "semi",
+      "strategy": "offsets_only_range",
+      "build_cardinality": 1,
+      "notes": "Per mc row check: cn_us_bitset[company_id-1] && memmem(note,'(200',4) && memmem(note,'(worldwide)',11). ct.id 1..4 always valid (existence)."
+    },
+    {
+      "build": "title driver row mv (+ it1_id)",
+      "probe": "movie_info via offsets[mv..mv+1)",
+      "type": "inner_existence_for_min",
+      "strategy": "offsets_only_range",
+      "build_cardinality": 1,
+      "notes": "Per mi row check info_type_id==it1_id, memmem(note,'internet',8), info startswith 'USA:' AND memmem(info+4,' 200',4). Track MIN(mi.info) and MIN(t.title) on first surviving mi row per title."
+    }
+  ],
+  "filters": [
+    {"table": "company_name", "predicate": "country_code = '[us]'", "selectivity": 0.35},
+    {"table": "info_type", "predicate": "info = 'release dates'", "selectivity": 0.009},
+    {"table": "title", "predicate": "production_year > 2000", "selectivity": 0.4},
+    {"table": "movie_companies", "predicate": "note LIKE '%(200%)%' AND note LIKE '%(worldwide)%'", "selectivity": 0.002},
+    {"table": "movie_info", "predicate": "info_type_id=it1_id AND note LIKE '%internet%' AND info LIKE 'USA:% 200%'", "selectivity": 0.0005}
+  ],
+  "data_structures": {
+    "us_code": "int16 scalar",
+    "it1_id": "int32 scalar",
+    "cn_us_bitset": "std::vector<uint8_t>(234997) indexed by company_id-1",
+    "min_mi_info": "std::string (varlen, lex-min)",
+    "min_t_title": "std::string (varlen, lex-min)",
+    "per_thread_mins": "array<pair<string,string>>(nthreads) reduced at end"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(12)",
+    "morsel": "title row ranges of ~16k rows",
+    "notes": "Parallelize outer title driver; each thread maintains local MIN pair; final reduction picks lex-min."
+  },
+  "indexes": [
+    {"index": "aka_title__movie_id__offsets", "purpose": "join_lookup_existence"},
+    {"index": "movie_keyword__movie_id__offsets", "purpose": "join_lookup_existence"},
+    {"index": "movie_companies__movie_id__offsets", "purpose": "join_lookup_probe"},
+    {"index": "movie_info__movie_id__offsets", "purpose": "join_lookup_probe"}
+  ],
+  "aggregation": "scalar_min_two_columns",
+  "output": {"order_by": [], "limit": 1, "projection": ["MIN(mi.info) AS release_date", "MIN(t.title) AS internet_movie"]},
+  "probe_order_per_title": [
+    "aka_title_existence (cheap)",
+    "movie_keyword_existence (cheap)",
+    "movie_companies (note LIKE + cn_us)",
+    "movie_info (most selective; compute MIN here)"
+  ],
+  "short_circuit": "Skip title row if any earlier semi-join fails before doing the expensive mi scan.",
+  "execution_target": "cpp"
+}

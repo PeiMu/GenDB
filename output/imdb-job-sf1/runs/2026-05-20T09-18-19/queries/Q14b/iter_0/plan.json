@@ -1,0 +1,69 @@
+{
+  "query_id": "Q14b",
+  "pipeline": [
+    "resolve_dims",
+    "scan_title_filter",
+    "semi_join_mk",
+    "semi_join_mi",
+    "probe_mi_idx_aggregate"
+  ],
+  "join_order": [
+    {
+      "build": "title(filtered: production_year>2010 AND kind_id==kt_id AND title LIKE %murder%|%Murder%|%Mord%)",
+      "probe": "movie_keyword (via offsets_only index on movie_id)",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 3000,
+      "notes": "title is small after filters; use movie_keyword__movie_id offsets to fetch mk rows for each candidate movie_id, check keyword_id in k_ids set"
+    },
+    {
+      "build": "title_survivors_after_mk",
+      "probe": "movie_info (via offsets_only index on movie_id)",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 1500,
+      "notes": "for each surviving movie_id, scan mi rows; require info_type_id==it1_id and info in country flat hash set"
+    },
+    {
+      "build": "title_survivors_after_mi",
+      "probe": "movie_info_idx (via offsets_only index on movie_id)",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 800,
+      "notes": "for each surviving movie_id, scan mi_idx rows; require info_type_id==it2_id and lex_gt(info,'6.0'); update MIN(mi_idx.info) and MIN(t.title)"
+    }
+  ],
+  "filters": [
+    {"table": "info_type", "predicate": "info='countries'", "selectivity": 0.0088, "notes": "resolve it1_id via single dict scan"},
+    {"table": "info_type", "predicate": "info='rating'", "selectivity": 0.0088, "notes": "resolve it2_id via single dict scan"},
+    {"table": "kind_type", "predicate": "kind='movie'", "selectivity": 0.143, "notes": "resolve kt_id via single dict scan"},
+    {"table": "keyword", "predicate": "keyword IN ('murder','murder-in-title')", "selectivity": 0.0000149, "notes": "scan to build small k_ids set (size 2)"},
+    {"table": "title", "predicate": "production_year > 2010 AND production_year != INT32_MIN", "selectivity": 0.15},
+    {"table": "title", "predicate": "kind_id == kt_id", "selectivity": 0.55},
+    {"table": "title", "predicate": "memmem title with 'murder'|'Murder'|'Mord'", "selectivity": 0.003, "notes": "applied after cheap int filters; short-circuit OR"},
+    {"table": "movie_info", "predicate": "info_type_id==it1_id AND info IN (10 country strings)", "selectivity": 0.02, "notes": "length-prefilter then memcmp via flat hash set"},
+    {"table": "movie_info_idx", "predicate": "info_type_id==it2_id AND lex_gt(info,'6.0')", "selectivity": 0.5}
+  ],
+  "data_structures": {
+    "k_ids": "flat_array<int32_t>(size=2) linear scan",
+    "country_set": "flat hash set of 10 short strings with length-prefilter then memcmp",
+    "title_candidates": "vector<int32_t> of movie_ids surviving filters",
+    "mk_lookup": "offsets_only index movie_keyword__movie_id (pre-built, mmap'd)",
+    "mi_lookup": "offsets_only index movie_info__movie_id (pre-built, mmap'd)",
+    "mi_idx_lookup": "offsets_only index movie_info_idx__movie_id (pre-built, mmap'd)",
+    "aggregation": "two scalars: min_rating (std::string), min_title (std::string) guarded by per-thread locals then reduced"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "notes": "partition title row range into morsels (~64K rows). Per-thread locals for min_rating and min_title; final reduction by min."
+  },
+  "indexes": [
+    {"index": "movie_keyword__movie_id (offsets_only)", "purpose": "join_lookup mk by movie_id"},
+    {"index": "movie_info__movie_id (offsets_only)", "purpose": "join_lookup mi by movie_id"},
+    {"index": "movie_info_idx__movie_id (offsets_only)", "purpose": "join_lookup mi_idx by movie_id"}
+  ],
+  "aggregation": "scalar_min_min",
+  "output": {"order_by": [], "limit": 1, "projection": ["MIN(mi_idx.info) AS rating", "MIN(t.title) AS western_dark_production"]},
+  "execution_target": "cpp"
+}

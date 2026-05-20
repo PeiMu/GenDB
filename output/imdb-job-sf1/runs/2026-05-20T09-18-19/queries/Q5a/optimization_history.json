@@ -1,0 +1,24 @@
+{
+  "query_id": "Q5a",
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 4.78,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 4.78,
+      "validation": "pass",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "data_loading": 0.08,
+        "resolve_ct": 0,
+        "main_scan": 2.74,
+        "output": 0.07,
+        "total": 4.78
+      }
+    }
+  ]
+}

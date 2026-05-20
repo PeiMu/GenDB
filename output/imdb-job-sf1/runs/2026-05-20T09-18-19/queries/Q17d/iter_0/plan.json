@@ -1,0 +1,71 @@
+{
+  "query_id": "Q17d",
+  "pipeline": [
+    "resolve_keyword_id",
+    "prescan_name_bert",
+    "csr_movie_keyword_by_kid",
+    "probe_movie_companies_existence",
+    "probe_cast_info_persons",
+    "lookup_bert_bitmap",
+    "aggregate_min_name"
+  ],
+  "join_order": [
+    {
+      "build": "keyword(k.keyword='character-name-in-title')",
+      "probe": "movie_keyword (CSR on keyword_id)",
+      "type": "inner",
+      "strategy": "direct_array",
+      "build_cardinality": 1,
+      "notes": "Resolve single k_id by linear scan of keyword.dat; iterate CSR slice mk_k_off[k_id..k_id+1]."
+    },
+    {
+      "build": "mk.movie_id set (driver)",
+      "probe": "movie_companies (offsets_only)",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 50000,
+      "notes": "For each mv from mk slice, check mc offsets[mv+1]-offsets[mv] > 0 (existence only; cn dim has no filter)."
+    },
+    {
+      "build": "mv (passing mc existence)",
+      "probe": "cast_info (offsets_only on movie_id)",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 50000,
+      "notes": "For each mv, iterate ci rows in ci_movie_off[mv..mv+1]; load person_id and lookup bert bitmap."
+    },
+    {
+      "build": "name.name LIKE '%Bert%' bitmap[N]",
+      "probe": "cast_info.person_id",
+      "type": "semi",
+      "strategy": "direct_array",
+      "build_cardinality": 4167491,
+      "notes": "Pre-built dense uint8_t bitmap indexed by person_id-1; O(1) lookup per ci row."
+    }
+  ],
+  "filters": [
+    {"table": "keyword", "predicate": "k.keyword = 'character-name-in-title'", "selectivity": 7.5e-06},
+    {"table": "name", "predicate": "n.name LIKE '%Bert%' (memmem)", "selectivity": 0.001}
+  ],
+  "data_structures": {
+    "keyword_id": "int32 scalar",
+    "bert_bitmap": "std::vector<uint8_t>(name_rows) dense 0/1 indexed by person_id-1",
+    "mk_csr": "pre_built_index (offsets+rowids int32)",
+    "mc_offsets": "pre_built_index (offsets_only int32)",
+    "ci_offsets": "pre_built_index (offsets_only int32)",
+    "aggregation": "scalar MIN over name.off/name.dat slices using lex compare (memcmp)"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "notes": "Parallelize the outer loop over the mk CSR slice (k in [lo,hi)); each thread keeps a local best name_id and merges at end with lexicographic MIN."
+  },
+  "indexes": [
+    {"index": "movie_keyword__keyword_id (CSR)", "purpose": "driver_scan"},
+    {"index": "movie_companies__movie_id (offsets_only)", "purpose": "existence_probe"},
+    {"index": "cast_info__movie_id (offsets_only)", "purpose": "join_lookup"}
+  ],
+  "aggregation": "scalar_min",
+  "output": {"order_by": [], "limit": 1},
+  "execution_target": "cpp"
+}

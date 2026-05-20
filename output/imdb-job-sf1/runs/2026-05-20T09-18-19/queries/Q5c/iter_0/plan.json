@@ -1,0 +1,81 @@
+{
+  "query_id": "Q5c",
+  "pipeline": [
+    "resolve_ct_id",
+    "scan_title_filter_year",
+    "probe_mc_via_offsets_index",
+    "filter_mc_ct_and_note",
+    "probe_mi_via_offsets_index",
+    "filter_mi_info_in_set",
+    "min_aggregate_title"
+  ],
+  "join_order": [
+    {
+      "build": "company_type(kind='production companies')",
+      "probe": "movie_companies.company_type_id",
+      "type": "inner",
+      "strategy": "scalar_equality_check",
+      "build_cardinality": 1,
+      "notes": "Resolve single int32 target_ct_id by scanning kind.off/kind.dat once; then mc passes iff mc_ct[r] == target_ct_id."
+    },
+    {
+      "build": "title(production_year>1990)",
+      "probe": "movie_companies(movie_id)",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 1517000,
+      "notes": "title is dense PK driver; for each surviving t_id walk mc_off[t_id]..mc_off[t_id+1] using offsets_only index."
+    },
+    {
+      "build": "(title x mc filtered)",
+      "probe": "movie_info(movie_id)",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 80000,
+      "notes": "After mc filters survive (small), probe mi_off[t_id]..mi_off[t_id+1] for each surviving t_id; emit rows where mi.info IN set."
+    },
+    {
+      "build": "info_type",
+      "probe": "movie_info.info_type_id",
+      "type": "inner",
+      "strategy": "skip_join",
+      "build_cardinality": 113,
+      "notes": "info_type has no filter and is dense PK 0..112; every mi.info_type_id is guaranteed to match. Join is a no-op and can be omitted at runtime."
+    }
+  ],
+  "filters": [
+    {"table": "company_type", "predicate": "kind = 'production companies'", "selectivity": 0.25},
+    {"table": "title", "predicate": "production_year > 1990 AND production_year != INT32_MIN", "selectivity": 0.60},
+    {"table": "movie_companies", "predicate": "company_type_id == target_ct_id", "selectivity": 0.25},
+    {"table": "movie_companies", "predicate": "note_len>=5 && memmem(note,'(USA)') && !memmem(note,'(TV)')", "selectivity": 0.04},
+    {"table": "movie_info", "predicate": "info IN (10-literal set)", "selectivity": 0.04}
+  ],
+  "data_structures": {
+    "target_ct_id": "int32_t scalar (resolved once from company_type/kind)",
+    "title_year_filter": "streamed (no materialization; evaluated inline per morsel)",
+    "mc_index": "pre_built offsets_only int32 array (mmap _idx/movie_companies__movie_id__offsets.bin)",
+    "mi_index": "pre_built offsets_only int32 array (mmap _idx/movie_info__movie_id__offsets.bin)",
+    "mi_info_set": "small inline switch on length then memcmp against 10 literals (length-bucketed); ~10 literals all short -> branchy compare faster than hash",
+    "aggregation": "per-thread local min char buffer + final reduce; single scalar MIN(title)"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc)",
+    "morsel": "title row ranges of 65536 t_ids; each worker keeps local best_title (string) and final reducer picks lexicographic min"
+  },
+  "indexes": [
+    {"index": "movie_companies__movie_id", "purpose": "join_lookup (per t_id range probe)"},
+    {"index": "movie_info__movie_id", "purpose": "join_lookup (per t_id range probe)"}
+  ],
+  "aggregation": "scalar_min_per_thread_then_reduce",
+  "output": {"order_by": [], "limit": 1, "projection": ["MIN(t.title) AS american_movie"]},
+  "notes_for_codegen": [
+    "Resolve target_ct_id ONCE before parallel region by scanning company_type/kind.off+kind.dat (4 entries).",
+    "Skip info_type entirely: dense PK, no filter -> every mi.info_type_id matches.",
+    "Per-title pipeline: (1) year filter on title; (2) if pass, iterate mc range, apply ct + note filters; (3) if any mc row passes, iterate mi range, apply info IN; (4) on first surviving (mc,mi) combination per t_id, read title and update local min (early-exit inner loops since MIN cares only about existence of any surviving combo for that t_id).",
+    "Once title is admitted to MIN candidate set, we still need to compare lexicographically against current best; but inner loops over mc/mi can break on first match for that t_id.",
+    "varlen comparisons: keep best as owned std::string per thread; compare new title via lexicographic compare on (ptr,len).",
+    "Length prefilter mc.note: len>=5 before memmem; mi.info: bucket by length (3,5,6,7,8) before memcmp."
+  ],
+  "execution_target": "cpp"
+}

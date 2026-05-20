@@ -1,0 +1,75 @@
+{
+  "query_id": "Q6d",
+  "pipeline": [
+    "scan_keyword_filter",
+    "scan_name_filter",
+    "expand_mk_via_csr",
+    "filter_title_year",
+    "probe_cast_info",
+    "membership_test_name",
+    "min_aggregates"
+  ],
+  "filters": [
+    {"table": "keyword", "predicate": "keyword IN (8 literals)", "selectivity": 0.00006, "expected_rows": 8},
+    {"table": "name", "predicate": "name LIKE '%Downey%Robert%'", "selectivity": 0.0000005, "expected_rows": 2},
+    {"table": "title", "predicate": "production_year > 2000 AND != INT32_MIN", "selectivity": 0.33, "expected_rows": 834000}
+  ],
+  "join_order": [
+    {
+      "build": "keyword(filtered) -> target_k_ids",
+      "probe": "movie_keyword via CSR idx movie_keyword__keyword_id",
+      "type": "inner",
+      "strategy": "pre_built_csr_index",
+      "build_cardinality": 8,
+      "notes": "Iterate 8 target k_ids; CSR yields mk row ids; load mk_movie_id[mk_row] to get t_id."
+    },
+    {
+      "build": "title.production_year inline check",
+      "probe": "t_id stream from mk",
+      "type": "semi",
+      "strategy": "direct_array_lookup",
+      "build_cardinality": 2528312,
+      "notes": "production_year_bin[t_id-1] > 2000 && != INT32_MIN. Dedup t_ids per k_id to avoid repeated ci probes."
+    },
+    {
+      "build": "name(filtered) -> downey_robert_ids (flat_array, ~2 ids)",
+      "probe": "cast_info via offsets idx cast_info__movie_id, scan person_id[lo..hi]",
+      "type": "semi",
+      "strategy": "small_set_linear_scan",
+      "build_cardinality": 2,
+      "notes": "downey_robert_ids tiny; use sorted std::array linear scan or 2-element compare; avoid hash overhead."
+    }
+  ],
+  "data_structures": {
+    "target_k_ids": "std::vector<int32_t> (size ~8)",
+    "downey_robert_ids": "std::vector<int32_t> (size ~2, sorted) for linear membership test",
+    "t_id_dedup_per_k": "std::vector<uint8_t> seen_t bitset(2528312) OR per-k_id local dedup; bitset shared across k_ids to dedup globally for ci probe efficiency",
+    "k_id_to_t_witness": "track which k_ids contributed a surviving tuple for MIN(k.keyword)",
+    "min_aggregates": "three int32_t row-id witnesses (k_id, n_id, t_id) yielding lexicographic MIN via varlen compare; final varlen resolution at end"
+  },
+  "parallelism": {
+    "strategy": "serial_outer_with_parallel_ci_probe_optional",
+    "threads": 1,
+    "notes": "8 k_ids drive small mk fan-out; year-filtered t_ids then drive ci probes. ci probe is the dominant cost (~37M rows total but constrained by t_id ranges). Use single-threaded execution: per-k_id work is tiny, parallelism overhead > benefit. Year>2000 keeps ~33% of titles so ci probe range remains moderate."
+  },
+  "indexes": [
+    {"index": "movie_keyword__keyword_id", "purpose": "join_lookup keyword->mk rows (CSR)"},
+    {"index": "cast_info__movie_id", "purpose": "join_lookup t_id->ci row range (offsets_only)"}
+  ],
+  "aggregation": "min_witness_rowids",
+  "output": {
+    "projection": ["MIN(k.keyword) AS movie_keyword", "MIN(n.name) AS actor_name", "MIN(t.title) AS hero_movie"],
+    "order_by": [],
+    "limit": 1,
+    "notes": "Scalar aggregate; no GROUP BY. Resolve varlen strings only for final witness rows (or compare-as-you-go via varlen reads)."
+  },
+  "execution_steps": [
+    "1. Memory-map keyword.off/keyword.dat; scan 134170 rows; for each, check membership in 8-literal set; collect target_k_ids (~8).",
+    "2. Memory-map name.off/name.dat; scan 4167491 rows; substring test for 'Downey' then 'Robert' (or single LIKE matcher); collect downey_robert_ids (~2).",
+    "3. Load mk_off (134172), mk_rowids (4523930), mk_movie_id (4523930), production_year (2528312), ci_off (2528314), ci_person_id (36244344).",
+    "4. Allocate seen_t bitset of 2528312 bits to dedup t_ids across k_ids (avoid duplicate ci probes when multiple k_ids share a movie).",
+    "5. For each k_id in target_k_ids: walk CSR [mk_off[k_id], mk_off[k_id+1]); for each mk_row, t_id = mk_movie_id[mk_row]; if !seen_t[t_id] && production_year[t_id-1] > 2000 && production_year[t_id-1] != INT32_MIN, set seen_t and probe ci_off[t_id]..ci_off[t_id+1]; for each ci row, check ci_person_id[r] in downey_robert_ids (linear over 2 elements); on match, update three MIN witnesses (k_id, n_id, t_id) by lexicographic varlen compare.",
+    "6. After loop, materialize three MIN varlen strings via .off/.dat reads of winning row ids and emit."
+  ],
+  "execution_target": "cpp"
+}
