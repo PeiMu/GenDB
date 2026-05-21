@@ -169,3 +169,22 @@ IMDB text fields contain embedded commas and quotes (movie titles, character nam
 
 ### Re-running after a failure
 GenDB persists all Phase 1 artifacts (storage, indexes) and per-query best results. On re-run, it skips already-completed work. Use `--reoptimize all` to force re-optimization of all queries.
+
+## Benchmarking
+
+After the pipeline completes, measure performance with `benchmark_queries.sh`. This uses [hyperfine](https://github.com/sharkdp/hyperfine) with 5 warmup + 10 measured runs and reports mean execution time, matching the protocol used for DuckDB and Bespoke baselines.
+
+```bash
+# Install hyperfine (one-time)
+sudo apt install hyperfine
+
+# Hot mode: data served from OS page cache (warm after 5 warmup runs)
+bash benchmark_queries.sh --mode hot
+
+# Cold mode: OS page cache flushed before each run (requires sudo)
+bash benchmark_queries.sh --mode cold
+```
+
+Results are written to `output/imdb-job-sf1/benchmark_results/`:
+- `gendb_hot.csv` / `gendb_cold.csv` — per-query mean, stddev, min, max (ms)
+- `individual_hot/` / `individual_cold/` — per-query hyperfine JSON with full run data
