@@ -1,3 +1,58 @@
 {
-  "parameters": []
+  "parameters": [
+    {
+      "name": "production_year_lower",
+      "type": "int",
+      "default": 2005,
+      "description": "Filter on production_year (lower)"
+    },
+    {
+      "name": "info_lower",
+      "type": "double",
+      "default": 6.5,
+      "description": "Filter on info (lower)"
+    },
+    {
+      "name": "note_pattern",
+      "type": "string",
+      "default": "%(200%)%",
+      "description": "Filter on note (pattern)"
+    },
+    {
+      "name": "note_pattern_2",
+      "type": "string",
+      "default": "%(USA)%",
+      "description": "Filter on note (pattern)"
+    },
+    {
+      "name": "info_eq",
+      "type": "string",
+      "default": "rating",
+      "description": "Filter on info (eq)"
+    },
+    {
+      "name": "info_eq_2",
+      "type": "string",
+      "default": "countries",
+      "description": "Filter on info (eq)"
+    },
+    {
+      "name": "country_code_neq",
+      "type": "string",
+      "default": "[us]",
+      "description": "Filter on country_code (neq)"
+    },
+    {
+      "name": "kind_eq",
+      "type": "string",
+      "default": "crew",
+      "description": "Filter on kind (eq)"
+    },
+    {
+      "name": "kind_neq",
+      "type": "string",
+      "default": "complete+verified",
+      "description": "Filter on kind (neq)"
+    }
+  ]
 }

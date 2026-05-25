@@ -2,6 +2,8 @@
 
 ## SQL
 ```sql
+/* Q7a */
+-- Q7a
 SELECT MIN(n.name) AS of_person,
        MIN(t.title) AS biography_movie
 FROM aka_name AS an,
@@ -36,169 +38,370 @@ WHERE an.name LIKE '%a%'
 
 ## Column Reference
 
-### info_type.info (filter, varlen)
-- Files: `info_type/info.off`, `info_type/info.dat`
-- Row count: 113 (dense PK).
-- Use: scan once for `target_it_id` where bytes == `"mini biography"`.
+All column files live under `<storage>/<table>/`. Fixed int32 columns are stored as raw little-endian `int32[N]`; nullable variants (`intN` below) use `-1` as the NULL sentinel. Varlen columns use a paired `<col>.offsets.bin` (`uint64[N+1]`) + `<col>.data.bin` (raw bytes); row `i`'s value is `data[off[i]..off[i+1])`, and an empty range means NULL. `char1` columns are raw `uint8[N]` with `0` denoting NULL.
 
-### info_type.id (join key, int32_t)
-- File: `info_type/id.bin`; identity.
+### `aka_name.name` (varlen text)
+- Files: `aka_name/name.offsets.bin` (uint64[901344]) + `aka_name/name.data.bin`
+- Predicate (this query): `an.name LIKE '%a%'` → varlen substring/prefix match — scan `name.data.bin` using `memmem`/`memcmp` on slice `[off[r], off[r+1])`
 
-### link_type.link (filter, varlen)
-- Files: `link_type/link.off`, `link_type/link.dat`
-- Row count: 18 (dense PK).
-- Use: scan once for `target_lt_id` where bytes == `"features"`.
+### `aka_name.person_id` (int32_t)
+- File: `aka_name/person_id.bin` (901343 rows of int32_t)
+- Role: Primary FK on which `aka_name` is physically sorted. Use the primary CSR `indexes/aka_name__person_id__offsets.bin` (uint64[max+2]) to get the contiguous range of rows for a given parent id.
 
-### link_type.id (join key, int32_t)
-- File: `link_type/id.bin`; identity.
+### `cast_info.movie_id` (int32_t)
+- File: `cast_info/movie_id.bin` (36244344 rows of int32_t)
+- Role: Primary FK on which `cast_info` is physically sorted. Use the primary CSR `indexes/cast_info__movie_id__offsets.bin` (uint64[max+2]) to get the contiguous range of rows for a given parent id.
 
-### person_info.info_type_id (filter+join, int32_t)
-- File: `person_info/info_type_id.bin`
-- Row count: 2963664; sorted by person_id.
-- Use: prefer CSR `person_info__info_type_id` to enumerate the small slice with `info_type_id == target_it_id` (~few thousand rows).
+### `cast_info.person_id` (int32_t)
+- File: `cast_info/person_id.bin` (36244344 rows of int32_t)
+- Role: Secondary FK with aux CSR `indexes/cast_info__person_id__offsets.bin` (uint64[max+2]) + `indexes/cast_info__person_id__rowids.bin` (int32[36244344]). Use it when this column is the more selective join key.
 
-### person_info.note (filter, varlen)
-- Files: `person_info/note.off`, `person_info/note.dat`
-- Use: equality `"Volker Boehm"`; length prefilter (12 bytes), then memcmp.
+### `info_type.id` (int32_t)
+- File: `info_type/id.bin` (113 rows of int32_t)
+- Role: Dimension primary key. Use `indexes/info_type__id__pos.bin` (int32[max_id+2]) to map id→row position. Slot `pos[id] == -1` means the id is absent.
 
-### person_info.person_id (join key, int32_t)
-- File: `person_info/person_id.bin`; sorted by person_id.
-- Use: after pi filter, surviving rows yield candidate `pid`s.
+### `info_type.info` (varlen text)
+- Files: `info_type/info.offsets.bin` (uint64[114]) + `info_type/info.data.bin`
+- Predicate (this query): `it.info ='mini biography'` → equality — resolve literal id once (see dimension PK scan); test FK column directly if comparing to dim id
 
-### name.name_pcode_cf (filter, varlen)
-- Files: `name/name_pcode_cf.off`, `name/name_pcode_cf.dat`
-- Row count: 4167491 (dense PK).
-- Use: `'A' <= s <= 'F'` lexicographic; per pid: read at row `pid-1`, compare. Pre-scan once to build allowed-pid set is overkill; lookup per candidate pid is cheaper since pi filter is selective.
+### `link_type.id` (int32_t)
+- File: `link_type/id.bin` (18 rows of int32_t)
+- Role: Dimension primary key. Use `indexes/link_type__id__pos.bin` (int32[max_id+2]) to map id→row position. Slot `pos[id] == -1` means the id is absent.
 
-### name.gender (filter, int8_t, dict-encoded)
-- Files: `name/gender.bin`, `name/gender.dict.off`, `name/gender.dict.dat`
-- Use: resolve codes at runtime:
-  ```cpp
-  auto off = read_vec<int64_t>(store + "/name/gender.dict.off");
-  std::string dat = read_file(store + "/name/gender.dict.dat");
-  int8_t code_m = 0, code_f = 0;
-  for (size_t i = 0; i + 1 < off.size(); ++i) {
-      std::string_view s(dat.data() + off[i], off[i+1] - off[i]);
-      if (s == "m") code_m = (int8_t)(i + 1);
-      if (s == "f") code_f = (int8_t)(i + 1);
-  }
-  ```
-  Then test: `g = gender_bin[pid-1]; (g == code_m) || (g == code_f && name_LIKE_B(pid))`.
+### `link_type.link` (varlen text)
+- Files: `link_type/link.offsets.bin` (uint64[19]) + `link_type/link.data.bin`
+- Predicate (this query): `lt.link ='features'` → equality — resolve literal id once (see dimension PK scan); test FK column directly if comparing to dim id
 
-### name.name (filter+output, varlen)
-- Files: `name/name.off`, `name/name.dat`
-- Use: for `f` branch, `LIKE 'B%'` ⇒ first byte == 'B'. MIN aggregate over surviving names.
+### `movie_link.link_type_id` (int32_t)
+- File: `movie_link/link_type_id.bin` (29997 rows of int32_t)
+- Role: Secondary FK with aux CSR `indexes/movie_link__link_type_id__offsets.bin` (uint64[max+2]) + `indexes/movie_link__link_type_id__rowids.bin` (int32[29997]). Use it when this column is the more selective join key.
 
-### name.id (join key, int32_t)
-- File: `name/id.bin`; identity. `n_id = pid`.
+### `movie_link.linked_movie_id` (int32_t)
+- File: `movie_link/linked_movie_id.bin` (29997 rows of int32_t)
+- Role: Secondary FK with aux CSR `indexes/movie_link__linked_movie_id__offsets.bin` (uint64[max+2]) + `indexes/movie_link__linked_movie_id__rowids.bin` (int32[29997]). Use it when this column is the more selective join key.
 
-### aka_name.person_id (join key, int32_t)
-- File: `aka_name/person_id.bin`; sorted by person_id.
-- Use: for each candidate pid, probe offsets_only `aka_name__person_id` for aka rows; if range empty ⇒ skip.
+### `name.gender` (uint8_t)
+- File: `name/gender.bin` (4167491 rows of uint8_t)
+- Predicate (this query): `(n.gender='m'
+       OR (n.gender = 'f'
+           AND n.name LIKE 'B%'))` → `gender_bin[r] == (uint8_t)literal_char` (e.g., 'f' = 0x66)
 
-### aka_name.name (filter, varlen)
-- Files: `aka_name/name.off`, `aka_name/name.dat`
-- Use: per aka row, `len > 0 && memmem(name, "a")`. aka_name is sorted by person_id → `aka_name__person_id` offsets-only index is for name→aka_name lookup; aka_name.name itself is a varlen column, scan in row order over the pid's range.
+### `name.id` (int32_t)
+- File: `name/id.bin` (4167491 rows of int32_t)
+- Role: Dimension primary key. Use `indexes/name__id__pos.bin` (int32[max_id+2]) to map id→row position. Slot `pos[id] == -1` means the id is absent.
 
-### cast_info.person_id (join key, int32_t)
-- File: `cast_info/person_id.bin`
-- Row count: 36244344; sorted by movie_id, so use CSR `cast_info__person_id` to enumerate ci rows per pid.
+### `name.name` (varlen text)
+- Files: `name/name.offsets.bin` (uint64[4167492]) + `name/name.data.bin`
+- Projected: `MIN(n.name)` → read value only for surviving rows; maintain a running min (lexicographic for varlen, arithmetic for int32 skipping -1).
 
-### cast_info.movie_id (join key, int32_t)
-- File: `cast_info/movie_id.bin`
-- Use: per ci row, derive `t_id = ci_movie_id[ci_row]`.
+### `name.name_pcode_cf` (varlen text)
+- Files: `name/name_pcode_cf.offsets.bin` (uint64[4167492]) + `name/name_pcode_cf.data.bin`
+- Predicate (this query): `n.name_pcode_cf BETWEEN 'A' AND 'F'` → varlen lexicographic range — compare slice against literal bounds
 
-### movie_link.linked_movie_id (join key, int32_t)
-- File: `movie_link/linked_movie_id.bin`
-- Row count: 29997; sorted by movie_id (not linked_movie_id).
-- Use: CSR `movie_link__linked_movie_id` to find ml rows where `linked_movie_id == t_id`.
+### `person_info.info_type_id` (int32_t)
+- File: `person_info/info_type_id.bin` (2963664 rows of int32_t)
+- Role: FK to a dimension (no dedicated index on this column in `person_info`); test directly as `info_type_id_bin[r] == target_id`.
 
-### movie_link.link_type_id (filter+join, int32_t)
-- File: `movie_link/link_type_id.bin`
-- Use: per ml row, `ml_lt[r] == target_lt_id`.
+### `person_info.note` (varlen text)
+- Files: `person_info/note.offsets.bin` (uint64[2963665]) + `person_info/note.data.bin`
+- Predicate (this query): `pi.note ='Volker Boehm'` → equality — resolve literal id once (see dimension PK scan); test FK column directly if comparing to dim id
 
-### title.id (join key, int32_t)
-- File: `title/id.bin`; dense PK 2528312.
+### `person_info.person_id` (int32_t)
+- File: `person_info/person_id.bin` (2963664 rows of int32_t)
+- Role: Primary FK on which `person_info` is physically sorted. Use the primary CSR `indexes/person_info__person_id__offsets.bin` (uint64[max+2]) to get the contiguous range of rows for a given parent id.
 
-### title.production_year (filter, int32_t)
-- File: `title/production_year.bin`
-- Use: `1980 <= production_year_bin[t_id-1] <= 1995 && != INT32_MIN`.
+### `title.id` (int32_t)
+- File: `title/id.bin` (2528312 rows of int32_t)
+- Role: Dimension primary key. Use `indexes/title__id__pos.bin` (int32[max_id+2]) to map id→row position. Slot `pos[id] == -1` means the id is absent.
 
-### title.title (output, varlen)
-- Files: `title/title.off`, `title/title.dat`
-- Use: MIN aggregate.
+### `title.production_year` (int32_t (nullable, -1))
+- File: `title/production_year.bin` (2528312 rows of int32_t)
+- Predicate (this query): `t.production_year BETWEEN 1980 AND 1995` → int32 range — `lo <= production_year_bin[r] && production_year_bin[r] <= hi`
+
+### `title.title` (varlen text)
+- Files: `title/title.offsets.bin` (uint64[2528313]) + `title/title.data.bin`
+- Projected: `MIN(t.title)` → read value only for surviving rows; maintain a running min (lexicographic for varlen, arithmetic for int32 skipping -1).
 
 ## Table Stats
-| Table | Rows | Role | Sort Order | Block Size |
+
+| Table | Rows | Role | Sort order | Block size |
 |---|---|---|---|---|
-| info_type | 113 | dim | id | n/a |
-| link_type | 18 | dim | id | n/a |
-| person_info | 2963664 | driver | person_id | 100000 |
-| name | 4167491 | dim (filter+proj) | id | 100000 |
-| aka_name | 901343 | semi-join filter | person_id | 100000 |
-| cast_info | 36244344 | fact | movie_id | 200000 |
-| movie_link | 29997 | fact | movie_id | 50000 |
-| title | 2528312 | fact | id | 100000 |
+| aka_name | 901,343 | fact | person_id | 50000 |
+| cast_info | 36,244,344 | fact | movie_id | 500000 |
+| info_type | 113 | dimension(PK) | id | 113 |
+| link_type | 18 | dimension(PK) | id | 18 |
+| movie_link | 29,997 | fact | movie_id | 30000 |
+| name | 4,167,491 | dimension(PK) | id | 100000 |
+| person_info | 2,963,664 | fact | person_id | 100000 |
+| title | 2,528,312 | dimension(PK)+driver | id | 100000 |
 
 ## Query Analysis
-- Join graph: hub on `n.id == an.person_id == pi.person_id == ci.person_id`; movie hub on `t.id == ci.movie_id == ml.linked_movie_id`. `it.id=pi.info_type_id`, `lt.id=ml.link_type_id`.
-- Driver: start from `person_info` filtered by `info_type_id == target_it_id` AND `note == 'Volker Boehm'`. This is extremely selective — typically a small handful of pids.
-- For each surviving pid:
-  1. Check `name.name_pcode_cf[pid-1]` ∈ ['A','F'].
-  2. Check gender predicate (using dict-resolved codes).
-  3. Probe `aka_name__person_id` for any aka row whose name contains 'a' (length>0 + memmem). If none ⇒ skip.
-  4. Probe CSR `cast_info__person_id` to enumerate ci rows for pid → list of t_ids.
-  5. For each t_id: year ∈ [1980,1995]; then CSR `movie_link__linked_movie_id` → ml rows with `link_type_id == target_lt_id`. If any ⇒ tuple survives.
-- Filter selectivities: pi.note='Volker Boehm' ≪ 1%; it.info=1; lt.link=1; year range ~5%; name_pcode_cf 'A'..'F' ~25%; gender filter ~70%.
-- MIN aggregations: 2 outputs (n.name, t.title).
-- LIKE patterns: `an.name LIKE '%a%'`, optional `n.name LIKE 'B%'` under gender='f'.
-- IN: none.
-- Output projection: read t.title and n.name varlen only for surviving rows.
 
-## Indexes
-- `person_info__info_type_id` (CSR)
-  - Files: `_idx/person_info__info_type_id__offsets.bin` (int32 length `115`), `_idx/person_info__info_type_id__rowids.bin` (int32 length 2963664).
-  - Empty: `off[v]==off[v+1]`.
-  - Access:
-    ```cpp
-    int32_t lo = pi_it_off[target_it_id], hi = pi_it_off[target_it_id + 1];
-    for (int32_t j = lo; j < hi; ++j) {
-        int32_t pi_row = pi_it_rowids[j];
-        int32_t pid = pi_person[pi_row];
-        /* test pi_note[pi_row] == 'Volker Boehm' */
-    }
-    ```
-- `aka_name__person_id` (offsets_only)
-  - File: `_idx/aka_name__person_id__offsets.bin`, int32 length `4167493`.
-  - Access:
-    ```cpp
-    int32_t lo = an_off[pid], hi = an_off[pid + 1];
-    for (int32_t r = lo; r < hi; ++r) { /* aka_name row r */ }
-    ```
-- `cast_info__person_id` (CSR)
-  - Files: `_idx/cast_info__person_id__offsets.bin` (int32 length `4167493`), `_idx/cast_info__person_id__rowids.bin` (int32 length 36244344).
-  - Access:
-    ```cpp
-    int32_t lo = ci_p_off[pid], hi = ci_p_off[pid + 1];
-    for (int32_t j = lo; j < hi; ++j) {
-        int32_t ci_row = ci_p_rowids[j];
-        int32_t t_id  = ci_movie[ci_row];
-    }
-    ```
-- `movie_link__linked_movie_id` (CSR)
-  - Files: `_idx/movie_link__linked_movie_id__offsets.bin` (int32 length `2528314`), `_idx/movie_link__linked_movie_id__rowids.bin` (int32 length 29997).
-  - Access:
-    ```cpp
-    int32_t lo = ml_lm_off[t_id], hi = ml_lm_off[t_id + 1];
-    for (int32_t j = lo; j < hi; ++j) {
-        int32_t ml_row = ml_lm_rowids[j];
-        if (ml_link_type[ml_row] == target_lt_id) { /* matched */ }
-    }
-    ```
+### Join graph
+- `name.id` = `aka_name.person_id`
+- `name.id` = `person_info.person_id`
+- `cast_info.person_id` = `name.id`
+- `title.id` = `cast_info.movie_id`
+- `movie_link.linked_movie_id` = `title.id`
+- `link_type.id` = `movie_link.link_type_id`
+- `info_type.id` = `person_info.info_type_id`
+- `person_info.person_id` = `aka_name.person_id`
+- `person_info.person_id` = `cast_info.person_id`
+- `aka_name.person_id` = `cast_info.person_id`
+- `cast_info.movie_id` = `movie_link.linked_movie_id`
 
-## Rules
-- Reference shared context for verbatim build code; only quote query-time usage.
-- Never invent dictionary code values; load `name/gender.dict.*` at runtime to resolve 'm','f' codes.
-- Never invent indexes not in build_indexes.cpp.
-- varlen columns use `.off` + `.dat`, not `.bin`.
-- aka_name is sorted by person_id → `aka_name__person_id` offsets-only index is for name→aka_name lookup; aka_name.name itself is a varlen column, scan in row order over the pid's range.
+### Filters (alias.col → predicate)
+- `aka_name.name`: `an.name LIKE '%a%'`
+- `info_type.info`: `it.info ='mini biography'`
+- `link_type.link`: `lt.link ='features'`
+- `name.name_pcode_cf`: `n.name_pcode_cf BETWEEN 'A' AND 'F'`
+- `name.gender`: `(n.gender='m'
+       OR (n.gender = 'f'
+           AND n.name LIKE 'B%'))`
+- `person_info.note`: `pi.note ='Volker Boehm'`
+- `title.production_year`: `t.production_year BETWEEN 1980 AND 1995`
+
+### Aggregation & projection
+- `MIN(n.name)`, `MIN(t.title)`
+- Output is a single row of MIN aggregates (no GROUP BY). Maintain running mins; early-exit is NOT safe (a later row could be lex-smaller).
+
+### Suggested execution outline
+1. Resolve each dimension literal to its id by scanning that dimension's text column (use the parallel `id.bin` to read the id of the matching row — do NOT hardcode any id).
+2. Drive on `title` (PK 1..2,528,312). For each candidate `t.id = v`, probe every movie-fact primary CSR (`<fact>__movie_id__offsets.bin`) for the range `[off[v], off[v+1])`. Apply per-fact filters inside that range; only then read varlen projections.
+3. For dimension-attribute lookups after a fact probe, use the dimension's `indexes/<dim>__id__pos.bin` to convert id → row, then read varlen attributes.
+
+## Indexes Used
+
+### `aka_name__person_id` (primary CSR — table physically sorted by person_id)
+- File: `indexes/aka_name__person_id__offsets.bin`
+- Layout: `uint64_t[max_person_id + 2]` (size = 4167493)
+- Semantics: `aka_name` rows are stored contiguously sorted by `person_id`.
+  Rows with `person_id = v` occupy contiguous positions `[off[v], off[v+1])`
+  in every `aka_name/<col>.bin` and `aka_name/<col>.offsets.bin` file.
+- Sentinel: empty range when `off[v] == off[v+1]` (no rows for that key).
+  Negative/NULL `person_id` values are bucketed at `v=0`.
+- Build code (verbatim from `counting_sort` in `build_indexes.cpp`):
+  ```cpp
+  offsets.assign((size_t)max_k + 2, 0);
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t k = key[r] < 0 ? 0 : key[r];
+      offsets[(size_t)k + 1]++;
+  }
+  for (size_t i = 1; i < offsets.size(); ++i) offsets[i] += offsets[i-1];
+  ```
+- Probe: `uint64_t lo = off[v], hi = off[v+1]; for (uint64_t r = lo; r < hi; ++r) { /* aka_name row r */ }`
+
+### `person_info__person_id` (primary CSR — table physically sorted by person_id)
+- File: `indexes/person_info__person_id__offsets.bin`
+- Layout: `uint64_t[max_person_id + 2]` (size = 4167493)
+- Semantics: `person_info` rows are stored contiguously sorted by `person_id`.
+  Rows with `person_id = v` occupy contiguous positions `[off[v], off[v+1])`
+  in every `person_info/<col>.bin` and `person_info/<col>.offsets.bin` file.
+- Sentinel: empty range when `off[v] == off[v+1]` (no rows for that key).
+  Negative/NULL `person_id` values are bucketed at `v=0`.
+- Build code (verbatim from `counting_sort` in `build_indexes.cpp`):
+  ```cpp
+  offsets.assign((size_t)max_k + 2, 0);
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t k = key[r] < 0 ? 0 : key[r];
+      offsets[(size_t)k + 1]++;
+  }
+  for (size_t i = 1; i < offsets.size(); ++i) offsets[i] += offsets[i-1];
+  ```
+- Probe: `uint64_t lo = off[v], hi = off[v+1]; for (uint64_t r = lo; r < hi; ++r) { /* person_info row r */ }`
+
+### `movie_link__movie_id` (primary CSR — table physically sorted by movie_id)
+- File: `indexes/movie_link__movie_id__offsets.bin`
+- Layout: `uint64_t[max_movie_id + 2]` (size = 2528314)
+- Semantics: `movie_link` rows are stored contiguously sorted by `movie_id`.
+  Rows with `movie_id = v` occupy contiguous positions `[off[v], off[v+1])`
+  in every `movie_link/<col>.bin` and `movie_link/<col>.offsets.bin` file.
+- Sentinel: empty range when `off[v] == off[v+1]` (no rows for that key).
+  Negative/NULL `movie_id` values are bucketed at `v=0`.
+- Build code (verbatim from `counting_sort` in `build_indexes.cpp`):
+  ```cpp
+  offsets.assign((size_t)max_k + 2, 0);
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t k = key[r] < 0 ? 0 : key[r];
+      offsets[(size_t)k + 1]++;
+  }
+  for (size_t i = 1; i < offsets.size(); ++i) offsets[i] += offsets[i-1];
+  ```
+- Probe: `uint64_t lo = off[v], hi = off[v+1]; for (uint64_t r = lo; r < hi; ++r) { /* movie_link row r */ }`
+
+### `cast_info__movie_id` (primary CSR — table physically sorted by movie_id)
+- File: `indexes/cast_info__movie_id__offsets.bin`
+- Layout: `uint64_t[max_movie_id + 2]` (size = 2528314)
+- Semantics: `cast_info` rows are stored contiguously sorted by `movie_id`.
+  Rows with `movie_id = v` occupy contiguous positions `[off[v], off[v+1])`
+  in every `cast_info/<col>.bin` and `cast_info/<col>.offsets.bin` file.
+- Sentinel: empty range when `off[v] == off[v+1]` (no rows for that key).
+  Negative/NULL `movie_id` values are bucketed at `v=0`.
+- Build code (verbatim from `counting_sort` in `build_indexes.cpp`):
+  ```cpp
+  offsets.assign((size_t)max_k + 2, 0);
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t k = key[r] < 0 ? 0 : key[r];
+      offsets[(size_t)k + 1]++;
+  }
+  for (size_t i = 1; i < offsets.size(); ++i) offsets[i] += offsets[i-1];
+  ```
+- Probe: `uint64_t lo = off[v], hi = off[v+1]; for (uint64_t r = lo; r < hi; ++r) { /* cast_info row r */ }`
+
+### `movie_link__linked_movie_id` (aux CSR)
+- Files:
+  - `indexes/movie_link__linked_movie_id__offsets.bin` — `uint64_t[max_linked_movie_id + 2]` (size = 2528314)
+  - `indexes/movie_link__linked_movie_id__rowids.bin`  — `int32_t[29997]`
+- Semantics: for key `v`, the matching `movie_link` row positions are
+  `rowids[off[v] .. off[v+1])`. Each rowid indexes into the column files of `movie_link`.
+- Sentinel: empty range when `off[v] == off[v+1]`.
+- Build code (verbatim from `build_aux` in `build_indexes.cpp`):
+  ```cpp
+  std::vector<uint64_t> off((size_t)max_k + 2, 0);
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t k = keys[r] < 0 ? 0 : keys[r];
+      off[(size_t)k + 1]++;
+  }
+  for (size_t i = 1; i < off.size(); ++i) off[i] += off[i-1];
+  std::vector<int32_t> rowids(N);
+  std::vector<uint64_t> cur = off;
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t k = keys[r] < 0 ? 0 : keys[r];
+      rowids[cur[(size_t)k]++] = (int32_t)r;
+  }
+  ```
+- Probe: `uint64_t lo = off[v], hi = off[v+1]; for (uint64_t k = lo; k < hi; ++k) { int32_t r = rowids[k]; /* movie_link row r */ }`
+
+### `movie_link__link_type_id` (aux CSR)
+- Files:
+  - `indexes/movie_link__link_type_id__offsets.bin` — `uint64_t[max_link_type_id + 2]` (size = 20)
+  - `indexes/movie_link__link_type_id__rowids.bin`  — `int32_t[29997]`
+- Semantics: for key `v`, the matching `movie_link` row positions are
+  `rowids[off[v] .. off[v+1])`. Each rowid indexes into the column files of `movie_link`.
+- Sentinel: empty range when `off[v] == off[v+1]`.
+- Build code (verbatim from `build_aux` in `build_indexes.cpp`):
+  ```cpp
+  std::vector<uint64_t> off((size_t)max_k + 2, 0);
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t k = keys[r] < 0 ? 0 : keys[r];
+      off[(size_t)k + 1]++;
+  }
+  for (size_t i = 1; i < off.size(); ++i) off[i] += off[i-1];
+  std::vector<int32_t> rowids(N);
+  std::vector<uint64_t> cur = off;
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t k = keys[r] < 0 ? 0 : keys[r];
+      rowids[cur[(size_t)k]++] = (int32_t)r;
+  }
+  ```
+- Probe: `uint64_t lo = off[v], hi = off[v+1]; for (uint64_t k = lo; k < hi; ++k) { int32_t r = rowids[k]; /* movie_link row r */ }`
+
+### `cast_info__person_id` (aux CSR)
+- Files:
+  - `indexes/cast_info__person_id__offsets.bin` — `uint64_t[max_person_id + 2]` (size = 4167493)
+  - `indexes/cast_info__person_id__rowids.bin`  — `int32_t[36244344]`
+- Semantics: for key `v`, the matching `cast_info` row positions are
+  `rowids[off[v] .. off[v+1])`. Each rowid indexes into the column files of `cast_info`.
+- Sentinel: empty range when `off[v] == off[v+1]`.
+- Build code (verbatim from `build_aux` in `build_indexes.cpp`):
+  ```cpp
+  std::vector<uint64_t> off((size_t)max_k + 2, 0);
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t k = keys[r] < 0 ? 0 : keys[r];
+      off[(size_t)k + 1]++;
+  }
+  for (size_t i = 1; i < off.size(); ++i) off[i] += off[i-1];
+  std::vector<int32_t> rowids(N);
+  std::vector<uint64_t> cur = off;
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t k = keys[r] < 0 ? 0 : keys[r];
+      rowids[cur[(size_t)k]++] = (int32_t)r;
+  }
+  ```
+- Probe: `uint64_t lo = off[v], hi = off[v+1]; for (uint64_t k = lo; k < hi; ++k) { int32_t r = rowids[k]; /* cast_info row r */ }`
+
+### `title__id__pos` (pk_pos_dense)
+- File: `indexes/title__id__pos.bin`
+- Layout: `int32_t[max_id + 2]` (built by `build_pk_pos` in `build_indexes.cpp`)
+- Semantics: `pos[id]` = row position of that id in `title/id.bin`, or `-1` if absent
+- Sentinel: `-1` for missing ids
+- Build code (verbatim):
+  ```cpp
+  std::vector<int32_t> pos((size_t)max_id + 2, -1);
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t id = ids[r];
+      if (id >= 0 && id <= max_id) pos[(size_t)id] = (int32_t)r;
+  }
+  ```
+- Probe: `int32_t row = pos[id]; if (row < 0) /* not present */;`
+
+### `name__id__pos` (pk_pos_dense)
+- File: `indexes/name__id__pos.bin`
+- Layout: `int32_t[max_id + 2]` (built by `build_pk_pos` in `build_indexes.cpp`)
+- Semantics: `pos[id]` = row position of that id in `name/id.bin`, or `-1` if absent
+- Sentinel: `-1` for missing ids
+- Build code (verbatim):
+  ```cpp
+  std::vector<int32_t> pos((size_t)max_id + 2, -1);
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t id = ids[r];
+      if (id >= 0 && id <= max_id) pos[(size_t)id] = (int32_t)r;
+  }
+  ```
+- Probe: `int32_t row = pos[id]; if (row < 0) /* not present */;`
+
+### `info_type__id__pos` (pk_pos_dense)
+- File: `indexes/info_type__id__pos.bin`
+- Layout: `int32_t[max_id + 2]` (built by `build_pk_pos` in `build_indexes.cpp`)
+- Semantics: `pos[id]` = row position of that id in `info_type/id.bin`, or `-1` if absent
+- Sentinel: `-1` for missing ids
+- Build code (verbatim):
+  ```cpp
+  std::vector<int32_t> pos((size_t)max_id + 2, -1);
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t id = ids[r];
+      if (id >= 0 && id <= max_id) pos[(size_t)id] = (int32_t)r;
+  }
+  ```
+- Probe: `int32_t row = pos[id]; if (row < 0) /* not present */;`
+
+### `link_type__id__pos` (pk_pos_dense)
+- File: `indexes/link_type__id__pos.bin`
+- Layout: `int32_t[max_id + 2]` (built by `build_pk_pos` in `build_indexes.cpp`)
+- Semantics: `pos[id]` = row position of that id in `link_type/id.bin`, or `-1` if absent
+- Sentinel: `-1` for missing ids
+- Build code (verbatim):
+  ```cpp
+  std::vector<int32_t> pos((size_t)max_id + 2, -1);
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t id = ids[r];
+      if (id >= 0 && id <= max_id) pos[(size_t)id] = (int32_t)r;
+  }
+  ```
+- Probe: `int32_t row = pos[id]; if (row < 0) /* not present */;`
+
+## Dimension Literal Resolution
+
+Every equality on a dimension text column (e.g., `it.info = 'rating'`, `ct.kind = 'production companies'`) must be resolved at query time by scanning that dimension's varlen column and reading the parallel `id.bin` at the matching row. NEVER hardcode a dimension id constant — the value depends on the data load.
+
+```cpp
+// Generic dimension lookup template
+uint64_t Nd = *(uint64_t*)mmap_bytes("<dim>/__row_count.bin");
+const uint64_t* doff = (const uint64_t*)mmap_bytes("<dim>/<text_col>.offsets.bin");
+const char*     ddat =                  mmap_bytes("<dim>/<text_col>.data.bin");
+const int32_t*  dids = (const int32_t*) mmap_bytes("<dim>/id.bin");
+int32_t target_id = -1;
+for (uint64_t r = 0; r < Nd; ++r) {
+    std::string_view s(ddat + doff[r], doff[r+1] - doff[r]);
+    if (s == LITERAL) { target_id = dids[r]; break; }
+}
+```
+
+Then use `indexes/<dim>__id__pos.bin` to map any later id-from-fact back to a row position for reading other dimension attributes.
+
+## Sentinels & Null Handling
+- int32 nullable (`intN`): `-1`
+- char1 nullable: `0`
+- varlen NULL: empty range (`off[i] == off[i+1]`)
+- pk_pos missing id: `-1`
+- CSR empty bucket: `off[v] == off[v+1]`

@@ -1,119 +1,395 @@
-## SQL
+# Q13a Guide
 
+## SQL
 ```sql
+/* Q13a */
+-- Q13a
 SELECT MIN(mi.info) AS release_date,
        MIN(miidx.info) AS rating,
        MIN(t.title) AS german_movie
-FROM company_name AS cn, company_type AS ct,
-     info_type AS it, info_type AS it2,
+FROM company_name AS cn,
+     company_type AS ct,
+     info_type AS it,
+     info_type AS it2,
      kind_type AS kt,
-     movie_companies AS mc, movie_info AS mi, movie_info_idx AS miidx, title AS t
-WHERE cn.country_code = '[de]'
-  AND ct.kind = 'production companies'
-  AND it.info = 'rating'
-  AND it2.info = 'release dates'
-  AND kt.kind = 'movie'
-  AND mi.movie_id = t.id AND it2.id = mi.info_type_id
+     movie_companies AS mc,
+     movie_info AS mi,
+     movie_info_idx AS miidx,
+     title AS t
+WHERE cn.country_code ='[de]'
+  AND ct.kind ='production companies'
+  AND it.info ='rating'
+  AND it2.info ='release dates'
+  AND kt.kind ='movie'
+  AND mi.movie_id = t.id
+  AND it2.id = mi.info_type_id
   AND kt.id = t.kind_id
-  AND mc.movie_id = t.id AND cn.id = mc.company_id AND ct.id = mc.company_type_id
-  AND miidx.movie_id = t.id AND it.id = miidx.info_type_id;
+  AND mc.movie_id = t.id
+  AND cn.id = mc.company_id
+  AND ct.id = mc.company_type_id
+  AND miidx.movie_id = t.id
+  AND it.id = miidx.info_type_id
+  AND mi.movie_id = miidx.movie_id
+  AND mi.movie_id = mc.movie_id
+  AND miidx.movie_id = mc.movie_id;
 ```
 
 ## Column Reference
 
-### company_name.country_code (int16 dict)
-Files: `company_name/country_code.bin`, `.dict.off`, `.dict.dat`. Resolve `[de]` → `de_code`. Predicate `cc == de_code`.
+All column files live under `<storage>/<table>/`. Fixed int32 columns are stored as raw little-endian `int32[N]`; nullable variants (`intN` below) use `-1` as the NULL sentinel. Varlen columns use a paired `<col>.offsets.bin` (`uint64[N+1]`) + `<col>.data.bin` (raw bytes); row `i`'s value is `data[off[i]..off[i+1])`, and an empty range means NULL. `char1` columns are raw `uint8[N]` with `0` denoting NULL.
 
-### company_name.id (dense PK)
-Identity. `company_name/name.off|.dat` not used (no MIN over cn.name in Q13a).
+### `company_name.country_code` (varlen text)
+- Files: `company_name/country_code.offsets.bin` (uint64[234998]) + `company_name/country_code.data.bin`
+- Predicate (this query): `cn.country_code ='[de]'` → equality — resolve literal id once (see dimension PK scan); test FK column directly if comparing to dim id
 
-### company_type.kind (varlen)
-Files: `company_type/kind.off|.dat`. Resolve `production companies` → `ct_id`.
+### `company_name.id` (int32_t)
+- File: `company_name/id.bin` (234997 rows of int32_t)
+- Role: Dimension primary key. Use `indexes/company_name__id__pos.bin` (int32[max_id+2]) to map id→row position. Slot `pos[id] == -1` means the id is absent.
 
-### info_type.info (varlen)
-Files: `info_type/info.off|.dat` (113 rows). Resolve two values: `it_id` for `rating` (used by miidx); `it2_id` for `release dates` (used by mi).
+### `company_type.id` (int32_t)
+- File: `company_type/id.bin` (4 rows of int32_t)
+- Role: Dimension primary key. Use `indexes/company_type__id__pos.bin` (int32[max_id+2]) to map id→row position. Slot `pos[id] == -1` means the id is absent.
 
-### kind_type.kind (varlen)
-Files: `kind_type/kind.off|.dat` (7 rows). Resolve `movie` → `kt_id`.
+### `company_type.kind` (varlen text)
+- Files: `company_type/kind.offsets.bin` (uint64[5]) + `company_type/kind.data.bin`
+- Predicate (this query): `ct.kind ='production companies'` → equality — resolve literal id once (see dimension PK scan); test FK column directly if comparing to dim id
 
-### movie_companies (movie_id/company_id/company_type_id)
-Files: `movie_companies/movie_id.bin`, `company_id.bin`, `company_type_id.bin`.
+### `info_type.id` (int32_t)
+- File: `info_type/id.bin` (113 rows of int32_t)
+- Role: Dimension primary key. Use `indexes/info_type__id__pos.bin` (int32[max_id+2]) to map id→row position. Slot `pos[id] == -1` means the id is absent.
 
-### movie_info (movie_id/info_type_id/info)
-Files: `movie_info/movie_id.bin`, `info_type_id.bin`, `info.off|.dat`. Used for `info_type_id == it2_id` and for MIN(mi.info).
+### `info_type.info` (varlen text)
+- Files: `info_type/info.offsets.bin` (uint64[114]) + `info_type/info.data.bin`
+- Predicate (this query): `it.info ='rating'` → equality — resolve literal id once (see dimension PK scan); test FK column directly if comparing to dim id
+- Predicate (this query): `it2.info ='release dates'` → equality — resolve literal id once (see dimension PK scan); test FK column directly if comparing to dim id
 
-### movie_info_idx (movie_id/info_type_id/info)
-Files: `movie_info_idx/movie_id.bin`, `info_type_id.bin`, `info.off|.dat`. Used for `info_type_id == it_id` and MIN(miidx.info).
+### `kind_type.id` (int32_t)
+- File: `kind_type/id.bin` (7 rows of int32_t)
+- Role: Dimension primary key. Use `indexes/kind_type__id__pos.bin` (int32[max_id+2]) to map id→row position. Slot `pos[id] == -1` means the id is absent.
 
-### title (id/title/kind_id/production_year unused)
-Files: `title/id.bin` identity, `title/title.off|.dat`, `title/kind_id.bin` (int32). Predicate `t.kind_id == kt_id`. No production_year filter in Q13a.
+### `kind_type.kind` (varlen text)
+- Files: `kind_type/kind.offsets.bin` (uint64[8]) + `kind_type/kind.data.bin`
+- Predicate (this query): `kt.kind ='movie'` → equality — resolve literal id once (see dimension PK scan); test FK column directly if comparing to dim id
+
+### `movie_companies.company_id` (int32_t)
+- File: `movie_companies/company_id.bin` (2609129 rows of int32_t)
+- Role: Secondary FK with aux CSR `indexes/movie_companies__company_id__offsets.bin` (uint64[max+2]) + `indexes/movie_companies__company_id__rowids.bin` (int32[2609129]). Use it when this column is the more selective join key.
+
+### `movie_companies.company_type_id` (int32_t)
+- File: `movie_companies/company_type_id.bin` (2609129 rows of int32_t)
+- Role: FK to a dimension (no dedicated index on this column in `movie_companies`); test directly as `company_type_id_bin[r] == target_id`.
+
+### `movie_companies.movie_id` (int32_t)
+- File: `movie_companies/movie_id.bin` (2609129 rows of int32_t)
+- Role: Primary FK on which `movie_companies` is physically sorted. Use the primary CSR `indexes/movie_companies__movie_id__offsets.bin` (uint64[max+2]) to get the contiguous range of rows for a given parent id.
+
+### `movie_info.info` (varlen text)
+- Files: `movie_info/info.offsets.bin` (uint64[14835721]) + `movie_info/info.data.bin`
+- Projected: `MIN(mi.info)` → read value only for surviving rows; maintain a running min (lexicographic for varlen, arithmetic for int32 skipping -1).
+
+### `movie_info.info_type_id` (int32_t)
+- File: `movie_info/info_type_id.bin` (14835720 rows of int32_t)
+- Role: Secondary FK with aux CSR `indexes/movie_info__info_type_id__offsets.bin` (uint64[max+2]) + `indexes/movie_info__info_type_id__rowids.bin` (int32[14835720]). Use it when this column is the more selective join key.
+
+### `movie_info.movie_id` (int32_t)
+- File: `movie_info/movie_id.bin` (14835720 rows of int32_t)
+- Role: Primary FK on which `movie_info` is physically sorted. Use the primary CSR `indexes/movie_info__movie_id__offsets.bin` (uint64[max+2]) to get the contiguous range of rows for a given parent id.
+
+### `movie_info_idx.info` (varlen text)
+- Files: `movie_info_idx/info.offsets.bin` (uint64[1380036]) + `movie_info_idx/info.data.bin`
+- Projected: `MIN(miidx.info)` → read value only for surviving rows; maintain a running min (lexicographic for varlen, arithmetic for int32 skipping -1).
+
+### `movie_info_idx.info_type_id` (int32_t)
+- File: `movie_info_idx/info_type_id.bin` (1380035 rows of int32_t)
+- Role: Secondary FK with aux CSR `indexes/movie_info_idx__info_type_id__offsets.bin` (uint64[max+2]) + `indexes/movie_info_idx__info_type_id__rowids.bin` (int32[1380035]). Use it when this column is the more selective join key.
+
+### `movie_info_idx.movie_id` (int32_t)
+- File: `movie_info_idx/movie_id.bin` (1380035 rows of int32_t)
+- Role: Primary FK on which `movie_info_idx` is physically sorted. Use the primary CSR `indexes/movie_info_idx__movie_id__offsets.bin` (uint64[max+2]) to get the contiguous range of rows for a given parent id.
+
+### `title.id` (int32_t)
+- File: `title/id.bin` (2528312 rows of int32_t)
+- Role: Dimension primary key. Use `indexes/title__id__pos.bin` (int32[max_id+2]) to map id→row position. Slot `pos[id] == -1` means the id is absent.
+
+### `title.kind_id` (int32_t)
+- File: `title/kind_id.bin` (2528312 rows of int32_t)
+
+### `title.title` (varlen text)
+- Files: `title/title.offsets.bin` (uint64[2528313]) + `title/title.data.bin`
+- Projected: `MIN(t.title)` → read value only for surviving rows; maintain a running min (lexicographic for varlen, arithmetic for int32 skipping -1).
 
 ## Table Stats
 
-| Table | Rows | Sort |
-|---|---|---|
-| company_name | 234997 | id |
-| company_type | 4 | id |
-| info_type | 113 | id |
-| kind_type | 7 | id |
-| movie_companies | 2609129 | movie_id |
-| movie_info | 14835720 | movie_id |
-| movie_info_idx | 1380035 | movie_id |
-| title | 2528312 | id |
+| Table | Rows | Role | Sort order | Block size |
+|---|---|---|---|---|
+| company_name | 234,997 | dimension(PK) | id | 50000 |
+| company_type | 4 | dimension(PK) | id | 4 |
+| info_type | 113 | dimension(PK) | id | 113 |
+| kind_type | 7 | dimension(PK) | id | 7 |
+| movie_companies | 2,609,129 | fact | movie_id | 100000 |
+| movie_info | 14,835,720 | fact | movie_id | 200000 |
+| movie_info_idx | 1,380,035 | fact | movie_id | 100000 |
+| title | 2,528,312 | dimension(PK)+driver | id | 100000 |
 
 ## Query Analysis
 
-Join graph: title hub. mc, mi, miidx all join via t.id. kind_type filters title.kind_id. info_type used twice (it, it2) — separate aliases.
+### Join graph
+- `movie_info.movie_id` = `title.id`
+- `info_type.id` = `movie_info.info_type_id`
+- `kind_type.id` = `title.kind_id`
+- `movie_companies.movie_id` = `title.id`
+- `company_name.id` = `movie_companies.company_id`
+- `company_type.id` = `movie_companies.company_type_id`
+- `movie_info_idx.movie_id` = `title.id`
+- `info_type.id` = `movie_info_idx.info_type_id`
+- `movie_info.movie_id` = `movie_info_idx.movie_id`
+- `movie_info.movie_id` = `movie_companies.movie_id`
+- `movie_info_idx.movie_id` = `movie_companies.movie_id`
 
-Driver options:
-- (A) `company_name.country_code == de_code`: scan 234997 int16 → produce de_company_ids (a few thousand). Then CSR `movie_companies__company_id` to expand to mc rows; filter `company_type_id == ct_id`; collect mids.
-- (B) `title__kind_id` CSR with kt_id (movie) — enumerates all movie-kind title rows. Useful but very large (most titles are kind=movie).
-- (C) `movie_info_idx__info_type_id` with it_id (rating) — many rows.
+### Filters (alias.col → predicate)
+- `company_name.country_code`: `cn.country_code ='[de]'`
+- `company_type.kind`: `ct.kind ='production companies'`
+- `info_type.info`: `it.info ='rating'`
+- `info_type.info`: `it2.info ='release dates'`
+- `kind_type.kind`: `kt.kind ='movie'`
 
-Best: (A) drives from companies → mids, then for each mid verify kind, miidx, mi.
+### Aggregation & projection
+- `MIN(mi.info)`, `MIN(miidx.info)`, `MIN(t.title)`
+- Output is a single row of MIN aggregates (no GROUP BY). Maintain running mins; early-exit is NOT safe (a later row could be lex-smaller).
 
-Plan:
+### Suggested execution outline
+1. Resolve each dimension literal to its id by scanning that dimension's text column (use the parallel `id.bin` to read the id of the matching row — do NOT hardcode any id).
+2. Drive on `title` (PK 1..2,528,312). For each candidate `t.id = v`, probe every movie-fact primary CSR (`<fact>__movie_id__offsets.bin`) for the range `[off[v], off[v+1])`. Apply per-fact filters inside that range; only then read varlen projections.
+3. For dimension-attribute lookups after a fact probe, use the dimension's `indexes/<dim>__id__pos.bin` to convert id → row, then read varlen attributes.
 
-1. Resolve dims: `de_code`, `ct_id`, `it_id` (rating), `it2_id` (release dates), `kt_id` (movie).
-2. Scan `company_name.country_code` → `cn_de` = ids where `cc == de_code`.
-3. For each `cn_id ∈ cn_de`, use CSR `movie_companies__company_id`: enumerate mc rows; require `company_type_id == ct_id`; collect mids (with mc_row).
-4. For each `mid`:
-   - title row mid-1: require `kind_id == kt_id`.
-   - Probe `movie_info_idx__movie_id` `[lo,hi)`: scan with `info_type_id == it_id`; capture miidx.info for MIN.
-   - Probe `movie_info__movie_id` `[lo,hi)`: scan with `info_type_id == it2_id`; capture mi.info for MIN.
-5. Update MIN(mi.info), MIN(miidx.info), MIN(t.title).
+## Indexes Used
 
-MIN aggregation: byte-wise. mi.info is the release_date string; miidx.info is the rating string. Each qualifying mid emits potentially multiple mi/miidx rows.
+### `movie_companies__movie_id` (primary CSR — table physically sorted by movie_id)
+- File: `indexes/movie_companies__movie_id__offsets.bin`
+- Layout: `uint64_t[max_movie_id + 2]` (size = 2528314)
+- Semantics: `movie_companies` rows are stored contiguously sorted by `movie_id`.
+  Rows with `movie_id = v` occupy contiguous positions `[off[v], off[v+1])`
+  in every `movie_companies/<col>.bin` and `movie_companies/<col>.offsets.bin` file.
+- Sentinel: empty range when `off[v] == off[v+1]` (no rows for that key).
+  Negative/NULL `movie_id` values are bucketed at `v=0`.
+- Build code (verbatim from `counting_sort` in `build_indexes.cpp`):
+  ```cpp
+  offsets.assign((size_t)max_k + 2, 0);
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t k = key[r] < 0 ? 0 : key[r];
+      offsets[(size_t)k + 1]++;
+  }
+  for (size_t i = 1; i < offsets.size(); ++i) offsets[i] += offsets[i-1];
+  ```
+- Probe: `uint64_t lo = off[v], hi = off[v+1]; for (uint64_t r = lo; r < hi; ++r) { /* movie_companies row r */ }`
 
-LIKE notes: none in Q13a.
+### `movie_info_idx__movie_id` (primary CSR — table physically sorted by movie_id)
+- File: `indexes/movie_info_idx__movie_id__offsets.bin`
+- Layout: `uint64_t[max_movie_id + 2]` (size = 2528314)
+- Semantics: `movie_info_idx` rows are stored contiguously sorted by `movie_id`.
+  Rows with `movie_id = v` occupy contiguous positions `[off[v], off[v+1])`
+  in every `movie_info_idx/<col>.bin` and `movie_info_idx/<col>.offsets.bin` file.
+- Sentinel: empty range when `off[v] == off[v+1]` (no rows for that key).
+  Negative/NULL `movie_id` values are bucketed at `v=0`.
+- Build code (verbatim from `counting_sort` in `build_indexes.cpp`):
+  ```cpp
+  offsets.assign((size_t)max_k + 2, 0);
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t k = key[r] < 0 ? 0 : key[r];
+      offsets[(size_t)k + 1]++;
+  }
+  for (size_t i = 1; i < offsets.size(); ++i) offsets[i] += offsets[i-1];
+  ```
+- Probe: `uint64_t lo = off[v], hi = off[v+1]; for (uint64_t r = lo; r < hi; ++r) { /* movie_info_idx row r */ }`
 
-Selectivities: `[de]` company_names → few thousand cn_ids; `ct == production companies` → ~25% of mc rows under those ids; kind=movie keeps most titles. Strong funnel through the cn_id list.
+### `movie_info__movie_id` (primary CSR — table physically sorted by movie_id)
+- File: `indexes/movie_info__movie_id__offsets.bin`
+- Layout: `uint64_t[max_movie_id + 2]` (size = 2528314)
+- Semantics: `movie_info` rows are stored contiguously sorted by `movie_id`.
+  Rows with `movie_id = v` occupy contiguous positions `[off[v], off[v+1])`
+  in every `movie_info/<col>.bin` and `movie_info/<col>.offsets.bin` file.
+- Sentinel: empty range when `off[v] == off[v+1]` (no rows for that key).
+  Negative/NULL `movie_id` values are bucketed at `v=0`.
+- Build code (verbatim from `counting_sort` in `build_indexes.cpp`):
+  ```cpp
+  offsets.assign((size_t)max_k + 2, 0);
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t k = key[r] < 0 ? 0 : key[r];
+      offsets[(size_t)k + 1]++;
+  }
+  for (size_t i = 1; i < offsets.size(); ++i) offsets[i] += offsets[i-1];
+  ```
+- Probe: `uint64_t lo = off[v], hi = off[v+1]; for (uint64_t r = lo; r < hi; ++r) { /* movie_info row r */ }`
 
-## Indexes
+### `movie_companies__company_id` (aux CSR)
+- Files:
+  - `indexes/movie_companies__company_id__offsets.bin` — `uint64_t[max_company_id + 2]` (size = 234999)
+  - `indexes/movie_companies__company_id__rowids.bin`  — `int32_t[2609129]`
+- Semantics: for key `v`, the matching `movie_companies` row positions are
+  `rowids[off[v] .. off[v+1])`. Each rowid indexes into the column files of `movie_companies`.
+- Sentinel: empty range when `off[v] == off[v+1]`.
+- Build code (verbatim from `build_aux` in `build_indexes.cpp`):
+  ```cpp
+  std::vector<uint64_t> off((size_t)max_k + 2, 0);
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t k = keys[r] < 0 ? 0 : keys[r];
+      off[(size_t)k + 1]++;
+  }
+  for (size_t i = 1; i < off.size(); ++i) off[i] += off[i-1];
+  std::vector<int32_t> rowids(N);
+  std::vector<uint64_t> cur = off;
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t k = keys[r] < 0 ? 0 : keys[r];
+      rowids[cur[(size_t)k]++] = (int32_t)r;
+  }
+  ```
+- Probe: `uint64_t lo = off[v], hi = off[v+1]; for (uint64_t k = lo; k < hi; ++k) { int32_t r = rowids[k]; /* movie_companies row r */ }`
 
-### movie_companies__company_id (CSR)
-- `<storage>/_idx/movie_companies__company_id__offsets.bin` (int32, 234999)
-- `<storage>/_idx/movie_companies__company_id__rowids.bin` (int32, 2609129)
+### `movie_info_idx__info_type_id` (aux CSR)
+- Files:
+  - `indexes/movie_info_idx__info_type_id__offsets.bin` — `uint64_t[max_info_type_id + 2]` (size = 115)
+  - `indexes/movie_info_idx__info_type_id__rowids.bin`  — `int32_t[1380035]`
+- Semantics: for key `v`, the matching `movie_info_idx` row positions are
+  `rowids[off[v] .. off[v+1])`. Each rowid indexes into the column files of `movie_info_idx`.
+- Sentinel: empty range when `off[v] == off[v+1]`.
+- Build code (verbatim from `build_aux` in `build_indexes.cpp`):
+  ```cpp
+  std::vector<uint64_t> off((size_t)max_k + 2, 0);
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t k = keys[r] < 0 ? 0 : keys[r];
+      off[(size_t)k + 1]++;
+  }
+  for (size_t i = 1; i < off.size(); ++i) off[i] += off[i-1];
+  std::vector<int32_t> rowids(N);
+  std::vector<uint64_t> cur = off;
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t k = keys[r] < 0 ? 0 : keys[r];
+      rowids[cur[(size_t)k]++] = (int32_t)r;
+  }
+  ```
+- Probe: `uint64_t lo = off[v], hi = off[v+1]; for (uint64_t k = lo; k < hi; ++k) { int32_t r = rowids[k]; /* movie_info_idx row r */ }`
+
+### `movie_info__info_type_id` (aux CSR)
+- Files:
+  - `indexes/movie_info__info_type_id__offsets.bin` — `uint64_t[max_info_type_id + 2]` (size = 115)
+  - `indexes/movie_info__info_type_id__rowids.bin`  — `int32_t[14835720]`
+- Semantics: for key `v`, the matching `movie_info` row positions are
+  `rowids[off[v] .. off[v+1])`. Each rowid indexes into the column files of `movie_info`.
+- Sentinel: empty range when `off[v] == off[v+1]`.
+- Build code (verbatim from `build_aux` in `build_indexes.cpp`):
+  ```cpp
+  std::vector<uint64_t> off((size_t)max_k + 2, 0);
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t k = keys[r] < 0 ? 0 : keys[r];
+      off[(size_t)k + 1]++;
+  }
+  for (size_t i = 1; i < off.size(); ++i) off[i] += off[i-1];
+  std::vector<int32_t> rowids(N);
+  std::vector<uint64_t> cur = off;
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t k = keys[r] < 0 ? 0 : keys[r];
+      rowids[cur[(size_t)k]++] = (int32_t)r;
+  }
+  ```
+- Probe: `uint64_t lo = off[v], hi = off[v+1]; for (uint64_t k = lo; k < hi; ++k) { int32_t r = rowids[k]; /* movie_info row r */ }`
+
+### `title__id__pos` (pk_pos_dense)
+- File: `indexes/title__id__pos.bin`
+- Layout: `int32_t[max_id + 2]` (built by `build_pk_pos` in `build_indexes.cpp`)
+- Semantics: `pos[id]` = row position of that id in `title/id.bin`, or `-1` if absent
+- Sentinel: `-1` for missing ids
+- Build code (verbatim):
+  ```cpp
+  std::vector<int32_t> pos((size_t)max_id + 2, -1);
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t id = ids[r];
+      if (id >= 0 && id <= max_id) pos[(size_t)id] = (int32_t)r;
+  }
+  ```
+- Probe: `int32_t row = pos[id]; if (row < 0) /* not present */;`
+
+### `company_name__id__pos` (pk_pos_dense)
+- File: `indexes/company_name__id__pos.bin`
+- Layout: `int32_t[max_id + 2]` (built by `build_pk_pos` in `build_indexes.cpp`)
+- Semantics: `pos[id]` = row position of that id in `company_name/id.bin`, or `-1` if absent
+- Sentinel: `-1` for missing ids
+- Build code (verbatim):
+  ```cpp
+  std::vector<int32_t> pos((size_t)max_id + 2, -1);
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t id = ids[r];
+      if (id >= 0 && id <= max_id) pos[(size_t)id] = (int32_t)r;
+  }
+  ```
+- Probe: `int32_t row = pos[id]; if (row < 0) /* not present */;`
+
+### `info_type__id__pos` (pk_pos_dense)
+- File: `indexes/info_type__id__pos.bin`
+- Layout: `int32_t[max_id + 2]` (built by `build_pk_pos` in `build_indexes.cpp`)
+- Semantics: `pos[id]` = row position of that id in `info_type/id.bin`, or `-1` if absent
+- Sentinel: `-1` for missing ids
+- Build code (verbatim):
+  ```cpp
+  std::vector<int32_t> pos((size_t)max_id + 2, -1);
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t id = ids[r];
+      if (id >= 0 && id <= max_id) pos[(size_t)id] = (int32_t)r;
+  }
+  ```
+- Probe: `int32_t row = pos[id]; if (row < 0) /* not present */;`
+
+### `kind_type__id__pos` (pk_pos_dense)
+- File: `indexes/kind_type__id__pos.bin`
+- Layout: `int32_t[max_id + 2]` (built by `build_pk_pos` in `build_indexes.cpp`)
+- Semantics: `pos[id]` = row position of that id in `kind_type/id.bin`, or `-1` if absent
+- Sentinel: `-1` for missing ids
+- Build code (verbatim):
+  ```cpp
+  std::vector<int32_t> pos((size_t)max_id + 2, -1);
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t id = ids[r];
+      if (id >= 0 && id <= max_id) pos[(size_t)id] = (int32_t)r;
+  }
+  ```
+- Probe: `int32_t row = pos[id]; if (row < 0) /* not present */;`
+
+### `company_type__id__pos` (pk_pos_dense)
+- File: `indexes/company_type__id__pos.bin`
+- Layout: `int32_t[max_id + 2]` (built by `build_pk_pos` in `build_indexes.cpp`)
+- Semantics: `pos[id]` = row position of that id in `company_type/id.bin`, or `-1` if absent
+- Sentinel: `-1` for missing ids
+- Build code (verbatim):
+  ```cpp
+  std::vector<int32_t> pos((size_t)max_id + 2, -1);
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t id = ids[r];
+      if (id >= 0 && id <= max_id) pos[(size_t)id] = (int32_t)r;
+  }
+  ```
+- Probe: `int32_t row = pos[id]; if (row < 0) /* not present */;`
+
+## Dimension Literal Resolution
+
+Every equality on a dimension text column (e.g., `it.info = 'rating'`, `ct.kind = 'production companies'`) must be resolved at query time by scanning that dimension's varlen column and reading the parallel `id.bin` at the matching row. NEVER hardcode a dimension id constant — the value depends on the data load.
 
 ```cpp
-for (int32_t cn_id : cn_de) {
-    int32_t lo = mc_cid_off[cn_id], hi = mc_cid_off[cn_id+1];
-    for (int32_t k = lo; k < hi; ++k) {
-        int32_t mc_row = mc_cid_rowids[k];
-        if (mc_company_type_id[mc_row] != ct_id) continue;
-        int32_t mid = mc_movie_id[mc_row];
-        if (t_kind_id[mid-1] != kt_id) continue;
-        /* probe mi, miidx */
-    }
+// Generic dimension lookup template
+uint64_t Nd = *(uint64_t*)mmap_bytes("<dim>/__row_count.bin");
+const uint64_t* doff = (const uint64_t*)mmap_bytes("<dim>/<text_col>.offsets.bin");
+const char*     ddat =                  mmap_bytes("<dim>/<text_col>.data.bin");
+const int32_t*  dids = (const int32_t*) mmap_bytes("<dim>/id.bin");
+int32_t target_id = -1;
+for (uint64_t r = 0; r < Nd; ++r) {
+    std::string_view s(ddat + doff[r], doff[r+1] - doff[r]);
+    if (s == LITERAL) { target_id = dids[r]; break; }
 }
 ```
 
-### movie_info__movie_id (offsets_only)
-- `<storage>/_idx/movie_info__movie_id__offsets.bin`
-- Filter rows by `info_type_id == it2_id` (release dates).
+Then use `indexes/<dim>__id__pos.bin` to map any later id-from-fact back to a row position for reading other dimension attributes.
 
-### movie_info_idx__movie_id (offsets_only)
-- `<storage>/_idx/movie_info_idx__movie_id__offsets.bin`
-- Filter rows by `info_type_id == it_id` (rating).
-
-Skipped: `title__kind_id` CSR (kind=movie is too wide); `movie_info__info_type_id` / `movie_info_idx__info_type_id` CSR (driving from companies is tighter).
+## Sentinels & Null Handling
+- int32 nullable (`intN`): `-1`
+- char1 nullable: `0`
+- varlen NULL: empty range (`off[i] == off[i+1]`)
+- pk_pos missing id: `-1`
+- CSR empty bucket: `off[v] == off[v+1]`

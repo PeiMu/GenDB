@@ -1,3 +1,52 @@
 {
-  "parameters": []
+  "parameters": [
+    {
+      "name": "title_neq",
+      "type": "string",
+      "default": "",
+      "description": "Filter on title (neq)"
+    },
+    {
+      "name": "kind_eq",
+      "type": "string",
+      "default": "movie",
+      "description": "Filter on kind (eq)"
+    },
+    {
+      "name": "title_pattern",
+      "type": "string",
+      "default": "Champion%",
+      "description": "Filter on title (pattern)"
+    },
+    {
+      "name": "title_pattern_2",
+      "type": "string",
+      "default": "Loser%",
+      "description": "Filter on title (pattern)"
+    },
+    {
+      "name": "info_eq",
+      "type": "string",
+      "default": "release dates",
+      "description": "Filter on info (eq)"
+    },
+    {
+      "name": "info_eq_2",
+      "type": "string",
+      "default": "rating",
+      "description": "Filter on info (eq)"
+    },
+    {
+      "name": "country_code_eq",
+      "type": "string",
+      "default": "[us]",
+      "description": "Filter on country_code (eq)"
+    },
+    {
+      "name": "kind_eq_2",
+      "type": "string",
+      "default": "production companies",
+      "description": "Filter on kind (eq)"
+    }
+  ]
 }

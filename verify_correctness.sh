@@ -1,59 +1,69 @@
 #!/usr/bin/env bash
 # Verify correctness of all GenDB-generated binaries against ground truth.
-# Usage: bash verify_correctness.sh [run-dir]
-#   run-dir: path to a run directory (default: latest run)
+# Recompiles all C++ sources from best/ before running (ensures binary compatibility).
+# Usage: bash verify_correctness.sh
 
 set -euo pipefail
 
 GENDB_DIR="$(cd "$(dirname "$0")" && pwd)"
-STORAGE="$GENDB_DIR/output/imdb-job-sf1/storage"
+WORKLOAD_DIR="$GENDB_DIR/output/imdb-job-sf1"
+STORAGE="$WORKLOAD_DIR/storage"
 GROUND_TRUTH="$GENDB_DIR/benchmarks/imdb-job/query_results"
 COMPARE="$GENDB_DIR/src/gendb/tools/compare_results.py"
+INCL="$GENDB_DIR/src/gendb/utils"
 RESULTS_DIR=$(mktemp -d)
+trap 'rm -rf "$RESULTS_DIR"' EXIT
 
-RUN_DIR="${1:-$GENDB_DIR/output/imdb-job-sf1/runs/latest}"
-RUN_DIR="$(readlink -f "$RUN_DIR")"
+CXX_FLAGS="-O3 -march=native -std=c++17 -fopenmp -lpthread"
 
 echo "=== GenDB Correctness Verification ==="
-echo "Run:          $RUN_DIR"
+echo "Workload:     $WORKLOAD_DIR"
 echo "Storage:      $STORAGE"
 echo "Ground truth: $GROUND_TRUTH"
-echo "Temp results: $RESULTS_DIR"
 echo ""
 
-if [ ! -f "$RUN_DIR/run.json" ]; then
-    echo "ERROR: run.json not found in $RUN_DIR"
-    exit 1
-fi
+# Step 1: Recompile all queries from source
+echo "=== Recompiling all queries ==="
+compile_ok=0
+compile_fail=0
+for best_dir in "$WORKLOAD_DIR"/queries/Q*/best/; do
+    qid=$(basename "$(dirname "$best_dir")")
+    ql=$(echo "$qid" | tr '[:upper:]' '[:lower:]')
+    cpp="$best_dir/${ql}.cpp"
+    bin="$best_dir/${ql}"
+    if [ ! -f "$cpp" ]; then
+        continue
+    fi
+    if g++ $CXX_FLAGS -I"$INCL" "$cpp" -o "$bin" 2>/dev/null; then
+        compile_ok=$((compile_ok + 1))
+    else
+        printf "%-8s COMPILE ERROR\n" "$qid"
+        compile_fail=$((compile_fail + 1))
+    fi
+done
+echo "Compiled: $compile_ok, Failed: $compile_fail"
+echo ""
 
+# Step 2: Verify correctness
+echo "=== Verifying correctness ==="
 pass=0
 fail=0
-skip=0
+no_binary=0
 fail_list=""
+no_binary_list=""
 
-query_dirs=$(find "$RUN_DIR/queries" -mindepth 1 -maxdepth 1 -type d | sort)
+for gt_csv in "$GROUND_TRUTH"/Q*.csv; do
+    qid=$(basename "${gt_csv%.csv}")
+    ql=$(echo "$qid" | tr '[:upper:]' '[:lower:]')
+    binary="$WORKLOAD_DIR/queries/$qid/best/$ql"
 
-for qdir in $query_dirs; do
-    qid=$(basename "$qdir")
-    qid_lower=$(echo "$qid" | tr '[:upper:]' '[:lower:]')
-
-    # Find the best binary: highest iter with a compiled binary
-    binary=""
-    for iter_dir in $(find "$qdir" -mindepth 1 -maxdepth 1 -name "iter_*" -type d | sort -t_ -k2 -n -r); do
-        candidate="$iter_dir/$qid_lower"
-        if [ -x "$candidate" ]; then
-            binary="$candidate"
-            break
-        fi
-    done
-
-    if [ -z "$binary" ]; then
-        printf "%-8s SKIP (no binary)\n" "$qid"
-        skip=$((skip + 1))
+    if [ ! -x "$binary" ]; then
+        printf "%-8s NO BINARY\n" "$qid"
+        no_binary=$((no_binary + 1))
+        no_binary_list="$no_binary_list $qid"
         continue
     fi
 
-    # Run the binary
     qresults="$RESULTS_DIR/$qid"
     mkdir -p "$qresults"
     if ! "$binary" "$STORAGE" "$qresults" >/dev/null 2>&1; then
@@ -63,8 +73,6 @@ for qdir in $query_dirs; do
         continue
     fi
 
-    # Check that the output CSV exists
-    expected_csv="$GROUND_TRUTH/${qid}.csv"
     actual_csv="$qresults/${qid}.csv"
     if [ ! -f "$actual_csv" ]; then
         printf "%-8s FAIL (no output CSV)\n" "$qid"
@@ -73,21 +81,16 @@ for qdir in $query_dirs; do
         continue
     fi
 
-    if [ ! -f "$expected_csv" ]; then
-        printf "%-8s SKIP (no ground truth)\n" "$qid"
-        skip=$((skip + 1))
-        continue
-    fi
-
-    # Compare using the tool (it expects directories, so create single-file dirs)
     exp_tmp="$RESULTS_DIR/_exp_$qid"
     act_tmp="$RESULTS_DIR/_act_$qid"
     mkdir -p "$exp_tmp" "$act_tmp"
-    cp "$expected_csv" "$exp_tmp/"
+    cp "$gt_csv" "$exp_tmp/"
     cp "$actual_csv" "$act_tmp/"
 
     result=$(python3 "$COMPARE" "$exp_tmp" "$act_tmp" 2>&1)
     match=$(echo "$result" | python3 -c "import json,sys; print(json.load(sys.stdin).get('match', False))" 2>/dev/null || echo "False")
+
+    rm -rf "$exp_tmp" "$act_tmp"
 
     if [ "$match" = "True" ]; then
         printf "%-8s PASS\n" "$qid"
@@ -101,12 +104,12 @@ done
 
 echo ""
 echo "=== Summary ==="
-echo "PASS: $pass"
-echo "FAIL: $fail"
-echo "SKIP: $skip"
-echo "Total: $((pass + fail + skip))"
+echo "PASS:      $pass / 113"
+echo "FAIL:      $fail"
+echo "NO BINARY: $no_binary"
 if [ -n "$fail_list" ]; then
-    echo "Failed queries:$fail_list"
+    echo "Failed:$fail_list"
 fi
-
-rm -rf "$RESULTS_DIR"
+if [ -n "$no_binary_list" ]; then
+    echo "No binary:$no_binary_list"
+fi

@@ -1,3 +1,10 @@
 {
-  "parameters": []
+  "parameters": [
+    {
+      "name": "keyword_eq",
+      "type": "string",
+      "default": "10,000-mile-club",
+      "description": "Filter on keyword (eq)"
+    }
+  ]
 }

@@ -2,19 +2,21 @@
 
 ## Quick Start
 
-`reproduction_job.sh` handles the full reproduction — setup, ground truth, and pipeline execution:
+Full reproduction has two phases: (1) run the pipeline, (2) measure performance.
 
 ```bash
 chmod +x reproduction_job.sh
 
-# Conservative first run (recommended)
-./reproduction_job.sh --max-concurrent 1 --max-iterations 2
+# Phase 1: Pipeline (setup + ground truth + code generation)
+./reproduction_job.sh --max-concurrent 1 --max-iterations 5
 
-# Full run with GenDB defaults (5 iterations, 22 concurrent — see note on rate limits below)
-./reproduction_job.sh
+# Phase 2: Verify and measure (run separately after pipeline completes)
+bash verify_correctness.sh
+python3 benchmarks/imdb-job/measure_gendb_warm.py
+python3 benchmarks/imdb-job/measure_gendb_cold.py
 ```
 
-The script is idempotent: it skips steps that are already complete (schema copied, ground truth generated, etc.). Extra arguments are forwarded to the orchestrator.
+`reproduction_job.sh` is idempotent: it skips steps that are already complete (schema copied, ground truth generated, queries with existing `best/`). Extra arguments are forwarded to the orchestrator. Re-running it only processes queries that don't have a passing binary yet.
 
 **Important:** Close other Claude Code sessions (IDE extensions, terminal tabs) before running. The `claude-code` provider spawns `claude -p` subprocesses that share your subscription's rate limit. Keep `--max-concurrent` at 1–3.
 
@@ -191,20 +193,65 @@ python3 src/gendb/tools/compare_results.py \
 cat output/imdb-job-sf1/runs/latest/queries/Q1a/iter_0/execution_results.json
 ```
 
-## Benchmarking Performance
+## Post-Pipeline: Verify and Measure
+
+After the pipeline completes, run these steps separately. This keeps measurement decoupled from code generation — you can rerun measurements without rerunning the pipeline.
+
+All three scripts **recompile all C++ sources before running**, so they work correctly even when binaries were compiled on a different machine. No manual recompilation needed.
+
+### Compile Flags
+
+For fair comparison with Bespoke, all scripts use the same optimization flags:
+
+| System | Flags |
+|--------|-------|
+| GenDB | `g++ -O3 -march=native -std=c++17 -fopenmp -lpthread` |
+| Bespoke | `g++ -O3 -march=native -std=c++20 -fPIC -flto` |
+
+Both use `-O3 -march=native`. GenDB does **not** use `-DGENDB_PROFILE` for measurement (the orchestrator uses it during optimization for timing breakdown, but it adds printf overhead).
+
+### Step 1: Verify Correctness
 
 ```bash
-# Default: 5 warmup, 10 measured runs (uses latest run)
-bash benchmark_queries.sh
-
-# Custom warmup and runs
-bash benchmark_queries.sh --warmup 3 --runs 20
-
-# Specify a particular run
-bash benchmark_queries.sh output/imdb-job-sf1/runs/2026-05-20T09-18-19 --warmup 5 --runs 10
+bash verify_correctness.sh
 ```
 
-The script first verifies correctness of all binaries, then benchmarks only the passing ones with hyperfine. Results are saved to `output/imdb-job-sf1/benchmark_results/individual/<QID>.json`.
+Recompiles all `best/` sources, then checks every query against DuckDB ground truth. Reports pass/fail per query. If any queries fail, rerun the pipeline (it only regenerates queries without a valid `best/`).
+
+### Step 2: Measure Warm Execution
+
+Recompiles, then measures query execution time only — no compilation, no data loading. Each pre-compiled binary runs against the persistent `output/imdb-job-sf1/storage/` directory. Pinned to core 3, 5 warmup + 10 measured runs.
+
+```bash
+python3 benchmarks/imdb-job/measure_gendb_warm.py
+# Output: benchmarks/imdb-job/results/gendb_warm.csv
+# Columns: query, median_ms, mean_ms, stddev_ms, run_1..run_10
+```
+
+### Step 3: Measure Cold Execution
+
+Measures the full cold path per query: `g++ -O3` compilation + binary execution. Reports `cold_total`, `exec_only`, and `compile_only` separately (matching Bespoke's `bespoke_cold.csv` column format). GenDB compiles each query independently (~0.6–1.0s compile + execution time). Pinned to core 3, 5 warmup + 10 measured runs.
+
+```bash
+python3 benchmarks/imdb-job/measure_gendb_cold.py
+# Output: benchmarks/imdb-job/results/gendb_cold.csv
+# Columns: query, cold_median_ms, cold_mean_ms, cold_stddev_ms,
+#          exec_median_ms, exec_mean_ms, exec_stddev_ms,
+#          compile_median_ms, compile_mean_ms, run_1..run_10
+```
+
+### Output Files
+
+All measurement CSVs use the same format as BespokeOLAP's benchmark suite for direct comparison:
+
+| File | What it measures |
+|------|-----------------|
+| `gendb_warm.csv` | Execution only (pre-compiled binary) |
+| `gendb_cold.csv` | Compile + execute (per-query g++ AOT compilation) |
+| Bespoke `bespoke_warm.csv` | Execution only (JIT-compiled, all queries in one engine) |
+| Bespoke `bespoke_cold.csv` | Compile + execute (shared ~29.5s JIT for all 113 queries) |
+| `duckdb_threads1.csv` | DuckDB single-threaded baseline |
+| `duckdb_parallel.csv` | DuckDB default parallel baseline |
 
 ## What We Changed for JOB
 

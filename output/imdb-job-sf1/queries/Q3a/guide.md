@@ -2,14 +2,22 @@
 
 ## SQL
 ```sql
+/* Q3a */
+-- Q3a
 SELECT MIN(t.title) AS movie_title
 FROM keyword AS k,
      movie_info AS mi,
      movie_keyword AS mk,
      title AS t
 WHERE k.keyword LIKE '%sequel%'
-  AND mi.info IN ('Sweden','Norway','Germany','Denmark',
-                  'Swedish','Denish','Norwegian','German')
+  AND mi.info IN ('Sweden',
+                  'Norway',
+                  'Germany',
+                  'Denmark',
+                  'Swedish',
+                  'Denish',
+                  'Norwegian',
+                  'German')
   AND t.production_year > 2005
   AND t.id = mi.movie_id
   AND t.id = mk.movie_id
@@ -19,79 +27,205 @@ WHERE k.keyword LIKE '%sequel%'
 
 ## Column Reference
 
-### keyword.id (PK, int32_t)
-- File: `keyword/id.bin` (rows = 134170); dense identity, row i ↔ id (i+1).
-- This query's use: join with `mk.keyword_id`.
+All column files live under `<storage>/<table>/`. Fixed int32 columns are stored as raw little-endian `int32[N]`; nullable variants (`intN` below) use `-1` as the NULL sentinel. Varlen columns use a paired `<col>.offsets.bin` (`uint64[N+1]`) + `<col>.data.bin` (raw bytes); row `i`'s value is `data[off[i]..off[i+1])`, and an empty range means NULL. `char1` columns are raw `uint8[N]` with `0` denoting NULL.
 
-### keyword.keyword (varlen)
-- Files: `keyword/keyword.off`, `keyword/keyword.dat` (rows = 134170)
-- This query's use: `LIKE '%sequel%'` → scan via `memmem` on `.dat` slice `[off[i], off[i+1])`. Length prefilter: skip i if `(off[i+1]-off[i]) < 6`. Collect matching ids into `seq_ids` set (small, ~tens).
+### `keyword.id` (int32_t)
+- File: `keyword/id.bin` (134170 rows of int32_t)
+- Role: Dimension primary key. Use `indexes/keyword__id__pos.bin` (int32[max_id+2]) to map id→row position. Slot `pos[id] == -1` means the id is absent.
 
-### movie_info.movie_id (FK to title, int32_t)
-- File: `movie_info/movie_id.bin` (rows = 14835720); FK-sorted by movie_id.
-- This query's use: join with `t.id` via `movie_info__movie_id` offsets_only.
+### `keyword.keyword` (varlen text)
+- Files: `keyword/keyword.offsets.bin` (uint64[134171]) + `keyword/keyword.data.bin`
+- Predicate (this query): `k.keyword LIKE '%sequel%'` → varlen substring/prefix match — scan `keyword.data.bin` using `memmem`/`memcmp` on slice `[off[r], off[r+1])`
 
-### movie_info.info (varlen)
-- Files: `movie_info/info.off`, `movie_info/info.dat` (rows = 14835720)
-- This query's use: `mi.info IN ('Sweden','Norway','Germany','Denmark','Swedish','Denish','Norwegian','German')`. movie_info is FK-sorted by movie_id; scan the varlen column in row order of the FK-sorted child (for the candidate movie range). Build a `flat_hash_set<string_view>` of the 8 literals; prune by length first (lengths 6,6,7,7,7,6,9,6) — only check rows whose length is in {6,7,9}. (Note: there is no index on `movie_info.info`.)
+### `movie_info.info` (varlen text)
+- Files: `movie_info/info.offsets.bin` (uint64[14835721]) + `movie_info/info.data.bin`
+- Predicate (this query): `mi.info IN ('Sweden',
+                  'Norway',
+                  'Germany',
+                  'Denmark',
+                  'Swedish',
+                  'Denish',
+                  'Norwegian',
+                  'German')` → membership in literal set — `std::unordered_set<std::string>` of literals, lookup via slice
 
-### movie_keyword.movie_id (FK to title, int32_t)
-- File: `movie_keyword/movie_id.bin` (rows = 4523930); FK-sorted by movie_id.
-- This query's use: join with `t.id` via `movie_keyword__movie_id` offsets_only.
+### `movie_info.movie_id` (int32_t)
+- File: `movie_info/movie_id.bin` (14835720 rows of int32_t)
+- Role: Primary FK on which `movie_info` is physically sorted. Use the primary CSR `indexes/movie_info__movie_id__offsets.bin` (uint64[max+2]) to get the contiguous range of rows for a given parent id.
 
-### movie_keyword.keyword_id (FK to keyword, int32_t)
-- File: `movie_keyword/keyword_id.bin` (rows = 4523930)
-- This query's use: `keyword_id_bin[r] ∈ seq_ids`. Alternative: union of `movie_keyword__keyword_id` CSR ranges over each seq_id to collect candidate movie_id set directly.
+### `movie_keyword.keyword_id` (int32_t)
+- File: `movie_keyword/keyword_id.bin` (4523930 rows of int32_t)
+- Role: Secondary FK with aux CSR `indexes/movie_keyword__keyword_id__offsets.bin` (uint64[max+2]) + `indexes/movie_keyword__keyword_id__rowids.bin` (int32[4523930]). Use it when this column is the more selective join key.
 
-### title.id (PK, int32_t)
-- File: `title/id.bin` (rows = 2528312); dense identity.
+### `movie_keyword.movie_id` (int32_t)
+- File: `movie_keyword/movie_id.bin` (4523930 rows of int32_t)
+- Role: Primary FK on which `movie_keyword` is physically sorted. Use the primary CSR `indexes/movie_keyword__movie_id__offsets.bin` (uint64[max+2]) to get the contiguous range of rows for a given parent id.
 
-### title.title (varlen)
-- Files: `title/title.off`, `title/title.dat` (rows = 2528312)
-- This query's use: projected `MIN(t.title)`.
+### `title.id` (int32_t)
+- File: `title/id.bin` (2528312 rows of int32_t)
+- Role: Dimension primary key. Use `indexes/title__id__pos.bin` (int32[max_id+2]) to map id→row position. Slot `pos[id] == -1` means the id is absent.
 
-### title.production_year (int32_t, nullable)
-- File: `title/production_year.bin` (rows = 2528312); NULL = `INT32_MIN`.
-- This query's use: `production_year > 2005`. C++: `y != INT32_MIN && y > 2005`.
+### `title.production_year` (int32_t (nullable, -1))
+- File: `title/production_year.bin` (2528312 rows of int32_t)
+- Predicate (this query): `t.production_year > 2005` → `production_year_bin[r] > literal`
+
+### `title.title` (varlen text)
+- Files: `title/title.offsets.bin` (uint64[2528313]) + `title/title.data.bin`
+- Projected: `MIN(t.title)` → read value only for surviving rows; maintain a running min (lexicographic for varlen, arithmetic for int32 skipping -1).
 
 ## Table Stats
+
 | Table | Rows | Role | Sort order | Block size |
 |---|---|---|---|---|
-| keyword | 134,170 | dimension | id | 100000 |
-| title | 2,528,312 | dimension/fact | id | 100000 |
-| movie_keyword | 4,523,930 | fact | movie_id | 100000 |
+| keyword | 134,170 | dimension(PK) | id | 50000 |
 | movie_info | 14,835,720 | fact | movie_id | 200000 |
+| movie_keyword | 4,523,930 | fact | movie_id | 100000 |
+| title | 2,528,312 | dimension(PK)+driver | id | 100000 |
 
 ## Query Analysis
-- Join graph: `k ── mk.keyword_id`, `mk.movie_id = mi.movie_id = t.id`.
-- Driver: collect `seq_ids` (keyword ids matching `%sequel%`). For each `kid ∈ seq_ids`, walk `movie_keyword__keyword_id` CSR to get mk rowids; collect distinct candidate movie ids in a sorted set / bitset. Iterate candidate movies in ascending order, apply `t.production_year > 2005`, then for each surviving movie use `movie_info__movie_id` offsets_only to fetch mi rows and test `mi.info` against the country/language IN-set.
-- Filter selectivities: `%sequel%` matches ~tens of keywords → small mk slice; production_year > 2005 selects ~15–20% of titles; the IN-list is a tiny set of nations/languages — fraction of mi rows is small but mi has 14.8M rows so absolute scan cost only matters within candidate movie ranges.
-- Aggregation: `MIN(t.title)` → single output row.
-- LIKE pattern: `%sequel%` against `keyword.keyword` varlen — full varlen scan via `memmem`; no index on keyword text.
-- IN pattern: build `flat_hash_set<string_view>` of 8 literals; per-row length prefilter; on match break out of mi inner loop (existence semantics).
-- Output projection: read `t.title` varlen only for surviving rows.
 
-## Indexes
-- `movie_keyword__keyword_id` (CSR): `_idx/movie_keyword__keyword_id__offsets.bin` (int32, 134172) + `_idx/movie_keyword__keyword_id__rowids.bin` (int32, 4523930). Usage:
+### Join graph
+- `title.id` = `movie_info.movie_id`
+- `title.id` = `movie_keyword.movie_id`
+- `movie_keyword.movie_id` = `movie_info.movie_id`
+- `keyword.id` = `movie_keyword.keyword_id`
+
+### Filters (alias.col → predicate)
+- `keyword.keyword`: `k.keyword LIKE '%sequel%'`
+- `movie_info.info`: `mi.info IN ('Sweden',
+                  'Norway',
+                  'Germany',
+                  'Denmark',
+                  'Swedish',
+                  'Denish',
+                  'Norwegian',
+                  'German')`
+- `title.production_year`: `t.production_year > 2005`
+
+### Aggregation & projection
+- `MIN(t.title)`
+- Output is a single row of MIN aggregates (no GROUP BY). Maintain running mins; early-exit is NOT safe (a later row could be lex-smaller).
+
+### Suggested execution outline
+1. Resolve each dimension literal to its id by scanning that dimension's text column (use the parallel `id.bin` to read the id of the matching row — do NOT hardcode any id).
+2. Drive on `title` (PK 1..2,528,312). For each candidate `t.id = v`, probe every movie-fact primary CSR (`<fact>__movie_id__offsets.bin`) for the range `[off[v], off[v+1])`. Apply per-fact filters inside that range; only then read varlen projections.
+3. For dimension-attribute lookups after a fact probe, use the dimension's `indexes/<dim>__id__pos.bin` to convert id → row, then read varlen attributes.
+
+## Indexes Used
+
+### `movie_keyword__movie_id` (primary CSR — table physically sorted by movie_id)
+- File: `indexes/movie_keyword__movie_id__offsets.bin`
+- Layout: `uint64_t[max_movie_id + 2]` (size = 2528314)
+- Semantics: `movie_keyword` rows are stored contiguously sorted by `movie_id`.
+  Rows with `movie_id = v` occupy contiguous positions `[off[v], off[v+1])`
+  in every `movie_keyword/<col>.bin` and `movie_keyword/<col>.offsets.bin` file.
+- Sentinel: empty range when `off[v] == off[v+1]` (no rows for that key).
+  Negative/NULL `movie_id` values are bucketed at `v=0`.
+- Build code (verbatim from `counting_sort` in `build_indexes.cpp`):
+  ```cpp
+  offsets.assign((size_t)max_k + 2, 0);
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t k = key[r] < 0 ? 0 : key[r];
+      offsets[(size_t)k + 1]++;
+  }
+  for (size_t i = 1; i < offsets.size(); ++i) offsets[i] += offsets[i-1];
+  ```
+- Probe: `uint64_t lo = off[v], hi = off[v+1]; for (uint64_t r = lo; r < hi; ++r) { /* movie_keyword row r */ }`
+
+### `movie_info__movie_id` (primary CSR — table physically sorted by movie_id)
+- File: `indexes/movie_info__movie_id__offsets.bin`
+- Layout: `uint64_t[max_movie_id + 2]` (size = 2528314)
+- Semantics: `movie_info` rows are stored contiguously sorted by `movie_id`.
+  Rows with `movie_id = v` occupy contiguous positions `[off[v], off[v+1])`
+  in every `movie_info/<col>.bin` and `movie_info/<col>.offsets.bin` file.
+- Sentinel: empty range when `off[v] == off[v+1]` (no rows for that key).
+  Negative/NULL `movie_id` values are bucketed at `v=0`.
+- Build code (verbatim from `counting_sort` in `build_indexes.cpp`):
+  ```cpp
+  offsets.assign((size_t)max_k + 2, 0);
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t k = key[r] < 0 ? 0 : key[r];
+      offsets[(size_t)k + 1]++;
+  }
+  for (size_t i = 1; i < offsets.size(); ++i) offsets[i] += offsets[i-1];
+  ```
+- Probe: `uint64_t lo = off[v], hi = off[v+1]; for (uint64_t r = lo; r < hi; ++r) { /* movie_info row r */ }`
+
+### `movie_keyword__keyword_id` (aux CSR)
+- Files:
+  - `indexes/movie_keyword__keyword_id__offsets.bin` — `uint64_t[max_keyword_id + 2]` (size = 134172)
+  - `indexes/movie_keyword__keyword_id__rowids.bin`  — `int32_t[4523930]`
+- Semantics: for key `v`, the matching `movie_keyword` row positions are
+  `rowids[off[v] .. off[v+1])`. Each rowid indexes into the column files of `movie_keyword`.
+- Sentinel: empty range when `off[v] == off[v+1]`.
+- Build code (verbatim from `build_aux` in `build_indexes.cpp`):
+  ```cpp
+  std::vector<uint64_t> off((size_t)max_k + 2, 0);
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t k = keys[r] < 0 ? 0 : keys[r];
+      off[(size_t)k + 1]++;
+  }
+  for (size_t i = 1; i < off.size(); ++i) off[i] += off[i-1];
+  std::vector<int32_t> rowids(N);
+  std::vector<uint64_t> cur = off;
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t k = keys[r] < 0 ? 0 : keys[r];
+      rowids[cur[(size_t)k]++] = (int32_t)r;
+  }
+  ```
+- Probe: `uint64_t lo = off[v], hi = off[v+1]; for (uint64_t k = lo; k < hi; ++k) { int32_t r = rowids[k]; /* movie_keyword row r */ }`
+
+### `title__id__pos` (pk_pos_dense)
+- File: `indexes/title__id__pos.bin`
+- Layout: `int32_t[max_id + 2]` (built by `build_pk_pos` in `build_indexes.cpp`)
+- Semantics: `pos[id]` = row position of that id in `title/id.bin`, or `-1` if absent
+- Sentinel: `-1` for missing ids
+- Build code (verbatim):
+  ```cpp
+  std::vector<int32_t> pos((size_t)max_id + 2, -1);
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t id = ids[r];
+      if (id >= 0 && id <= max_id) pos[(size_t)id] = (int32_t)r;
+  }
+  ```
+- Probe: `int32_t row = pos[id]; if (row < 0) /* not present */;`
+
+### `keyword__id__pos` (pk_pos_dense)
+- File: `indexes/keyword__id__pos.bin`
+- Layout: `int32_t[max_id + 2]` (built by `build_pk_pos` in `build_indexes.cpp`)
+- Semantics: `pos[id]` = row position of that id in `keyword/id.bin`, or `-1` if absent
+- Sentinel: `-1` for missing ids
+- Build code (verbatim):
+  ```cpp
+  std::vector<int32_t> pos((size_t)max_id + 2, -1);
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t id = ids[r];
+      if (id >= 0 && id <= max_id) pos[(size_t)id] = (int32_t)r;
+  }
+  ```
+- Probe: `int32_t row = pos[id]; if (row < 0) /* not present */;`
+
+## Dimension Literal Resolution
+
+Every equality on a dimension text column (e.g., `it.info = 'rating'`, `ct.kind = 'production companies'`) must be resolved at query time by scanning that dimension's varlen column and reading the parallel `id.bin` at the matching row. NEVER hardcode a dimension id constant — the value depends on the data load.
+
 ```cpp
-for (int32_t kid : seq_ids) {
-    int32_t lo = off[kid]; int32_t hi = off[kid + 1];
-    for (int32_t k_pos = lo; k_pos < hi; ++k_pos) {
-        int32_t mk_row = rowids[k_pos];
-        int32_t mv = movie_id_bin[mk_row];
-        candidate_movies.insert(mv);
-    }
+// Generic dimension lookup template
+uint64_t Nd = *(uint64_t*)mmap_bytes("<dim>/__row_count.bin");
+const uint64_t* doff = (const uint64_t*)mmap_bytes("<dim>/<text_col>.offsets.bin");
+const char*     ddat =                  mmap_bytes("<dim>/<text_col>.data.bin");
+const int32_t*  dids = (const int32_t*) mmap_bytes("<dim>/id.bin");
+int32_t target_id = -1;
+for (uint64_t r = 0; r < Nd; ++r) {
+    std::string_view s(ddat + doff[r], doff[r+1] - doff[r]);
+    if (s == LITERAL) { target_id = dids[r]; break; }
 }
 ```
-- `movie_info__movie_id` (offsets_only): `_idx/movie_info__movie_id__offsets.bin`. Usage:
-```cpp
-int32_t lo = off[mv]; int32_t hi = off[mv+1];
-for (int32_t r = lo; r < hi; ++r) {
-    /* read mi.info via info.off+.dat[r] and test IN-set */
-}
-```
 
-## Rules followed
-- `%sequel%` evaluated via varlen scan only; no claim of any index on keyword text.
-- `mi.info` is FK-sorted child varlen; scanned in row order of the FK-sorted child within the candidate movie range — no claim of any index on it.
-- Only declared CSR / offsets_only indexes used.
+Then use `indexes/<dim>__id__pos.bin` to map any later id-from-fact back to a row position for reading other dimension attributes.
+
+## Sentinels & Null Handling
+- int32 nullable (`intN`): `-1`
+- char1 nullable: `0`
+- varlen NULL: empty range (`off[i] == off[i+1]`)
+- pk_pos missing id: `-1`
+- CSR empty bucket: `off[v] == off[v+1]`

@@ -1,24 +1,21 @@
 /* Q7a */
--- Q7a
-SELECT MIN(n.name) AS of_person,
-       MIN(t.title) AS biography_movie
-FROM aka_name AS an,
-     cast_info AS ci,
-     info_type AS it,
-     link_type AS lt,
-     movie_link AS ml,
-     name AS n,
-     person_info AS pi,
-     title AS t
-WHERE an.name LIKE '%a%'
-  AND it.info ='mini biography'
-  AND lt.link ='features'
+SELECT
+  MIN(n.name) AS of_person,
+  MIN(t.title) AS biography_movie
+FROM aka_name AS an, cast_info AS ci, info_type AS it, link_type AS lt, movie_link AS ml, name AS n, person_info AS pi, title AS t
+WHERE
+  an.name LIKE %(name_pattern)s
+  AND it.info = %(info_eq)s
+  AND lt.link = %(link_eq)s
   AND n.name_pcode_cf BETWEEN 'A' AND 'F'
-  AND (n.gender='m'
-       OR (n.gender = 'f'
-           AND n.name LIKE 'B%'))
-  AND pi.note ='Volker Boehm'
-  AND t.production_year BETWEEN 1980 AND 1995
+  AND (
+    n.gender = %(gender_eq)s
+    OR (
+      n.gender = %(gender_eq_2)s AND n.name LIKE %(name_pattern_2)s
+    )
+  )
+  AND pi.note = %(note_eq)s
+  AND t.production_year BETWEEN %(production_year_lower)s AND %(production_year_upper)s
   AND n.id = an.person_id
   AND n.id = pi.person_id
   AND ci.person_id = n.id
@@ -29,4 +26,4 @@ WHERE an.name LIKE '%a%'
   AND pi.person_id = an.person_id
   AND pi.person_id = ci.person_id
   AND an.person_id = ci.person_id
-  AND ci.movie_id = ml.linked_movie_id;
+  AND ci.movie_id = ml.linked_movie_id

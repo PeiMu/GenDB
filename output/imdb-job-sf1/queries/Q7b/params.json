@@ -1,3 +1,52 @@
 {
-  "parameters": []
+  "parameters": [
+    {
+      "name": "production_year_lower",
+      "type": "int",
+      "default": 1980,
+      "description": "Filter on production_year (lower)"
+    },
+    {
+      "name": "production_year_upper",
+      "type": "int",
+      "default": 1984,
+      "description": "Filter on production_year (upper)"
+    },
+    {
+      "name": "note_eq",
+      "type": "string",
+      "default": "Volker Boehm",
+      "description": "Filter on note (eq)"
+    },
+    {
+      "name": "gender_eq",
+      "type": "string",
+      "default": "m",
+      "description": "Filter on gender (eq)"
+    },
+    {
+      "name": "name_pcode_cf_pattern",
+      "type": "string",
+      "default": "D%",
+      "description": "Filter on name_pcode_cf (pattern)"
+    },
+    {
+      "name": "link_eq",
+      "type": "string",
+      "default": "features",
+      "description": "Filter on link (eq)"
+    },
+    {
+      "name": "name_pattern",
+      "type": "string",
+      "default": "%a%",
+      "description": "Filter on name (pattern)"
+    },
+    {
+      "name": "info_eq",
+      "type": "string",
+      "default": "mini biography",
+      "description": "Filter on info (eq)"
+    }
+  ]
 }

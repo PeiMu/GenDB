@@ -41,15 +41,14 @@ export function detectHardware() {
 
   try {
     // Check if root disk is rotational
-    const rota = execSync("lsblk -d -o name,rota 2>/dev/null | tail -n +2", { stdio: "pipe" }).toString();
+    const rota = execSync("lsblk -d -o name,rota,type 2>/dev/null | tail -n +2", { stdio: "pipe" }).toString();
     const lines = rota.trim().split("\n").filter(Boolean);
-    if (lines.length > 0) {
-      // Check the first disk
-      const firstDisk = lines[0].trim();
-      if (firstDisk.endsWith("0")) hw.disk_type = "ssd";
-      else if (firstDisk.endsWith("1")) hw.disk_type = "hdd";
-      // Try to detect NVMe
-      if (firstDisk.startsWith("nvme")) hw.disk_type = "nvme";
+    for (const line of lines) {
+      const parts = line.trim().split(/\s+/);
+      if (parts.length < 3 || parts[2] !== "disk") continue;
+      if (parts[0].startsWith("nvme")) { hw.disk_type = "nvme"; break; }
+      if (parts[1] === "0") { hw.disk_type = "ssd"; break; }
+      if (parts[1] === "1") { hw.disk_type = "hdd"; break; }
     }
   } catch {}
 

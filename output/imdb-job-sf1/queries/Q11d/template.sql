@@ -1,24 +1,16 @@
 /* Q11d */
--- Q11d
-SELECT MIN(cn.name) AS from_company,
-       MIN(mc.note) AS production_note,
-       MIN(t.title) AS movie_based_on_book
-FROM company_name AS cn,
-     company_type AS ct,
-     keyword AS k,
-     link_type AS lt,
-     movie_companies AS mc,
-     movie_keyword AS mk,
-     movie_link AS ml,
-     title AS t
-WHERE cn.country_code !='[pl]'
-  AND ct.kind != 'production companies'
-  AND ct.kind IS NOT NULL
-  AND k.keyword IN ('sequel',
-                    'revenge',
-                    'based-on-novel')
-  AND mc.note IS NOT NULL
-  AND t.production_year > 1950
+SELECT
+  MIN(cn.name) AS from_company,
+  MIN(mc.note) AS production_note,
+  MIN(t.title) AS movie_based_on_book
+FROM company_name AS cn, company_type AS ct, keyword AS k, link_type AS lt, movie_companies AS mc, movie_keyword AS mk, movie_link AS ml, title AS t
+WHERE
+  cn.country_code <> %(country_code_neq)s
+  AND ct.kind <> %(kind_neq)s
+  AND NOT ct.kind IS NULL
+  AND k.keyword IN ('sequel', 'revenge', 'based-on-novel')
+  AND NOT mc.note IS NULL
+  AND t.production_year > %(production_year_lower)s
   AND lt.id = ml.link_type_id
   AND ml.movie_id = t.id
   AND t.id = mk.movie_id
@@ -28,4 +20,4 @@ WHERE cn.country_code !='[pl]'
   AND mc.company_id = cn.id
   AND ml.movie_id = mk.movie_id
   AND ml.movie_id = mc.movie_id
-  AND mk.movie_id = mc.movie_id;
+  AND mk.movie_id = mc.movie_id

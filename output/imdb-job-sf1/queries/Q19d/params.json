@@ -1,3 +1,34 @@
 {
-  "parameters": []
+  "parameters": [
+    {
+      "name": "production_year_lower",
+      "type": "int",
+      "default": 2000,
+      "description": "Filter on production_year (lower)"
+    },
+    {
+      "name": "role_eq",
+      "type": "string",
+      "default": "actress",
+      "description": "Filter on role (eq)"
+    },
+    {
+      "name": "gender_eq",
+      "type": "string",
+      "default": "f",
+      "description": "Filter on gender (eq)"
+    },
+    {
+      "name": "info_eq",
+      "type": "string",
+      "default": "release dates",
+      "description": "Filter on info (eq)"
+    },
+    {
+      "name": "country_code_eq",
+      "type": "string",
+      "default": "[us]",
+      "description": "Filter on country_code (eq)"
+    }
+  ]
 }

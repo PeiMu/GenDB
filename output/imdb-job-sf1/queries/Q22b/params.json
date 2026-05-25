@@ -1,3 +1,46 @@
 {
-  "parameters": []
+  "parameters": [
+    {
+      "name": "production_year_lower",
+      "type": "int",
+      "default": 2009,
+      "description": "Filter on production_year (lower)"
+    },
+    {
+      "name": "info_upper",
+      "type": "double",
+      "default": 7,
+      "description": "Filter on info (upper)"
+    },
+    {
+      "name": "note_pattern",
+      "type": "string",
+      "default": "%(200%)%",
+      "description": "Filter on note (pattern)"
+    },
+    {
+      "name": "note_pattern_2",
+      "type": "string",
+      "default": "%(USA)%",
+      "description": "Filter on note (pattern)"
+    },
+    {
+      "name": "info_eq",
+      "type": "string",
+      "default": "rating",
+      "description": "Filter on info (eq)"
+    },
+    {
+      "name": "country_code_neq",
+      "type": "string",
+      "default": "[us]",
+      "description": "Filter on country_code (neq)"
+    },
+    {
+      "name": "info_eq_2",
+      "type": "string",
+      "default": "countries",
+      "description": "Filter on info (eq)"
+    }
+  ]
 }

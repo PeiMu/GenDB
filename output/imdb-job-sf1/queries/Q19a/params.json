@@ -1,3 +1,70 @@
 {
-  "parameters": []
+  "parameters": [
+    {
+      "name": "production_year_lower",
+      "type": "int",
+      "default": 2005,
+      "description": "Filter on production_year (lower)"
+    },
+    {
+      "name": "production_year_upper",
+      "type": "int",
+      "default": 2009,
+      "description": "Filter on production_year (upper)"
+    },
+    {
+      "name": "role_eq",
+      "type": "string",
+      "default": "actress",
+      "description": "Filter on role (eq)"
+    },
+    {
+      "name": "name_pattern",
+      "type": "string",
+      "default": "%Ang%",
+      "description": "Filter on name (pattern)"
+    },
+    {
+      "name": "gender_eq",
+      "type": "string",
+      "default": "f",
+      "description": "Filter on gender (eq)"
+    },
+    {
+      "name": "info_pattern",
+      "type": "string",
+      "default": "Japan:%200%",
+      "description": "Filter on info (pattern)"
+    },
+    {
+      "name": "info_pattern_2",
+      "type": "string",
+      "default": "USA:%200%",
+      "description": "Filter on info (pattern)"
+    },
+    {
+      "name": "info_eq",
+      "type": "string",
+      "default": "release dates",
+      "description": "Filter on info (eq)"
+    },
+    {
+      "name": "note_pattern",
+      "type": "string",
+      "default": "%(USA)%",
+      "description": "Filter on note (pattern)"
+    },
+    {
+      "name": "note_pattern_2",
+      "type": "string",
+      "default": "%(worldwide)%",
+      "description": "Filter on note (pattern)"
+    },
+    {
+      "name": "country_code_eq",
+      "type": "string",
+      "default": "[us]",
+      "description": "Filter on country_code (eq)"
+    }
+  ]
 }

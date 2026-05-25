@@ -1,39 +1,32 @@
 /* Q27c */
--- Q27c
-SELECT MIN(cn.name) AS producing_company,
-       MIN(lt.link) AS link_type,
-       MIN(t.title) AS complete_western_sequel
-FROM complete_cast AS cc,
-     comp_cast_type AS cct1,
-     comp_cast_type AS cct2,
-     company_name AS cn,
-     company_type AS ct,
-     keyword AS k,
-     link_type AS lt,
-     movie_companies AS mc,
-     movie_info AS mi,
-     movie_keyword AS mk,
-     movie_link AS ml,
-     title AS t
-WHERE cct1.kind = 'cast'
-  AND cct2.kind LIKE 'complete%'
-  AND cn.country_code !='[pl]'
-  AND (cn.name LIKE '%Film%'
-       OR cn.name LIKE '%Warner%')
-  AND ct.kind ='production companies'
-  AND k.keyword ='sequel'
-  AND lt.link LIKE '%follow%'
+SELECT
+  MIN(cn.name) AS producing_company,
+  MIN(lt.link) AS link_type,
+  MIN(t.title) AS complete_western_sequel
+FROM complete_cast AS cc, comp_cast_type AS cct1, comp_cast_type AS cct2, company_name AS cn, company_type AS ct, keyword AS k, link_type AS lt, movie_companies AS mc, movie_info AS mi, movie_keyword AS mk, movie_link AS ml, title AS t
+WHERE
+  cct1.kind = %(kind_eq_2)s
+  AND cct2.kind LIKE %(kind_pattern)s
+  AND cn.country_code <> %(country_code_neq)s
+  AND (
+    cn.name LIKE %(name_pattern)s OR cn.name LIKE %(name_pattern_2)s
+  )
+  AND ct.kind = %(kind_eq)s
+  AND k.keyword = %(keyword_eq)s
+  AND lt.link LIKE %(link_pattern)s
   AND mc.note IS NULL
-  AND mi.info IN ('Sweden',
-                  'Norway',
-                  'Germany',
-                  'Denmark',
-                  'Swedish',
-                  'Denish',
-                  'Norwegian',
-                  'German',
-                  'English')
-  AND t.production_year BETWEEN 1950 AND 2010
+  AND mi.info IN (
+    'Sweden',
+    'Norway',
+    'Germany',
+    'Denmark',
+    'Swedish',
+    'Denish',
+    'Norwegian',
+    'German',
+    'English'
+  )
+  AND t.production_year BETWEEN %(production_year_lower)s AND %(production_year_upper)s
   AND lt.id = ml.link_type_id
   AND ml.movie_id = t.id
   AND t.id = mk.movie_id
@@ -54,4 +47,4 @@ WHERE cct1.kind = 'cast'
   AND ml.movie_id = cc.movie_id
   AND mk.movie_id = cc.movie_id
   AND mc.movie_id = cc.movie_id
-  AND mi.movie_id = cc.movie_id;
+  AND mi.movie_id = cc.movie_id

@@ -1,3 +1,10 @@
 {
-  "parameters": []
+  "parameters": [
+    {
+      "name": "production_year_lower",
+      "type": "int",
+      "default": 2000,
+      "description": "Filter on production_year (lower)"
+    }
+  ]
 }

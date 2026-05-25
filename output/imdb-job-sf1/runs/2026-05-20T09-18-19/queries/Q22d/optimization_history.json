@@ -1,4 +1,24 @@
 {
   "query_id": "Q22d",
-  "iterations": []
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 24.633333333333336,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 24.633333333333336,
+      "validation": "pass",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "data_loading": 0.18,
+        "build_cn_notus": 1.75,
+        "main_scan": 11.03,
+        "output": 0.22,
+        "total": 24.77
+      }
+    }
+  ]
 }

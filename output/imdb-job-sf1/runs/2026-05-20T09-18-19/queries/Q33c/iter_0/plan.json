@@ -1,112 +1,146 @@
 {
   "query_id": "Q33c",
   "pipeline": [
-    "resolve_dims",
-    "build_cn1_bitset",
-    "build_kt_title_bitmap",
-    "iterate_ml_via_link_type_csr",
-    "filter_t1_kind_t2_kind_t2_year",
-    "probe_mc1_for_cn1",
-    "probe_mc2_for_cn2",
-    "probe_mi_idx1_rating",
-    "probe_mi_idx2_rating_lt35",
-    "aggregate_min6"
+    "resolve_dim_literals",
+    "build_allowed_id_bitsets",
+    "scan_movie_link_filtered_by_link_type",
+    "for_each_ml_row_probe_t1_and_t2_facts",
+    "aggregate_min"
+  ],
+  "dimension_resolution": [
+    {
+      "dim": "info_type",
+      "predicate": "info = 'rating'",
+      "produces": "it_rating_id (single int32)",
+      "method": "scan info_type/info varlen, read info_type/id.bin at matching row"
+    },
+    {
+      "dim": "kind_type",
+      "predicate": "kind IN ('tv series','episode')",
+      "produces": "kt_allowed_ids (small std::vector<int32_t>, expect 2 ids)",
+      "method": "scan kind_type/kind varlen (7 rows), collect ids"
+    },
+    {
+      "dim": "link_type",
+      "predicate": "link IN ('sequel','follows','followed by')",
+      "produces": "lt_allowed_mask (bitset over link_type ids, size 19)",
+      "method": "scan link_type/link varlen (18 rows), set mask[id]=1 for matches"
+    },
+    {
+      "dim": "company_name",
+      "predicate": "country_code != '[us]'",
+      "produces": "cn_ok_mask (bitset over company_name positions, size 234997)",
+      "method": "scan company_name/country_code varlen once; mask[r] = (slice != '[us]' AND slice non-empty? include NULLs per SQL semantics: treat NULL as not equal, i.e., include). Standard IMDB-JOB practice: include only rows where country_code present and != '[us]'."
+    }
   ],
   "join_order": [
     {
-      "build": "link_type(filtered: link IN {sequel,follows,followed by})",
-      "probe": "movie_link via CSR movie_link__link_type_id",
-      "type": "inner",
-      "strategy": "csr_index_lookup",
+      "step": "drive_ml",
+      "build": "lt_allowed_mask (bitset[19])",
+      "probe": "movie_link (full scan 29997 rows)",
+      "type": "semi",
+      "strategy": "scan_with_bitset_filter",
       "build_cardinality": 3,
-      "notes": "Driver. ~few hundred ml rows total."
+      "probe_cardinality": 29997,
+      "expected_survivors": 5000,
+      "notes": "Drive on movie_link rather than title; ml is small (30k) and link_type filter is highly selective (~3/18). Each surviving ml row gives both t1.id (ml.movie_id) and t2.id (ml.linked_movie_id) directly."
     },
     {
-      "build": "ml row (t1_id=movie_id, t2_id=linked_movie_id)",
-      "probe": "title (t1 and t2 via dense PK dereference)",
-      "type": "inner",
-      "strategy": "direct_array",
-      "build_cardinality": 30000,
-      "notes": "Dense PK: title[t1_id-1], title[t2_id-1]."
-    },
-    {
-      "build": "kt_ids set (2 ids: tv series, episode)",
-      "probe": "title.kind_id[t1_id-1] and title.kind_id[t2_id-1]",
+      "step": "t1_kind_check",
+      "build": "kt_allowed_ids (vector size 2)",
+      "probe": "title.kind_id[pos[t1_id]] via title__id__pos",
       "type": "semi",
-      "strategy": "bitset_membership",
-      "build_cardinality": 2,
-      "notes": "Pre-build kt_title bitmap (rows=2528312) via title__kind_id CSR; O(1) check."
+      "strategy": "pk_pos_lookup_then_membership",
+      "notes": "Look up title row via title__id__pos[t1_id]; check kind_id in kt_allowed_ids (linear scan over 2 ids)."
     },
     {
-      "build": "year window [2000,2010]",
-      "probe": "title.production_year[t2_id-1]",
+      "step": "t2_filters",
+      "build": "kt_allowed_ids; production_year range [2000,2010]",
+      "probe": "title row for t2_id via title__id__pos",
       "type": "semi",
-      "strategy": "direct_array",
-      "build_cardinality": 1,
-      "notes": "Range check on t2 only."
+      "strategy": "pk_pos_lookup_then_predicate",
+      "notes": "title__id__pos[t2_id] -> row r2; check production_year_bin[r2] in [2000,2010] (skip if -1 NULL) AND kind_id[r2] in kt_allowed_ids."
     },
     {
-      "build": "cn1_ids = {company_id : country_code != us_code && != 0}",
-      "probe": "mc1 rows for t1_id via movie_companies__movie_id offsets",
+      "step": "mi_idx1_probe",
+      "build": "it_rating_id",
+      "probe": "movie_info_idx via primary CSR on movie_id (range [off[t1_id], off[t1_id+1]))",
       "type": "semi",
-      "strategy": "bitset_membership",
-      "build_cardinality": 234997,
-      "notes": "Build bitset over company_name rows; check mc1.company_id membership."
+      "strategy": "primary_csr_range_scan_filter_by_info_type_id",
+      "notes": "For each row in range, require info_type_id == it_rating_id. Track min(info) lexicographic across matching rows. At least one match required (semi)."
     },
     {
-      "build": "mc2 rows for t2_id via movie_companies__movie_id offsets",
-      "probe": "company_name (any row, for MIN(cn2.name))",
-      "type": "inner",
-      "strategy": "offsets_walk",
-      "build_cardinality": 1,
-      "notes": "No country filter on cn2; pick any to capture MIN(name)."
+      "step": "mc1_probe",
+      "build": "cn_ok_mask (bitset 234997) + company_name__id__pos",
+      "probe": "movie_companies via primary CSR on movie_id (range [off[t1_id], off[t1_id+1]))",
+      "type": "semi",
+      "strategy": "primary_csr_range_scan_filter_by_company_mask",
+      "notes": "For each mc1 row in range, look up company_id; pos = company_name__id__pos[company_id]; require pos>=0 AND cn_ok_mask[pos]. Track min(company_name.name)."
     },
     {
-      "build": "rating_id (it.info='rating')",
-      "probe": "mi_idx1 via movie_info_idx__movie_id[t1_id] filtered by info_type_id==rating_id",
-      "type": "inner",
-      "strategy": "offsets_walk_then_filter",
-      "build_cardinality": 1
+      "step": "mi_idx2_probe",
+      "build": "it_rating_id; info_upper = '3.5'",
+      "probe": "movie_info_idx via primary CSR on movie_id (range for t2_id)",
+      "type": "semi",
+      "strategy": "primary_csr_range_scan_filter_by_info_type_id_and_lex",
+      "notes": "Range scan; require info_type_id == it_rating_id AND info < '3.5' (lex). Track min(info)."
     },
     {
-      "build": "rating_id (same)",
-      "probe": "mi_idx2 via movie_info_idx__movie_id[t2_id] filtered by info_type_id==rating_id AND info < '3.5'",
-      "type": "inner",
-      "strategy": "offsets_walk_then_filter",
-      "build_cardinality": 1,
-      "notes": "Byte-wise lex compare on info varlen."
+      "step": "mc2_probe",
+      "build": "company_name__id__pos (any company allowed; no country_code filter on cn2)",
+      "probe": "movie_companies via primary CSR on movie_id (range for t2_id)",
+      "type": "semi",
+      "strategy": "primary_csr_range_scan_min_company_name",
+      "notes": "Any mc2 row qualifies; track min(company_name.name) across matching companies. Must exist at least once."
     }
   ],
   "filters": [
-    {"table": "company_name (cn1)", "predicate": "country_code != '[us]' AND country_code != 0", "selectivity": 0.5},
-    {"table": "info_type", "predicate": "info = 'rating'", "selectivity": 0.0088},
-    {"table": "kind_type", "predicate": "kind IN ('tv series','episode')", "selectivity": 0.286},
-    {"table": "link_type", "predicate": "link IN ('sequel','follows','followed by')", "selectivity": 0.167},
-    {"table": "title (t1)", "predicate": "kind_id IN kt_ids", "selectivity": 0.3},
-    {"table": "title (t2)", "predicate": "kind_id IN kt_ids AND production_year BETWEEN 2000 AND 2010", "selectivity": 0.1},
-    {"table": "movie_info_idx (mi_idx2)", "predicate": "info_type_id=rating_id AND info < '3.5' (lex)", "selectivity": 0.15}
+    {"table": "company_name", "predicate": "country_code != '[us]'", "selectivity": 0.55, "applies_to": "cn1 only"},
+    {"table": "info_type", "predicate": "info = 'rating'", "selectivity": 0.009},
+    {"table": "kind_type", "predicate": "kind IN ('tv series','episode')", "selectivity": 0.29},
+    {"table": "link_type", "predicate": "link IN ('sequel','follows','followed by')", "selectivity": 0.17},
+    {"table": "movie_info_idx", "predicate": "mi_idx2.info < '3.5'", "selectivity": 0.4},
+    {"table": "title", "predicate": "t2.production_year BETWEEN 2000 AND 2010", "selectivity": 0.2}
   ],
   "data_structures": {
-    "cn1_bitset": "bitset(234998) indexed by company_id",
-    "kt_title_bitmap": "bitset(2528313) indexed by title_id (pre-built from title__kind_id CSR over kt_ids)",
-    "lt_ids": "flat_array<int32> (<=3)",
-    "kt_ids": "flat_array<int32> (==2)",
-    "rating_id": "scalar int32",
-    "us_code": "scalar int16",
-    "aggregation": "six scalar MIN holders (string_view + owned-min materialized at end)"
+    "lt_allowed_mask": "uint8_t[link_type_max_id+1] (bitset/byte-mask)",
+    "kt_allowed_ids": "std::array<int32_t,2> (linear membership test)",
+    "cn_ok_mask": "std::vector<uint8_t>(company_name_N) — byte-mask precomputed once",
+    "it_rating_id": "int32_t scalar",
+    "min_accumulators": "6 std::string accumulators (lex min); initialized empty/sentinel-high"
   },
   "parallelism": {
-    "strategy": "single_thread",
-    "threads": 1,
-    "notes": "Driver cardinality (ml rows after lt filter) is small (few hundred to few thousand); single-thread avoids sync overhead. Pre-build of kt_title_bitmap and cn1_bitset is O(N) sequential scans, also single-threaded."
+    "strategy": "morsel_driven over filtered movie_link survivors",
+    "threads": "auto(nproc)",
+    "morsel_size": 256,
+    "notes": "Partition the (filtered) ml row index space across 12 threads. Each thread maintains thread-local min accumulators (string copies); reduce at end with lex-min."
   },
   "indexes": [
-    {"index": "movie_link__link_type_id (CSR)", "purpose": "driver: iterate ml rows by lt_id"},
-    {"index": "title__kind_id (CSR)", "purpose": "pre-build kt_title bitmap"},
-    {"index": "movie_companies__movie_id (offsets_only)", "purpose": "walk mc1[t1_id] and mc2[t2_id]"},
-    {"index": "movie_info_idx__movie_id (offsets_only)", "purpose": "walk mi_idx1[t1_id] and mi_idx2[t2_id]"}
+    {"index": "movie_link__movie_id (primary CSR)", "purpose": "not used as probe — ml driven via full scan; provides physical layout only"},
+    {"index": "movie_link__link_type_id (aux CSR)", "purpose": "OPTIONAL alternative driver — skip; full scan of 30k ml with bitset is simpler and similar cost"},
+    {"index": "title__id__pos", "purpose": "map t1_id and t2_id to title row positions for kind_id/production_year/title lookups"},
+    {"index": "movie_info_idx__movie_id (primary CSR)", "purpose": "range probe for mi_idx1 (by t1_id) and mi_idx2 (by t2_id)"},
+    {"index": "movie_companies__movie_id (primary CSR)", "purpose": "range probe for mc1 (by t1_id) and mc2 (by t2_id)"},
+    {"index": "company_name__id__pos", "purpose": "map mc.company_id -> company_name row for country_code mask test and name projection"},
+    {"index": "info_type__id__pos", "purpose": "not strictly needed — only the resolved it_rating_id is used for FK equality"},
+    {"index": "link_type__id__pos", "purpose": "not used — lt_allowed_mask built directly on id values"},
+    {"index": "kind_type__id__pos", "purpose": "not used — kt_allowed_ids checked as small set against title.kind_id"}
   ],
-  "aggregation": "scalar_min_six",
-  "output": {"order_by": [], "limit": 1},
+  "aggregation": "scalar_min_no_groupby",
+  "projection_handling": {
+    "min_t1_title": "read title/title.{offsets,data}.bin at pos=title__id__pos[t1_id] when row passes all checks",
+    "min_t2_title": "read title/title at pos=title__id__pos[t2_id]",
+    "min_mi_idx1_info": "track min over matching mi_idx1 rows during range scan",
+    "min_mi_idx2_info": "track min over matching mi_idx2 rows during range scan",
+    "min_cn1_name": "track min over matching mc1->cn1 company_name rows",
+    "min_cn2_name": "track min over matching mc2->cn2 company_name rows",
+    "early_exit": "NOT safe — MIN aggregation requires full materialization of survivors"
+  },
+  "output": {
+    "order_by": [],
+    "limit": 1,
+    "row_count": 1,
+    "columns": ["first_company","second_company","first_rating","second_rating","first_movie","second_movie"]
+  },
   "execution_target": "cpp"
 }

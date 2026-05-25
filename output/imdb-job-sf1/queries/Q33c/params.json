@@ -1,3 +1,40 @@
 {
-  "parameters": []
+  "parameters": [
+    {
+      "name": "production_year_lower",
+      "type": "int",
+      "default": 2000,
+      "description": "Filter on production_year (lower)"
+    },
+    {
+      "name": "production_year_upper",
+      "type": "int",
+      "default": 2010,
+      "description": "Filter on production_year (upper)"
+    },
+    {
+      "name": "info_upper",
+      "type": "double",
+      "default": 3.5,
+      "description": "Filter on info (upper)"
+    },
+    {
+      "name": "info_eq",
+      "type": "string",
+      "default": "rating",
+      "description": "Filter on info (eq)"
+    },
+    {
+      "name": "country_code_neq",
+      "type": "string",
+      "default": "[us]",
+      "description": "Filter on country_code (neq)"
+    },
+    {
+      "name": "info_eq_2",
+      "type": "string",
+      "default": "rating",
+      "description": "Filter on info (eq)"
+    }
+  ]
 }

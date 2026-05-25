@@ -1,3 +1,22 @@
 {
-  "parameters": []
+  "parameters": [
+    {
+      "name": "production_year_lower",
+      "type": "int",
+      "default": 1950,
+      "description": "Filter on production_year (lower)"
+    },
+    {
+      "name": "country_code_neq",
+      "type": "string",
+      "default": "[pl]",
+      "description": "Filter on country_code (neq)"
+    },
+    {
+      "name": "kind_neq",
+      "type": "string",
+      "default": "production companies",
+      "description": "Filter on kind (neq)"
+    }
+  ]
 }

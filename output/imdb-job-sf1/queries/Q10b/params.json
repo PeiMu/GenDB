@@ -1,3 +1,28 @@
 {
-  "parameters": []
+  "parameters": [
+    {
+      "name": "production_year_lower",
+      "type": "int",
+      "default": 2010,
+      "description": "Filter on production_year (lower)"
+    },
+    {
+      "name": "role_eq",
+      "type": "string",
+      "default": "actor",
+      "description": "Filter on role (eq)"
+    },
+    {
+      "name": "note_pattern",
+      "type": "string",
+      "default": "%(producer)%",
+      "description": "Filter on note (pattern)"
+    },
+    {
+      "name": "country_code_eq",
+      "type": "string",
+      "default": "[ru]",
+      "description": "Filter on country_code (eq)"
+    }
+  ]
 }

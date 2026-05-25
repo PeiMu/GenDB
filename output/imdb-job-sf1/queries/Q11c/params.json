@@ -1,3 +1,34 @@
 {
-  "parameters": []
+  "parameters": [
+    {
+      "name": "production_year_lower",
+      "type": "int",
+      "default": 1950,
+      "description": "Filter on production_year (lower)"
+    },
+    {
+      "name": "kind_neq",
+      "type": "string",
+      "default": "production companies",
+      "description": "Filter on kind (neq)"
+    },
+    {
+      "name": "country_code_neq",
+      "type": "string",
+      "default": "[pl]",
+      "description": "Filter on country_code (neq)"
+    },
+    {
+      "name": "name_pattern",
+      "type": "string",
+      "default": "20th Century Fox%",
+      "description": "Filter on name (pattern)"
+    },
+    {
+      "name": "name_pattern_2",
+      "type": "string",
+      "default": "Twentieth Century Fox%",
+      "description": "Filter on name (pattern)"
+    }
+  ]
 }

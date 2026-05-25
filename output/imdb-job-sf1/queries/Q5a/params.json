@@ -1,3 +1,28 @@
 {
-  "parameters": []
+  "parameters": [
+    {
+      "name": "production_year_lower",
+      "type": "int",
+      "default": 2005,
+      "description": "Filter on production_year (lower)"
+    },
+    {
+      "name": "note_pattern",
+      "type": "string",
+      "default": "%(France)%",
+      "description": "Filter on note (pattern)"
+    },
+    {
+      "name": "kind_eq",
+      "type": "string",
+      "default": "production companies",
+      "description": "Filter on kind (eq)"
+    },
+    {
+      "name": "note_pattern_2",
+      "type": "string",
+      "default": "%(theatrical)%",
+      "description": "Filter on note (pattern)"
+    }
+  ]
 }

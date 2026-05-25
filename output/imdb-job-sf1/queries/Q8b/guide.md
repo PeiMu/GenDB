@@ -1,116 +1,382 @@
-## SQL
+# Q8b Guide
 
+## SQL
 ```sql
+/* Q8b */
+-- Q8b
 SELECT MIN(an.name) AS acress_pseudonym,
        MIN(t.title) AS japanese_anime_movie
-FROM aka_name AS an, cast_info AS ci, company_name AS cn,
-     movie_companies AS mc, name AS n, role_type AS rt, title AS t
+FROM aka_name AS an,
+     cast_info AS ci,
+     company_name AS cn,
+     movie_companies AS mc,
+     name AS n,
+     role_type AS rt,
+     title AS t
 WHERE ci.note ='(voice: English version)'
   AND cn.country_code ='[jp]'
-  AND mc.note LIKE '%(Japan)%' AND mc.note NOT LIKE '%(USA)%'
-  AND (mc.note LIKE '%(2006)%' OR mc.note LIKE '%(2007)%')
-  AND n.name LIKE '%Yo%' AND n.name NOT LIKE '%Yu%'
+  AND mc.note LIKE '%(Japan)%'
+  AND mc.note NOT LIKE '%(USA)%'
+  AND (mc.note LIKE '%(2006)%'
+       OR mc.note LIKE '%(2007)%')
+  AND n.name LIKE '%Yo%'
+  AND n.name NOT LIKE '%Yu%'
   AND rt.role ='actress'
   AND t.production_year BETWEEN 2006 AND 2007
-  AND (t.title LIKE 'One Piece%' OR t.title LIKE 'Dragon Ball Z%')
-  AND an.person_id = n.id AND n.id = ci.person_id
-  AND ci.movie_id = t.id  AND t.id = mc.movie_id
-  AND mc.company_id = cn.id AND ci.role_id = rt.id
-  AND an.person_id = ci.person_id AND ci.movie_id = mc.movie_id;
+  AND (t.title LIKE 'One Piece%'
+       OR t.title LIKE 'Dragon Ball Z%')
+  AND an.person_id = n.id
+  AND n.id = ci.person_id
+  AND ci.movie_id = t.id
+  AND t.id = mc.movie_id
+  AND mc.company_id = cn.id
+  AND ci.role_id = rt.id
+  AND an.person_id = ci.person_id
+  AND ci.movie_id = mc.movie_id;
 ```
 
 ## Column Reference
 
-### role_type.role (varlen)
-Files: `role_type/role.off`, `role_type/role.dat`. Resolve `rt_id` for "actress".
-```cpp
-auto rt_off = read_vec<int64_t>(store + "/role_type/role.off");
-std::string rt_dat = read_file(store + "/role_type/role.dat");
-int32_t rt_id = 0;
-for (size_t i = 0; i+1 < rt_off.size(); ++i)
-    if (std::string_view(rt_dat.data()+rt_off[i], rt_off[i+1]-rt_off[i]) == "actress") { rt_id = (int32_t)(i+1); break; }
-```
+All column files live under `<storage>/<table>/`. Fixed int32 columns are stored as raw little-endian `int32[N]`; nullable variants (`intN` below) use `-1` as the NULL sentinel. Varlen columns use a paired `<col>.offsets.bin` (`uint64[N+1]`) + `<col>.data.bin` (raw bytes); row `i`'s value is `data[off[i]..off[i+1])`, and an empty range means NULL. `char1` columns are raw `uint8[N]` with `0` denoting NULL.
 
-### company_name.country_code (int16 dict)
-Files: `company_name/country_code.bin`, `.dict.off`, `.dict.dat`. Resolve `jp_code` for "[jp]".
-```cpp
-auto cc_off = read_vec<int64_t>(store + "/company_name/country_code.dict.off");
-std::string cc_dat = read_file(store + "/company_name/country_code.dict.dat");
-int16_t jp_code = 0;
-for (size_t i = 0; i+1 < cc_off.size(); ++i)
-    if (std::string_view(cc_dat.data()+cc_off[i], cc_off[i+1]-cc_off[i]) == "[jp]") { jp_code = (int16_t)(i+1); break; }
-auto cn_cc = read_vec<int16_t>(store + "/company_name/country_code.bin");
-```
+### `aka_name.name` (varlen text)
+- Files: `aka_name/name.offsets.bin` (uint64[901344]) + `aka_name/name.data.bin`
+- Projected: `MIN(an.name)` → read value only for surviving rows; maintain a running min (lexicographic for varlen, arithmetic for int32 skipping -1).
 
-### cast_info.note (varlen), role_id, movie_id, person_id (int32)
-Files: `cast_info/note.{off,dat}`, `cast_info/role_id.bin`, `cast_info/movie_id.bin`, `cast_info/person_id.bin`. Length 36244344.
+### `aka_name.person_id` (int32_t)
+- File: `aka_name/person_id.bin` (901343 rows of int32_t)
+- Role: Primary FK on which `aka_name` is physically sorted. Use the primary CSR `indexes/aka_name__person_id__offsets.bin` (uint64[max+2]) to get the contiguous range of rows for a given parent id.
 
-### movie_companies.note (varlen), movie_id, company_id (int32)
-Files: `movie_companies/note.{off,dat}`, `movie_companies/movie_id.bin`, `movie_companies/company_id.bin`. Length 2609129. Apply 4 LIKE checks via `memmem`.
+### `cast_info.movie_id` (int32_t)
+- File: `cast_info/movie_id.bin` (36244344 rows of int32_t)
+- Role: Primary FK on which `cast_info` is physically sorted. Use the primary CSR `indexes/cast_info__movie_id__offsets.bin` (uint64[max+2]) to get the contiguous range of rows for a given parent id.
 
-### name.name (varlen)
-Files: `name/name.off`, `name/name.dat`. Scan all 4,167,491 rows once for `%Yo%` AND NOT `%Yu%`.
+### `cast_info.note` (varlen text)
+- Files: `cast_info/note.offsets.bin` (uint64[36244345]) + `cast_info/note.data.bin`
+- Predicate (this query): `ci.note ='(voice: English version)'` → equality — resolve literal id once (see dimension PK scan); test FK column directly if comparing to dim id
 
-### aka_name.person_id, name
-Files: `aka_name/person_id.bin`, `aka_name/name.{off,dat}`. Use index per pid.
+### `cast_info.person_id` (int32_t)
+- File: `cast_info/person_id.bin` (36244344 rows of int32_t)
+- Role: Secondary FK with aux CSR `indexes/cast_info__person_id__offsets.bin` (uint64[max+2]) + `indexes/cast_info__person_id__rowids.bin` (int32[36244344]). Use it when this column is the more selective join key.
 
-### title.id, title.title, title.production_year
-`title/id.bin` identity; `title/title.{off,dat}`; `title/production_year.bin` int32 length 2528312. `t.production_year BETWEEN 2006 AND 2007` AND title LIKE `'One Piece%'` OR LIKE `'Dragon Ball Z%'` (prefix → `memcmp` against first k bytes).
+### `cast_info.role_id` (int32_t)
+- File: `cast_info/role_id.bin` (36244344 rows of int32_t)
+- Role: Secondary FK with aux CSR `indexes/cast_info__role_id__offsets.bin` (uint64[max+2]) + `indexes/cast_info__role_id__rowids.bin` (int32[36244344]). Use it when this column is the more selective join key.
+
+### `company_name.country_code` (varlen text)
+- Files: `company_name/country_code.offsets.bin` (uint64[234998]) + `company_name/country_code.data.bin`
+- Predicate (this query): `cn.country_code ='[jp]'` → equality — resolve literal id once (see dimension PK scan); test FK column directly if comparing to dim id
+
+### `company_name.id` (int32_t)
+- File: `company_name/id.bin` (234997 rows of int32_t)
+- Role: Dimension primary key. Use `indexes/company_name__id__pos.bin` (int32[max_id+2]) to map id→row position. Slot `pos[id] == -1` means the id is absent.
+
+### `movie_companies.company_id` (int32_t)
+- File: `movie_companies/company_id.bin` (2609129 rows of int32_t)
+- Role: Secondary FK with aux CSR `indexes/movie_companies__company_id__offsets.bin` (uint64[max+2]) + `indexes/movie_companies__company_id__rowids.bin` (int32[2609129]). Use it when this column is the more selective join key.
+
+### `movie_companies.movie_id` (int32_t)
+- File: `movie_companies/movie_id.bin` (2609129 rows of int32_t)
+- Role: Primary FK on which `movie_companies` is physically sorted. Use the primary CSR `indexes/movie_companies__movie_id__offsets.bin` (uint64[max+2]) to get the contiguous range of rows for a given parent id.
+
+### `movie_companies.note` (varlen text)
+- Files: `movie_companies/note.offsets.bin` (uint64[2609130]) + `movie_companies/note.data.bin`
+- Predicate (this query): `mc.note LIKE '%(Japan)%'` → varlen substring/prefix match — scan `note.data.bin` using `memmem`/`memcmp` on slice `[off[r], off[r+1])`
+- Predicate (this query): `mc.note NOT LIKE '%(USA)%'` → varlen substring/prefix match — scan `note.data.bin` using `memmem`/`memcmp` on slice `[off[r], off[r+1])`
+- Predicate (this query): `(mc.note LIKE '%(2006)%'
+       OR mc.note LIKE '%(2007)%')` → varlen substring/prefix match — scan `note.data.bin` using `memmem`/`memcmp` on slice `[off[r], off[r+1])`
+
+### `name.id` (int32_t)
+- File: `name/id.bin` (4167491 rows of int32_t)
+- Role: Dimension primary key. Use `indexes/name__id__pos.bin` (int32[max_id+2]) to map id→row position. Slot `pos[id] == -1` means the id is absent.
+
+### `name.name` (varlen text)
+- Files: `name/name.offsets.bin` (uint64[4167492]) + `name/name.data.bin`
+- Predicate (this query): `n.name LIKE '%Yo%'` → varlen substring/prefix match — scan `name.data.bin` using `memmem`/`memcmp` on slice `[off[r], off[r+1])`
+- Predicate (this query): `n.name NOT LIKE '%Yu%'` → varlen substring/prefix match — scan `name.data.bin` using `memmem`/`memcmp` on slice `[off[r], off[r+1])`
+
+### `role_type.id` (int32_t)
+- File: `role_type/id.bin` (12 rows of int32_t)
+- Role: Dimension primary key. Use `indexes/role_type__id__pos.bin` (int32[max_id+2]) to map id→row position. Slot `pos[id] == -1` means the id is absent.
+
+### `role_type.role` (varlen text)
+- Files: `role_type/role.offsets.bin` (uint64[13]) + `role_type/role.data.bin`
+- Predicate (this query): `rt.role ='actress'` → equality — resolve literal id once (see dimension PK scan); test FK column directly if comparing to dim id
+
+### `title.id` (int32_t)
+- File: `title/id.bin` (2528312 rows of int32_t)
+- Role: Dimension primary key. Use `indexes/title__id__pos.bin` (int32[max_id+2]) to map id→row position. Slot `pos[id] == -1` means the id is absent.
+
+### `title.production_year` (int32_t (nullable, -1))
+- File: `title/production_year.bin` (2528312 rows of int32_t)
+- Predicate (this query): `t.production_year BETWEEN 2006 AND 2007` → int32 range — `lo <= production_year_bin[r] && production_year_bin[r] <= hi`
+
+### `title.title` (varlen text)
+- Files: `title/title.offsets.bin` (uint64[2528313]) + `title/title.data.bin`
+- Predicate (this query): `(t.title LIKE 'One Piece%'
+       OR t.title LIKE 'Dragon Ball Z%')` → varlen substring/prefix match — scan `title.data.bin` using `memmem`/`memcmp` on slice `[off[r], off[r+1])`
+- Projected: `MIN(t.title)` → read value only for surviving rows; maintain a running min (lexicographic for varlen, arithmetic for int32 skipping -1).
 
 ## Table Stats
 
-| Table | Rows | Sort | Notes |
-|---|---|---|---|
-| role_type | 12 | id | dense-PK |
-| company_name | 234,997 | id | dense-PK |
-| name | 4,167,491 | id | dense-PK |
-| aka_name | 901,343 | person_id | offsets_only on person_id |
-| cast_info | 36,244,344 | movie_id | offsets_only on movie_id |
-| movie_companies | 2,609,129 | movie_id | offsets_only on movie_id |
-| title | 2,528,312 | id | dense-PK |
+| Table | Rows | Role | Sort order | Block size |
+|---|---|---|---|---|
+| aka_name | 901,343 | fact | person_id | 50000 |
+| cast_info | 36,244,344 | fact | movie_id | 500000 |
+| company_name | 234,997 | dimension(PK) | id | 50000 |
+| movie_companies | 2,609,129 | fact | movie_id | 100000 |
+| name | 4,167,491 | dimension(PK) | id | 100000 |
+| role_type | 12 | dimension(PK) | id | 12 |
+| title | 2,528,312 | dimension(PK)+driver | id | 100000 |
 
 ## Query Analysis
 
-Aggregation: MIN(an.name), MIN(t.title) over varlen.
+### Join graph
+- `aka_name.person_id` = `name.id`
+- `name.id` = `cast_info.person_id`
+- `cast_info.movie_id` = `title.id`
+- `title.id` = `movie_companies.movie_id`
+- `movie_companies.company_id` = `company_name.id`
+- `cast_info.role_id` = `role_type.id`
+- `aka_name.person_id` = `cast_info.person_id`
+- `cast_info.movie_id` = `movie_companies.movie_id`
 
-Driver: very tight title filter (`production_year IN {2006,2007}` AND prefix LIKE on two specific titles) → maybe ≤ dozens of titles. Use title as driver.
+### Filters (alias.col → predicate)
+- `cast_info.note`: `ci.note ='(voice: English version)'`
+- `company_name.country_code`: `cn.country_code ='[jp]'`
+- `movie_companies.note`: `mc.note LIKE '%(Japan)%'`
+- `movie_companies.note`: `mc.note NOT LIKE '%(USA)%'`
+- `movie_companies.note`: `(mc.note LIKE '%(2006)%'
+       OR mc.note LIKE '%(2007)%')`
+- `name.name`: `n.name LIKE '%Yo%'`
+- `name.name`: `n.name NOT LIKE '%Yu%'`
+- `role_type.role`: `rt.role ='actress'`
+- `title.production_year`: `t.production_year BETWEEN 2006 AND 2007`
+- `title.title`: `(t.title LIKE 'One Piece%'
+       OR t.title LIKE 'Dragon Ball Z%')`
 
-Approach (movie-driven):
-1. Scan `title.production_year.bin` & `title.title.{off,dat}` once → list of `t_id` matching year + prefix LIKE.
-2. Resolve `rt_id_actress`, `jp_code`.
-3. For each `t_id`:
-   a. `movie_companies__movie_id` range → for each mc row check note LIKEs (`%(Japan)%` AND NOT `%(USA)%` AND (`%(2006)%` OR `%(2007)%`)) AND `cn.country_code[mc.company_id-1] == jp_code`. If none, skip movie.
-   b. `cast_info__movie_id` range → for each ci row check `role_id==rt_id_actress` AND note equality.
-   c. For surviving ci row → pid=ci.person_id. Check name.name[pid-1] LIKE rules.
-   d. Check `aka_name__person_id` range non-empty; pull aka name(s) for MIN.
+### Aggregation & projection
+- `MIN(an.name)`, `MIN(t.title)`
+- Output is a single row of MIN aggregates (no GROUP BY). Maintain running mins; early-exit is NOT safe (a later row could be lex-smaller).
 
-Selectivities:
-- title.title LIKE `'One Piece%'` OR LIKE `'Dragon Ball Z%'` AND year 2006-2007 → tens of titles.
-- `ci.note='(voice: English version)'` → ~1% of cast_info.
-- `cn.country_code='[jp]'` → small.
+### Suggested execution outline
+1. Resolve each dimension literal to its id by scanning that dimension's text column (use the parallel `id.bin` to read the id of the matching row — do NOT hardcode any id).
+2. Drive on `title` (PK 1..2,528,312). For each candidate `t.id = v`, probe every movie-fact primary CSR (`<fact>__movie_id__offsets.bin`) for the range `[off[v], off[v+1])`. Apply per-fact filters inside that range; only then read varlen projections.
+3. For dimension-attribute lookups after a fact probe, use the dimension's `indexes/<dim>__id__pos.bin` to convert id → row, then read varlen attributes.
 
-LIKE notes: `'One Piece%'` is prefix; `'Dragon Ball Z%'` is prefix; rest are `%X%`.
+## Indexes Used
 
-## Indexes
+### `aka_name__person_id` (primary CSR — table physically sorted by person_id)
+- File: `indexes/aka_name__person_id__offsets.bin`
+- Layout: `uint64_t[max_person_id + 2]` (size = 4167493)
+- Semantics: `aka_name` rows are stored contiguously sorted by `person_id`.
+  Rows with `person_id = v` occupy contiguous positions `[off[v], off[v+1])`
+  in every `aka_name/<col>.bin` and `aka_name/<col>.offsets.bin` file.
+- Sentinel: empty range when `off[v] == off[v+1]` (no rows for that key).
+  Negative/NULL `person_id` values are bucketed at `v=0`.
+- Build code (verbatim from `counting_sort` in `build_indexes.cpp`):
+  ```cpp
+  offsets.assign((size_t)max_k + 2, 0);
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t k = key[r] < 0 ? 0 : key[r];
+      offsets[(size_t)k + 1]++;
+  }
+  for (size_t i = 1; i < offsets.size(); ++i) offsets[i] += offsets[i-1];
+  ```
+- Probe: `uint64_t lo = off[v], hi = off[v+1]; for (uint64_t r = lo; r < hi; ++r) { /* aka_name row r */ }`
 
-### cast_info__movie_id (offsets_only)
-File: `_idx/cast_info__movie_id__offsets.bin` (int32, 2528314). cast_info is sorted by movie_id.
+### `movie_companies__movie_id` (primary CSR — table physically sorted by movie_id)
+- File: `indexes/movie_companies__movie_id__offsets.bin`
+- Layout: `uint64_t[max_movie_id + 2]` (size = 2528314)
+- Semantics: `movie_companies` rows are stored contiguously sorted by `movie_id`.
+  Rows with `movie_id = v` occupy contiguous positions `[off[v], off[v+1])`
+  in every `movie_companies/<col>.bin` and `movie_companies/<col>.offsets.bin` file.
+- Sentinel: empty range when `off[v] == off[v+1]` (no rows for that key).
+  Negative/NULL `movie_id` values are bucketed at `v=0`.
+- Build code (verbatim from `counting_sort` in `build_indexes.cpp`):
+  ```cpp
+  offsets.assign((size_t)max_k + 2, 0);
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t k = key[r] < 0 ? 0 : key[r];
+      offsets[(size_t)k + 1]++;
+  }
+  for (size_t i = 1; i < offsets.size(); ++i) offsets[i] += offsets[i-1];
+  ```
+- Probe: `uint64_t lo = off[v], hi = off[v+1]; for (uint64_t r = lo; r < hi; ++r) { /* movie_companies row r */ }`
+
+### `cast_info__movie_id` (primary CSR — table physically sorted by movie_id)
+- File: `indexes/cast_info__movie_id__offsets.bin`
+- Layout: `uint64_t[max_movie_id + 2]` (size = 2528314)
+- Semantics: `cast_info` rows are stored contiguously sorted by `movie_id`.
+  Rows with `movie_id = v` occupy contiguous positions `[off[v], off[v+1])`
+  in every `cast_info/<col>.bin` and `cast_info/<col>.offsets.bin` file.
+- Sentinel: empty range when `off[v] == off[v+1]` (no rows for that key).
+  Negative/NULL `movie_id` values are bucketed at `v=0`.
+- Build code (verbatim from `counting_sort` in `build_indexes.cpp`):
+  ```cpp
+  offsets.assign((size_t)max_k + 2, 0);
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t k = key[r] < 0 ? 0 : key[r];
+      offsets[(size_t)k + 1]++;
+  }
+  for (size_t i = 1; i < offsets.size(); ++i) offsets[i] += offsets[i-1];
+  ```
+- Probe: `uint64_t lo = off[v], hi = off[v+1]; for (uint64_t r = lo; r < hi; ++r) { /* cast_info row r */ }`
+
+### `movie_companies__company_id` (aux CSR)
+- Files:
+  - `indexes/movie_companies__company_id__offsets.bin` — `uint64_t[max_company_id + 2]` (size = 234999)
+  - `indexes/movie_companies__company_id__rowids.bin`  — `int32_t[2609129]`
+- Semantics: for key `v`, the matching `movie_companies` row positions are
+  `rowids[off[v] .. off[v+1])`. Each rowid indexes into the column files of `movie_companies`.
+- Sentinel: empty range when `off[v] == off[v+1]`.
+- Build code (verbatim from `build_aux` in `build_indexes.cpp`):
+  ```cpp
+  std::vector<uint64_t> off((size_t)max_k + 2, 0);
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t k = keys[r] < 0 ? 0 : keys[r];
+      off[(size_t)k + 1]++;
+  }
+  for (size_t i = 1; i < off.size(); ++i) off[i] += off[i-1];
+  std::vector<int32_t> rowids(N);
+  std::vector<uint64_t> cur = off;
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t k = keys[r] < 0 ? 0 : keys[r];
+      rowids[cur[(size_t)k]++] = (int32_t)r;
+  }
+  ```
+- Probe: `uint64_t lo = off[v], hi = off[v+1]; for (uint64_t k = lo; k < hi; ++k) { int32_t r = rowids[k]; /* movie_companies row r */ }`
+
+### `cast_info__person_id` (aux CSR)
+- Files:
+  - `indexes/cast_info__person_id__offsets.bin` — `uint64_t[max_person_id + 2]` (size = 4167493)
+  - `indexes/cast_info__person_id__rowids.bin`  — `int32_t[36244344]`
+- Semantics: for key `v`, the matching `cast_info` row positions are
+  `rowids[off[v] .. off[v+1])`. Each rowid indexes into the column files of `cast_info`.
+- Sentinel: empty range when `off[v] == off[v+1]`.
+- Build code (verbatim from `build_aux` in `build_indexes.cpp`):
+  ```cpp
+  std::vector<uint64_t> off((size_t)max_k + 2, 0);
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t k = keys[r] < 0 ? 0 : keys[r];
+      off[(size_t)k + 1]++;
+  }
+  for (size_t i = 1; i < off.size(); ++i) off[i] += off[i-1];
+  std::vector<int32_t> rowids(N);
+  std::vector<uint64_t> cur = off;
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t k = keys[r] < 0 ? 0 : keys[r];
+      rowids[cur[(size_t)k]++] = (int32_t)r;
+  }
+  ```
+- Probe: `uint64_t lo = off[v], hi = off[v+1]; for (uint64_t k = lo; k < hi; ++k) { int32_t r = rowids[k]; /* cast_info row r */ }`
+
+### `cast_info__role_id` (aux CSR)
+- Files:
+  - `indexes/cast_info__role_id__offsets.bin` — `uint64_t[max_role_id + 2]` (size = 14)
+  - `indexes/cast_info__role_id__rowids.bin`  — `int32_t[36244344]`
+- Semantics: for key `v`, the matching `cast_info` row positions are
+  `rowids[off[v] .. off[v+1])`. Each rowid indexes into the column files of `cast_info`.
+- Sentinel: empty range when `off[v] == off[v+1]`.
+- Build code (verbatim from `build_aux` in `build_indexes.cpp`):
+  ```cpp
+  std::vector<uint64_t> off((size_t)max_k + 2, 0);
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t k = keys[r] < 0 ? 0 : keys[r];
+      off[(size_t)k + 1]++;
+  }
+  for (size_t i = 1; i < off.size(); ++i) off[i] += off[i-1];
+  std::vector<int32_t> rowids(N);
+  std::vector<uint64_t> cur = off;
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t k = keys[r] < 0 ? 0 : keys[r];
+      rowids[cur[(size_t)k]++] = (int32_t)r;
+  }
+  ```
+- Probe: `uint64_t lo = off[v], hi = off[v+1]; for (uint64_t k = lo; k < hi; ++k) { int32_t r = rowids[k]; /* cast_info row r */ }`
+
+### `title__id__pos` (pk_pos_dense)
+- File: `indexes/title__id__pos.bin`
+- Layout: `int32_t[max_id + 2]` (built by `build_pk_pos` in `build_indexes.cpp`)
+- Semantics: `pos[id]` = row position of that id in `title/id.bin`, or `-1` if absent
+- Sentinel: `-1` for missing ids
+- Build code (verbatim):
+  ```cpp
+  std::vector<int32_t> pos((size_t)max_id + 2, -1);
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t id = ids[r];
+      if (id >= 0 && id <= max_id) pos[(size_t)id] = (int32_t)r;
+  }
+  ```
+- Probe: `int32_t row = pos[id]; if (row < 0) /* not present */;`
+
+### `name__id__pos` (pk_pos_dense)
+- File: `indexes/name__id__pos.bin`
+- Layout: `int32_t[max_id + 2]` (built by `build_pk_pos` in `build_indexes.cpp`)
+- Semantics: `pos[id]` = row position of that id in `name/id.bin`, or `-1` if absent
+- Sentinel: `-1` for missing ids
+- Build code (verbatim):
+  ```cpp
+  std::vector<int32_t> pos((size_t)max_id + 2, -1);
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t id = ids[r];
+      if (id >= 0 && id <= max_id) pos[(size_t)id] = (int32_t)r;
+  }
+  ```
+- Probe: `int32_t row = pos[id]; if (row < 0) /* not present */;`
+
+### `company_name__id__pos` (pk_pos_dense)
+- File: `indexes/company_name__id__pos.bin`
+- Layout: `int32_t[max_id + 2]` (built by `build_pk_pos` in `build_indexes.cpp`)
+- Semantics: `pos[id]` = row position of that id in `company_name/id.bin`, or `-1` if absent
+- Sentinel: `-1` for missing ids
+- Build code (verbatim):
+  ```cpp
+  std::vector<int32_t> pos((size_t)max_id + 2, -1);
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t id = ids[r];
+      if (id >= 0 && id <= max_id) pos[(size_t)id] = (int32_t)r;
+  }
+  ```
+- Probe: `int32_t row = pos[id]; if (row < 0) /* not present */;`
+
+### `role_type__id__pos` (pk_pos_dense)
+- File: `indexes/role_type__id__pos.bin`
+- Layout: `int32_t[max_id + 2]` (built by `build_pk_pos` in `build_indexes.cpp`)
+- Semantics: `pos[id]` = row position of that id in `role_type/id.bin`, or `-1` if absent
+- Sentinel: `-1` for missing ids
+- Build code (verbatim):
+  ```cpp
+  std::vector<int32_t> pos((size_t)max_id + 2, -1);
+  for (uint64_t r = 0; r < N; ++r) {
+      int32_t id = ids[r];
+      if (id >= 0 && id <= max_id) pos[(size_t)id] = (int32_t)r;
+  }
+  ```
+- Probe: `int32_t row = pos[id]; if (row < 0) /* not present */;`
+
+## Dimension Literal Resolution
+
+Every equality on a dimension text column (e.g., `it.info = 'rating'`, `ct.kind = 'production companies'`) must be resolved at query time by scanning that dimension's varlen column and reading the parallel `id.bin` at the matching row. NEVER hardcode a dimension id constant — the value depends on the data load.
+
 ```cpp
-auto cimid_off = read_vec<int32_t>(store + "/_idx/cast_info__movie_id__offsets.bin");
-int32_t lo = cimid_off[t_id], hi = cimid_off[t_id+1];
-for (int32_t r = lo; r < hi; ++r) { /* ci row r */ }
+// Generic dimension lookup template
+uint64_t Nd = *(uint64_t*)mmap_bytes("<dim>/__row_count.bin");
+const uint64_t* doff = (const uint64_t*)mmap_bytes("<dim>/<text_col>.offsets.bin");
+const char*     ddat =                  mmap_bytes("<dim>/<text_col>.data.bin");
+const int32_t*  dids = (const int32_t*) mmap_bytes("<dim>/id.bin");
+int32_t target_id = -1;
+for (uint64_t r = 0; r < Nd; ++r) {
+    std::string_view s(ddat + doff[r], doff[r+1] - doff[r]);
+    if (s == LITERAL) { target_id = dids[r]; break; }
+}
 ```
 
-### movie_companies__movie_id (offsets_only)
-File: `_idx/movie_companies__movie_id__offsets.bin` (int32, 2528314).
-```cpp
-auto mcmid_off = read_vec<int32_t>(store + "/_idx/movie_companies__movie_id__offsets.bin");
-int32_t lo = mcmid_off[t_id], hi = mcmid_off[t_id+1];
-```
+Then use `indexes/<dim>__id__pos.bin` to map any later id-from-fact back to a row position for reading other dimension attributes.
 
-### aka_name__person_id (offsets_only)
-File: `_idx/aka_name__person_id__offsets.bin` (int32, 4167493).
-```cpp
-auto akpid_off = read_vec<int32_t>(store + "/_idx/aka_name__person_id__offsets.bin");
-int32_t lo = akpid_off[pid], hi = akpid_off[pid+1];
-```
+## Sentinels & Null Handling
+- int32 nullable (`intN`): `-1`
+- char1 nullable: `0`
+- varlen NULL: empty range (`off[i] == off[i+1]`)
+- pk_pos missing id: `-1`
+- CSR empty bucket: `off[v] == off[v+1]`

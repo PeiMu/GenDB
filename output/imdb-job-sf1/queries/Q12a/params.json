@@ -1,3 +1,46 @@
 {
-  "parameters": []
+  "parameters": [
+    {
+      "name": "production_year_lower",
+      "type": "int",
+      "default": 2005,
+      "description": "Filter on production_year (lower)"
+    },
+    {
+      "name": "production_year_upper",
+      "type": "int",
+      "default": 2008,
+      "description": "Filter on production_year (upper)"
+    },
+    {
+      "name": "info_lower",
+      "type": "double",
+      "default": 8,
+      "description": "Filter on info (lower)"
+    },
+    {
+      "name": "info_eq",
+      "type": "string",
+      "default": "rating",
+      "description": "Filter on info (eq)"
+    },
+    {
+      "name": "info_eq_2",
+      "type": "string",
+      "default": "genres",
+      "description": "Filter on info (eq)"
+    },
+    {
+      "name": "country_code_eq",
+      "type": "string",
+      "default": "[us]",
+      "description": "Filter on country_code (eq)"
+    },
+    {
+      "name": "kind_eq",
+      "type": "string",
+      "default": "production companies",
+      "description": "Filter on kind (eq)"
+    }
+  ]
 }

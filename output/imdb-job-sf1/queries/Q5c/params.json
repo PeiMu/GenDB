@@ -1,3 +1,28 @@
 {
-  "parameters": []
+  "parameters": [
+    {
+      "name": "production_year_lower",
+      "type": "int",
+      "default": 1990,
+      "description": "Filter on production_year (lower)"
+    },
+    {
+      "name": "note_pattern",
+      "type": "string",
+      "default": "%(USA)%",
+      "description": "Filter on note (pattern)"
+    },
+    {
+      "name": "kind_eq",
+      "type": "string",
+      "default": "production companies",
+      "description": "Filter on kind (eq)"
+    },
+    {
+      "name": "note_pattern_2",
+      "type": "string",
+      "default": "%(TV)%",
+      "description": "Filter on note (pattern)"
+    }
+  ]
 }

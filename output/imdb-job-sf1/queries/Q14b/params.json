@@ -1,3 +1,52 @@
 {
-  "parameters": []
+  "parameters": [
+    {
+      "name": "production_year_lower",
+      "type": "int",
+      "default": 2010,
+      "description": "Filter on production_year (lower)"
+    },
+    {
+      "name": "info_lower",
+      "type": "double",
+      "default": 6,
+      "description": "Filter on info (lower)"
+    },
+    {
+      "name": "title_pattern",
+      "type": "string",
+      "default": "%Mord%",
+      "description": "Filter on title (pattern)"
+    },
+    {
+      "name": "title_pattern_2",
+      "type": "string",
+      "default": "%murder%",
+      "description": "Filter on title (pattern)"
+    },
+    {
+      "name": "title_pattern_3",
+      "type": "string",
+      "default": "%Murder%",
+      "description": "Filter on title (pattern)"
+    },
+    {
+      "name": "kind_eq",
+      "type": "string",
+      "default": "movie",
+      "description": "Filter on kind (eq)"
+    },
+    {
+      "name": "info_eq",
+      "type": "string",
+      "default": "countries",
+      "description": "Filter on info (eq)"
+    },
+    {
+      "name": "info_eq_2",
+      "type": "string",
+      "default": "rating",
+      "description": "Filter on info (eq)"
+    }
+  ]
 }

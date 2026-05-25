@@ -1,3 +1,28 @@
 {
-  "parameters": []
+  "parameters": [
+    {
+      "name": "episode_nr_upper",
+      "type": "int",
+      "default": 100,
+      "description": "Filter on episode_nr (upper)"
+    },
+    {
+      "name": "episode_nr_lower",
+      "type": "int",
+      "default": 50,
+      "description": "Filter on episode_nr (lower)"
+    },
+    {
+      "name": "country_code_eq",
+      "type": "string",
+      "default": "[us]",
+      "description": "Filter on country_code (eq)"
+    },
+    {
+      "name": "keyword_eq",
+      "type": "string",
+      "default": "character-name-in-title",
+      "description": "Filter on keyword (eq)"
+    }
+  ]
 }

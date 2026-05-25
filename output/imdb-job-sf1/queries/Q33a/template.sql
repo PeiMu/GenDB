@@ -1,35 +1,21 @@
 /* Q33a */
--- Q33a
-SELECT MIN(cn1.name) AS first_company,
-       MIN(cn2.name) AS second_company,
-       MIN(mi_idx1.info) AS first_rating,
-       MIN(mi_idx2.info) AS second_rating,
-       MIN(t1.title) AS first_movie,
-       MIN(t2.title) AS second_movie
-FROM company_name AS cn1,
-     company_name AS cn2,
-     info_type AS it1,
-     info_type AS it2,
-     kind_type AS kt1,
-     kind_type AS kt2,
-     link_type AS lt,
-     movie_companies AS mc1,
-     movie_companies AS mc2,
-     movie_info_idx AS mi_idx1,
-     movie_info_idx AS mi_idx2,
-     movie_link AS ml,
-     title AS t1,
-     title AS t2
-WHERE cn1.country_code = '[us]'
-  AND it1.info = 'rating'
-  AND it2.info = 'rating'
+SELECT
+  MIN(cn1.name) AS first_company,
+  MIN(cn2.name) AS second_company,
+  MIN(mi_idx1.info) AS first_rating,
+  MIN(mi_idx2.info) AS second_rating,
+  MIN(t1.title) AS first_movie,
+  MIN(t2.title) AS second_movie
+FROM company_name AS cn1, company_name AS cn2, info_type AS it1, info_type AS it2, kind_type AS kt1, kind_type AS kt2, link_type AS lt, movie_companies AS mc1, movie_companies AS mc2, movie_info_idx AS mi_idx1, movie_info_idx AS mi_idx2, movie_link AS ml, title AS t1, title AS t2
+WHERE
+  cn1.country_code = %(country_code_eq)s
+  AND it1.info = %(info_eq_2)s
+  AND it2.info = %(info_eq)s
   AND kt1.kind IN ('tv series')
   AND kt2.kind IN ('tv series')
-  AND lt.link IN ('sequel',
-                  'follows',
-                  'followed by')
-  AND mi_idx2.info < '3.0'
-  AND t2.production_year BETWEEN 2005 AND 2008
+  AND lt.link IN ('sequel', 'follows', 'followed by')
+  AND mi_idx2.info < %(info_upper)s
+  AND t2.production_year BETWEEN %(production_year_lower)s AND %(production_year_upper)s
   AND lt.id = ml.link_type_id
   AND t1.id = ml.movie_id
   AND t2.id = ml.linked_movie_id
@@ -48,4 +34,4 @@ WHERE cn1.country_code = '[us]'
   AND t2.id = mc2.movie_id
   AND ml.linked_movie_id = mi_idx2.movie_id
   AND ml.linked_movie_id = mc2.movie_id
-  AND mi_idx2.movie_id = mc2.movie_id;
+  AND mi_idx2.movie_id = mc2.movie_id

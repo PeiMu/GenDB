@@ -1,101 +1,138 @@
 {
   "query_id": "Q22d",
   "pipeline": [
-    "resolve_dims",
-    "build_cn_lookup",
-    "scan_title_filter",
-    "probe_mk_semi",
-    "probe_mi_idx_capture_min",
-    "probe_mi_semi",
-    "probe_mc_capture_cn_name",
+    "resolve_dim_literals",
+    "build_kind_id_set",
+    "build_keyword_id_set",
+    "build_cn_notus_bitset",
+    "drive_title_parallel",
+    "filter_title_year_kind",
+    "probe_mk_csr_keyword",
+    "probe_mi_csr_country_info",
+    "probe_mi_idx_csr_rating_info",
+    "probe_mc_csr_company_company_type",
     "aggregate_min"
   ],
-  "dimension_resolution": [
-    {"table": "company_name.country_code", "action": "dict_scan", "produce": "us_code(int16)"},
-    {"table": "info_type", "action": "scan_for_literal", "produce": "it1_id (info='countries')"},
-    {"table": "info_type", "action": "scan_for_literal", "produce": "it2_id (info='rating')"},
-    {"table": "keyword", "action": "scan_for_in_set", "produce": "kw_ids[4] (murder, murder-in-title, blood, violence)"},
-    {"table": "kind_type", "action": "scan_for_in_set", "produce": "kt_ids[2] (movie, episode)"},
-    {"table": "movie_info.info", "action": "literal_set_compile", "produce": "mi_info_set[10] FNV hashset"}
+  "dim_literal_resolution": [
+    {"dim": "info_type", "text_col": "info", "literal": "countries", "out": "it1_id"},
+    {"dim": "info_type", "text_col": "info", "literal": "rating", "out": "it2_id"},
+    {"dim": "company_type", "text_col": "kind", "literal": null, "note": "no filter on company_type — skip"}
   ],
+  "dim_sets": [
+    {
+      "name": "kt_ids",
+      "source": "kind_type",
+      "predicate": "kind IN ('movie','episode')",
+      "structure": "small_vector<int32>(<=2)",
+      "estimated_size": 2,
+      "lookup": "linear_scan_or_2bit_bitset_over_max_kind_id"
+    },
+    {
+      "name": "kw_ids",
+      "source": "keyword",
+      "predicate": "keyword IN ('murder','murder-in-title','blood','violence')",
+      "structure": "flat_array<int32>(4) used as membership via std::unordered_set<int32> for mk.keyword_id test",
+      "estimated_size": 4
+    },
+    {
+      "name": "cn_notus_bitset",
+      "source": "company_name",
+      "predicate": "country_code != '[us]'",
+      "structure": "bitset(max_company_id+1)",
+      "estimated_set_bits": 200000,
+      "notes": "Scan company_name once: for each row read country_code slice, set bit at id if (slice != '[us]' AND slice non-empty). NULL/empty country_code: keep convention used by JOB Q22 family — treat NULL as != '[us]' (set bit). Probe in mc by bitset[mc.company_id]."
+    }
+  ],
+  "drive": {
+    "table": "title",
+    "scan": "linear over title rows 0..2528311",
+    "early_filters": [
+      {"col": "production_year", "predicate": "> 2005", "selectivity": 0.18},
+      {"col": "kind_id", "predicate": "IN kt_ids", "selectivity": 0.97, "notes": "movie+episode dominate"}
+    ],
+    "estimated_surviving_titles": 430000
+  },
   "join_order": [
     {
-      "build": "title_survivors (production_year>2005 AND kind_id in kt_ids)",
-      "probe": "movie_keyword via offsets_only index",
+      "build": "kw_ids (4 ids, std::unordered_set<int32>)",
+      "probe": "movie_keyword via primary CSR movie_keyword__movie_id[t.id]",
       "type": "semi",
-      "strategy": "index_nested_loop + small int set membership",
-      "build_cardinality": 700000,
-      "notes": "Cheapest int filter first; require >=1 mk row with keyword_id in kw_ids[4]"
+      "strategy": "csr_range_scan + linear membership on mk.keyword_id",
+      "build_cardinality": 4,
+      "notes": "First fact probe: cheapest filter; if no mk row in [lo,hi) has keyword_id in kw_ids -> skip title."
     },
     {
-      "build": "kept titles after mk-semi",
-      "probe": "movie_info_idx via offsets_only index",
-      "type": "inner",
-      "strategy": "index_nested_loop + info_type_id==it2_id + memcmp(info,'8.5')<0",
-      "build_cardinality": 1380035,
-      "notes": "Smaller fact; capture matching info string for MIN(mi_idx.info)"
-    },
-    {
-      "build": "kept titles after mi_idx",
-      "probe": "movie_info via offsets_only index",
+      "build": "it1_id (single id) + mi.info string set (10 strings)",
+      "probe": "movie_info via primary CSR movie_info__movie_id[t.id]",
       "type": "semi",
-      "strategy": "index_nested_loop + info_type_id==it1_id + hashset 10-literal IN on info varlen",
-      "build_cardinality": 14835720,
-      "notes": "Largest fact; do AFTER mi_idx & mk to minimize varlen reads"
+      "strategy": "csr_range_scan; for each row test info_type_id == it1_id, then test info string membership via std::unordered_set<std::string_view>",
+      "build_cardinality": 1,
+      "notes": "Order: cheap int compare first, varlen string compare only on match."
     },
     {
-      "build": "cn lookup table (cn.id->name for country_code != us_code AND != 0)",
-      "probe": "movie_companies via offsets_only index",
+      "build": "it2_id (single id) + mi_idx.info < '8.5' predicate",
+      "probe": "movie_info_idx via primary CSR movie_info_idx__movie_id[t.id]",
       "type": "inner",
-      "strategy": "index_nested_loop + cn_map lookup by mc.company_id",
+      "strategy": "csr_range_scan; for each row test info_type_id == it2_id; if match, compare info < '8.5' lex; project info for MIN(mi_idx.info)",
+      "build_cardinality": 1,
+      "notes": "Need at least one matching row; for MIN(mi_idx.info), all surviving rows feed running min."
+    },
+    {
+      "build": "cn_notus_bitset + ct table (4 rows, no filter -> any company_type_id passes)",
+      "probe": "movie_companies via primary CSR movie_companies__movie_id[t.id]",
+      "type": "inner",
+      "strategy": "csr_range_scan; for each row: company_id valid index into cn bitset && cn_notus_bitset[company_id]; then read cn.name via company_name__id__pos[company_id] for MIN(cn.name)",
       "build_cardinality": 234997,
-      "notes": "company_type has 4 rows; ct join is trivial (no kind filter so ct.id matches any). Capture cn.name for MIN."
+      "notes": "No filter on ct (any of 4 company_types accepted); skip ct lookup entirely."
     }
   ],
   "filters": [
-    {"table": "title", "predicate": "production_year > 2005", "selectivity": 0.28},
-    {"table": "title", "predicate": "kind_id in {movie,episode}", "selectivity": 0.85},
-    {"table": "movie_keyword", "predicate": "keyword_id in kw_ids[4]", "selectivity": 0.003},
-    {"table": "movie_info_idx", "predicate": "info_type_id==it2_id AND info < '8.5'", "selectivity": 0.4},
-    {"table": "movie_info", "predicate": "info_type_id==it1_id AND info IN(10 literals)", "selectivity": 0.01},
-    {"table": "company_name", "predicate": "country_code != '[us]' AND country_code != 0", "selectivity": 0.7},
-    {"table": "movie_companies", "predicate": "company_id has non-us cn entry", "selectivity": 0.5}
+    {"table": "title", "predicate": "production_year > 2005", "selectivity": 0.18},
+    {"table": "title", "predicate": "kind_id IN kt_ids", "selectivity": 0.97},
+    {"table": "company_name", "predicate": "country_code != '[us]'", "selectivity": 0.85},
+    {"table": "info_type", "predicate": "info = 'countries'", "selectivity": "1/113"},
+    {"table": "info_type", "predicate": "info = 'rating'", "selectivity": "1/113"},
+    {"table": "keyword", "predicate": "keyword IN (4 literals)", "selectivity": "4/134170"},
+    {"table": "kind_type", "predicate": "kind IN ('movie','episode')", "selectivity": "2/7"},
+    {"table": "movie_info", "predicate": "info IN (10 country strings)", "selectivity": 0.05},
+    {"table": "movie_info_idx", "predicate": "info < '8.5'", "selectivity": 0.75},
+    {"table": "company_type", "predicate": "(no filter)", "selectivity": 1.0}
   ],
   "data_structures": {
-    "us_code": "int16_t scalar",
-    "it1_id": "int32_t scalar",
-    "it2_id": "int32_t scalar",
-    "kw_ids": "std::array<int32_t,4> linear scan (tiny)",
-    "kt_ids": "std::array<int32_t,2> linear scan (tiny)",
-    "mi_info_set": "flat hashset (FNV1a 64-bit) over 10 string literals; compare with memcmp on hash match",
-    "cn_lookup": "flat array cn_name_ptr[id] of size 234998 (offset,len) for non-us only; null entry signals US/unknown",
-    "mc_index": "offsets_only int32[2528314]",
-    "mi_index": "offsets_only int32 over title rowspace",
-    "mi_idx_index": "offsets_only int32 over title rowspace",
-    "mk_index": "offsets_only int32 over title rowspace",
-    "aggregation": "3 scalar MIN slots: (cn.name varlen), (mi_idx.info varlen), (t.title varlen) — store best (off,len) per thread, merge at end"
+    "kt_ids": "std::array<int32_t,2>",
+    "kw_ids": "std::unordered_set<int32_t> (4 entries) — also acceptable: sorted small array with linear scan",
+    "mi_info_set": "std::unordered_set<std::string_view> (10 entries) over read-only data.bin",
+    "cn_notus_bitset": "std::vector<uint64_t> sized to (max_company_id+1)/64",
+    "title_kind_id_load": "raw mmap int32[]",
+    "title_production_year_load": "raw mmap int32[]",
+    "fact_csr_offsets": "mmap uint64_t[2528314] for each of mk/mi/mi_idx/mc",
+    "aggregation": "three thread-local mins: int sentinels for strings use empty/UINT64_MAX, then merge at end"
   },
   "parallelism": {
     "strategy": "morsel_driven over title rows",
-    "morsel_size": 16384,
+    "morsel_size": 8192,
     "threads": "auto(nproc=12)",
-    "notes": "Per-thread local MIN triples; final reduction picks lex-smallest. mi.info & mi_idx.info & t.title kept as (offset,len) refs until reduction; resolve final 3 strings at end."
+    "reduction": "per-thread (min_cn_name, min_mi_idx_info, min_t_title) merged with lexicographic min at end"
   },
   "indexes": [
-    {"index": "movie_keyword__movie_id (offsets_only)", "purpose": "per-title mk row range"},
-    {"index": "movie_info_idx__movie_id (offsets_only)", "purpose": "per-title mi_idx row range"},
-    {"index": "movie_info__movie_id (offsets_only)", "purpose": "per-title mi row range"},
-    {"index": "movie_companies__movie_id (offsets_only)", "purpose": "per-title mc row range"}
+    {"index": "movie_keyword__movie_id (primary CSR)", "purpose": "join_lookup mk per title.id"},
+    {"index": "movie_info__movie_id (primary CSR)", "purpose": "join_lookup mi per title.id"},
+    {"index": "movie_info_idx__movie_id (primary CSR)", "purpose": "join_lookup mi_idx per title.id"},
+    {"index": "movie_companies__movie_id (primary CSR)", "purpose": "join_lookup mc per title.id"},
+    {"index": "company_name__id__pos", "purpose": "id->row for reading cn.name on surviving mc rows"},
+    {"index": "kind_type__id__pos", "purpose": "(optional) only used during literal resolution; not needed at probe time since we test t.kind_id ∈ {kt_ids}"}
   ],
-  "aggregation": "scalar_min_triple",
-  "output": {"select": ["MIN(cn.name)", "MIN(mi_idx.info)", "MIN(t.title)"], "order_by": [], "limit": null},
-  "execution_target": "cpp",
+  "aggregation": "global_min_no_groupby",
+  "projection": {
+    "MIN(cn.name)": "varlen lex min — only read cn.name when a surviving (t,mk,mi,mi_idx,mc) tuple is confirmed",
+    "MIN(mi_idx.info)": "varlen lex min — read mi_idx.info value already in hand during mi_idx probe (defer materialization until full tuple confirmed)",
+    "MIN(t.title)": "varlen lex min — read t.title only when a surviving tuple is confirmed"
+  },
   "execution_notes": [
-    "Skip reading movie_companies.note column entirely (not used in Q22d).",
-    "Order of per-title probes: mk (cheapest int membership) -> mi_idx (small fact, capture rating string) -> mi (largest fact, varlen IN) -> mc (cn lookup + capture name). Short-circuit as soon as any required semi-probe fails.",
-    "company_type join is trivially satisfied (ct has 4 rows, no predicate); ignore at runtime.",
-    "Use memcmp for mi_idx.info < '8.5' lex compare.",
-    "For mi.info IN(10) build small FNV hashset; on hash hit verify with memcmp.",
-    "For cn lookup, prebuild dense array indexed by cn.id (max 234997) storing varlen (off,len) only for rows passing country_code filter; saves per-probe hash."
-  ]
+    "Per title t: (1) check production_year>2005 and kind_id∈kt_ids; (2) probe mk CSR, require any mk.keyword_id ∈ kw_ids; (3) probe mi CSR, require any (mi.info_type_id==it1_id AND mi.info ∈ country_set); (4) probe mi_idx CSR, collect all matching mi_idx.info values (info_type_id==it2_id AND info<'8.5'); (5) probe mc CSR, collect all matching mc.company_id with cn_notus_bitset[company_id]==1; (6) if all four non-empty, update three running mins: min(t.title), min over collected mi_idx.info values, min over cn.name lookups.",
+    "Order of probes chosen by selectivity: mk (smallest CSR ranges + tiny kw set) -> mi -> mi_idx -> mc. Bail at first empty probe.",
+    "Do NOT materialize cn.name or t.title unless all four facts produced at least one matching tuple."
+  ],
+  "output": {"order_by": [], "limit": 1},
+  "execution_target": "cpp"
 }

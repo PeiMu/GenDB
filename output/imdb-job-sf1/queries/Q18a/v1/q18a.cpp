@@ -18,8 +18,6 @@
 #include "timing_utils.h"
 #include "cli_params.h"
 
-using gendb::PhaseTimer;
-
 struct Mmap {
     const char* data = nullptr;
     size_t size = 0;

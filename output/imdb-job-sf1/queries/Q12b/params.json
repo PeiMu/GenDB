@@ -1,3 +1,52 @@
 {
-  "parameters": []
+  "parameters": [
+    {
+      "name": "production_year_lower",
+      "type": "int",
+      "default": 2000,
+      "description": "Filter on production_year (lower)"
+    },
+    {
+      "name": "info_eq",
+      "type": "string",
+      "default": "bottom 10 rank",
+      "description": "Filter on info (eq)"
+    },
+    {
+      "name": "title_pattern",
+      "type": "string",
+      "default": "Birdemic%",
+      "description": "Filter on title (pattern)"
+    },
+    {
+      "name": "title_pattern_2",
+      "type": "string",
+      "default": "%Movie%",
+      "description": "Filter on title (pattern)"
+    },
+    {
+      "name": "info_eq_2",
+      "type": "string",
+      "default": "budget",
+      "description": "Filter on info (eq)"
+    },
+    {
+      "name": "country_code_eq",
+      "type": "string",
+      "default": "[us]",
+      "description": "Filter on country_code (eq)"
+    },
+    {
+      "name": "kind_eq",
+      "type": "string",
+      "default": "production companies",
+      "description": "Filter on kind (eq)"
+    },
+    {
+      "name": "kind_eq_2",
+      "type": "string",
+      "default": "distributors",
+      "description": "Filter on kind (eq)"
+    }
+  ]
 }

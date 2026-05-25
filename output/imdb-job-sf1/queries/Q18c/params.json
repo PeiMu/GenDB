@@ -1,3 +1,22 @@
 {
-  "parameters": []
+  "parameters": [
+    {
+      "name": "gender_eq",
+      "type": "string",
+      "default": "m",
+      "description": "Filter on gender (eq)"
+    },
+    {
+      "name": "info_eq",
+      "type": "string",
+      "default": "votes",
+      "description": "Filter on info (eq)"
+    },
+    {
+      "name": "info_eq_2",
+      "type": "string",
+      "default": "genres",
+      "description": "Filter on info (eq)"
+    }
+  ]
 }

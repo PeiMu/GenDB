@@ -1,3 +1,40 @@
 {
-  "parameters": []
+  "parameters": [
+    {
+      "name": "production_year_lower",
+      "type": "int",
+      "default": 1990,
+      "description": "Filter on production_year (lower)"
+    },
+    {
+      "name": "note_pattern",
+      "type": "string",
+      "default": "%internet%",
+      "description": "Filter on note (pattern)"
+    },
+    {
+      "name": "info_pattern",
+      "type": "string",
+      "default": "USA:% 199%",
+      "description": "Filter on info (pattern)"
+    },
+    {
+      "name": "info_pattern_2",
+      "type": "string",
+      "default": "USA:% 200%",
+      "description": "Filter on info (pattern)"
+    },
+    {
+      "name": "country_code_eq",
+      "type": "string",
+      "default": "[us]",
+      "description": "Filter on country_code (eq)"
+    },
+    {
+      "name": "info_eq",
+      "type": "string",
+      "default": "release dates",
+      "description": "Filter on info (eq)"
+    }
+  ]
 }

@@ -1,3 +1,22 @@
 {
-  "parameters": []
+  "parameters": [
+    {
+      "name": "info_eq",
+      "type": "string",
+      "default": "votes",
+      "description": "Filter on info (eq)"
+    },
+    {
+      "name": "info_eq_2",
+      "type": "string",
+      "default": "genres",
+      "description": "Filter on info (eq)"
+    },
+    {
+      "name": "name_pattern",
+      "type": "string",
+      "default": "Lionsgate%",
+      "description": "Filter on name (pattern)"
+    }
+  ]
 }

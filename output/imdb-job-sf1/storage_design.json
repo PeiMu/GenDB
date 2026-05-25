@@ -1,116 +1,274 @@
 {
-  "persistent_storage": { "format": "binary_columnar", "base_dir_name": "imdb-job-sf1.gendb" },
-  "hardware_config": { "cpu_cores": "12", "l3_cache_mb": "12", "disk_type": "hdd", "total_memory_gb": "62" },
-  "type_mappings": { "INTEGER": "int32_t", "SMALL_DICT_CODE": "int16_t", "TINY_DICT_CODE": "int8_t", "TEXT": "varlen", "CHAR_FIXED": "fixed_bytes" },
-  "null_encoding": "INT32_MIN for nullable integers; empty string treated as NULL for varchar; dict code 0 = NULL (real codes start at 1)",
-  "string_encoding": {
-    "varlen": "Two files per column: <col>.off (int64 N+1 byte offsets) and <col>.dat (raw bytes, no terminators)",
-    "fixed_bytes": "Single file <col>.fix containing fixed-width null-padded bytes (length stated)",
-    "dict": "Three files: <col>.dict.off (int64 K+1), <col>.dict.dat (bytes), <col>.bin (int8/int16 codes; code 0 = NULL, code i references dict entry i-1)"
+  "persistent_storage": {
+    "format": "binary_columnar",
+    "base_dir_name": "imdb-job-sf1.gendb",
+    "layout": {
+      "fixed_column": "<table>/<col>.bin (raw little-endian array of cpp_type)",
+      "varlen_column": "<table>/<col>.offsets.bin (uint64, N+1 entries) + <table>/<col>.data.bin (raw bytes); row i bytes = data[off[i]..off[i+1])",
+      "row_count_file": "<table>/__row_count.bin (uint64)",
+      "csr_index_primary": "indexes/<table>__<col>__offsets.bin (uint64[max_id+2]); rows physically sorted by <col>; rows for value v = [off[v]..off[v+1])",
+      "csr_index_aux":     "indexes/<table>__<col>__offsets.bin (uint64[max_id+2]) + indexes/<table>__<col>__rowids.bin (int32[N]); rows for value v are the int32 row positions rowids[off[v]..off[v+1])",
+      "pk_pos_dense":      "indexes/<table>__<col>__pos.bin (int32[max_id+2]); pos[id] = row position in column files for that id, or -1 if absent"
+    },
+    "null_sentinels": {"int32": -1, "char": 0, "varlen": "empty string (offset[i] == offset[i+1])"}
   },
-  "index_layout": {
-    "offsets_only_index": "<child>__<fkcol>__offsets.bin int32 array of size (max_parent_id+2). Rows in child for parent_id=v live in [offsets[v], offsets[v+1]). Used when child is sorted by fkcol.",
-    "csr_index": "Two files: <child>__<fkcol>__offsets.bin (int32, max_parent_id+2) + <child>__<fkcol>__rowids.bin (int32 row indices into child, sorted by fkcol). Used when child is not primarily sorted by fkcol."
+  "type_mappings": {"INTEGER": "int32_t", "VARCHAR": "varlen", "TEXT": "varlen", "DATE": "int32_t", "CHAR1": "char"},
+  "date_encoding": "days_since_epoch_1970 (unused — IMDB has no DATE columns in workload)",
+  "csv_format": {"delimiter": ",", "quote": "\"", "escape_doubled_quote": true, "null_token": "", "embedded_newlines_in_quoted_strings": true},
+  "hardware_config": {"cpu_cores": 12, "cpu_physical": 6, "l3_cache_mb": 12, "disk_type": "ssd", "total_memory_gb": 62},
+  "design_notes": {
+    "philosophy": "Star-schema IMDB workload, all MIN aggregates, no GROUP BY. Optimize FK joins via CSR offsets (sorted fact tables) and dense PK position arrays (dimension tables). Retain raw text for LIKE filters — no dictionary encoding on text columns.",
+    "fact_sorting": "Each fact table is physically sorted by its primary FK (movie_id or person_id) at index-build time. Primary CSR = O(1) probe-list lookup by FK value with zero indirection.",
+    "secondary_indexes": "CSR aux indexes give sorted rowid lists for non-primary FKs hit by selective dimension filters (e.g., cast_info.role_id, movie_keyword.keyword_id).",
+    "pk_lookup": "Dimension tables sorted by id; pos_by_id[id] array gives O(1) row position for FK -> dimension joins (use case: after CSR probe in fact table, look up dimension attributes by id).",
+    "skipped_columns": "CSV columns never referenced by any of the 113 JOB queries are skipped at ingestion (md5sum, imdb_id, phonetic_code, etc.) — saves IO and decode time."
   },
   "tables": {
-    "title":            { "rows": 2528312,  "sort_order": ["id"],        "id_is_dense_1_to_N": true, "block_size": 100000,
-      "columns": [ {"name":"id","type":"int32_t"}, {"name":"title","type":"varlen"}, {"name":"imdb_index","type":"varlen"},
-                   {"name":"kind_id","type":"int32_t"}, {"name":"production_year","type":"int32_t","nullable":true},
-                   {"name":"imdb_id","type":"int32_t","nullable":true}, {"name":"phonetic_code","type":"varlen"},
-                   {"name":"episode_of_id","type":"int32_t","nullable":true}, {"name":"season_nr","type":"int32_t","nullable":true},
-                   {"name":"episode_nr","type":"int32_t","nullable":true}, {"name":"series_years","type":"varlen"},
-                   {"name":"md5sum","type":"varlen"} ] },
-    "name":             { "rows": 4167491, "sort_order": ["id"], "id_is_dense_1_to_N": true, "block_size": 100000,
-      "columns": [ {"name":"id","type":"int32_t"}, {"name":"name","type":"varlen"}, {"name":"imdb_index","type":"varlen"},
-                   {"name":"imdb_id","type":"int32_t","nullable":true}, {"name":"gender","type":"int8_t","encoding":"dict"},
-                   {"name":"name_pcode_cf","type":"varlen"}, {"name":"name_pcode_nf","type":"varlen"},
-                   {"name":"surname_pcode","type":"varlen"}, {"name":"md5sum","type":"varlen"} ] },
-    "aka_name":         { "rows": 901343, "sort_order": ["person_id"], "block_size": 100000,
-      "columns": [ {"name":"id","type":"int32_t"}, {"name":"person_id","type":"int32_t"}, {"name":"name","type":"varlen"},
-                   {"name":"imdb_index","type":"varlen"}, {"name":"name_pcode_cf","type":"varlen"},
-                   {"name":"name_pcode_nf","type":"varlen"}, {"name":"surname_pcode","type":"varlen"}, {"name":"md5sum","type":"varlen"} ] },
-    "aka_title":        { "rows": 361472, "sort_order": ["movie_id"], "block_size": 100000,
-      "columns": [ {"name":"id","type":"int32_t"}, {"name":"movie_id","type":"int32_t"}, {"name":"title","type":"varlen"},
-                   {"name":"imdb_index","type":"varlen"}, {"name":"kind_id","type":"int32_t"},
-                   {"name":"production_year","type":"int32_t","nullable":true}, {"name":"phonetic_code","type":"varlen"},
-                   {"name":"episode_of_id","type":"int32_t","nullable":true}, {"name":"season_nr","type":"int32_t","nullable":true},
-                   {"name":"episode_nr","type":"int32_t","nullable":true}, {"name":"note","type":"varlen"}, {"name":"md5sum","type":"varlen"} ] },
-    "char_name":        { "rows": 3140339, "sort_order": ["id"], "id_is_dense_1_to_N": true, "block_size": 100000,
-      "columns": [ {"name":"id","type":"int32_t"}, {"name":"name","type":"varlen"}, {"name":"imdb_index","type":"varlen"},
-                   {"name":"imdb_id","type":"int32_t","nullable":true}, {"name":"name_pcode_nf","type":"varlen"},
-                   {"name":"surname_pcode","type":"varlen"}, {"name":"md5sum","type":"varlen"} ] },
-    "cast_info":        { "rows": 36244344, "sort_order": ["movie_id"], "block_size": 200000,
-      "columns": [ {"name":"id","type":"int32_t"}, {"name":"person_id","type":"int32_t"}, {"name":"movie_id","type":"int32_t"},
-                   {"name":"person_role_id","type":"int32_t","nullable":true}, {"name":"note","type":"varlen"},
-                   {"name":"nr_order","type":"int32_t","nullable":true}, {"name":"role_id","type":"int32_t"} ] },
-    "company_name":     { "rows": 234997, "sort_order": ["id"], "id_is_dense_1_to_N": true, "block_size": 100000,
-      "columns": [ {"name":"id","type":"int32_t"}, {"name":"name","type":"varlen"},
-                   {"name":"country_code","type":"int16_t","encoding":"dict"}, {"name":"imdb_id","type":"int32_t","nullable":true},
-                   {"name":"name_pcode_nf","type":"varlen"}, {"name":"name_pcode_sf","type":"varlen"}, {"name":"md5sum","type":"varlen"} ] },
-    "company_type":     { "rows": 4, "sort_order": ["id"], "id_is_dense_1_to_N": true,
-      "columns": [ {"name":"id","type":"int32_t"}, {"name":"kind","type":"varlen"} ] },
-    "comp_cast_type":   { "rows": 4, "sort_order": ["id"], "id_is_dense_1_to_N": true,
-      "columns": [ {"name":"id","type":"int32_t"}, {"name":"kind","type":"varlen"} ] },
-    "complete_cast":    { "rows": 135086, "sort_order": ["movie_id"], "block_size": 100000,
-      "columns": [ {"name":"id","type":"int32_t"}, {"name":"movie_id","type":"int32_t","nullable":true},
-                   {"name":"subject_id","type":"int32_t"}, {"name":"status_id","type":"int32_t"} ] },
-    "info_type":        { "rows": 113, "sort_order": ["id"], "id_is_dense_1_to_N": true,
-      "columns": [ {"name":"id","type":"int32_t"}, {"name":"info","type":"varlen"} ] },
-    "keyword":          { "rows": 134170, "sort_order": ["id"], "id_is_dense_1_to_N": true, "block_size": 100000,
-      "columns": [ {"name":"id","type":"int32_t"}, {"name":"keyword","type":"varlen"}, {"name":"phonetic_code","type":"varlen"} ] },
-    "kind_type":        { "rows": 7, "sort_order": ["id"], "id_is_dense_1_to_N": true,
-      "columns": [ {"name":"id","type":"int32_t"}, {"name":"kind","type":"varlen"} ] },
-    "link_type":        { "rows": 18, "sort_order": ["id"], "id_is_dense_1_to_N": true,
-      "columns": [ {"name":"id","type":"int32_t"}, {"name":"link","type":"varlen"} ] },
-    "movie_companies":  { "rows": 2609129, "sort_order": ["movie_id"], "block_size": 100000,
-      "columns": [ {"name":"id","type":"int32_t"}, {"name":"movie_id","type":"int32_t"}, {"name":"company_id","type":"int32_t"},
-                   {"name":"company_type_id","type":"int32_t"}, {"name":"note","type":"varlen"} ] },
-    "movie_info":       { "rows": 14835720, "sort_order": ["movie_id"], "block_size": 200000,
-      "columns": [ {"name":"id","type":"int32_t"}, {"name":"movie_id","type":"int32_t"}, {"name":"info_type_id","type":"int32_t"},
-                   {"name":"info","type":"varlen"}, {"name":"note","type":"varlen"} ] },
-    "movie_info_idx":   { "rows": 1380035, "sort_order": ["movie_id"], "block_size": 100000,
-      "columns": [ {"name":"id","type":"int32_t"}, {"name":"movie_id","type":"int32_t"}, {"name":"info_type_id","type":"int32_t"},
-                   {"name":"info","type":"varlen"}, {"name":"note","type":"varlen"} ] },
-    "movie_keyword":    { "rows": 4523930, "sort_order": ["movie_id"], "block_size": 100000,
-      "columns": [ {"name":"id","type":"int32_t"}, {"name":"movie_id","type":"int32_t"}, {"name":"keyword_id","type":"int32_t"} ] },
-    "movie_link":       { "rows": 29997, "sort_order": ["movie_id"], "block_size": 50000,
-      "columns": [ {"name":"id","type":"int32_t"}, {"name":"movie_id","type":"int32_t"}, {"name":"linked_movie_id","type":"int32_t"},
-                   {"name":"link_type_id","type":"int32_t"} ] },
-    "person_info":      { "rows": 2963664, "sort_order": ["person_id"], "block_size": 100000,
-      "columns": [ {"name":"id","type":"int32_t"}, {"name":"person_id","type":"int32_t"}, {"name":"info_type_id","type":"int32_t"},
-                   {"name":"info","type":"varlen"}, {"name":"note","type":"varlen"} ] },
-    "role_type":        { "rows": 12, "sort_order": ["id"], "id_is_dense_1_to_N": true,
-      "columns": [ {"name":"id","type":"int32_t"}, {"name":"role","type":"varlen"} ] }
-  },
-  "indexes": [
-    { "name": "cast_info__movie_id",        "type": "offsets_only", "child": "cast_info",       "fk": "movie_id",        "parent": "title",          "parent_max_id": 2528312 },
-    { "name": "movie_info__movie_id",       "type": "offsets_only", "child": "movie_info",      "fk": "movie_id",        "parent": "title",          "parent_max_id": 2528312 },
-    { "name": "movie_info_idx__movie_id",   "type": "offsets_only", "child": "movie_info_idx",  "fk": "movie_id",        "parent": "title",          "parent_max_id": 2528312 },
-    { "name": "movie_keyword__movie_id",    "type": "offsets_only", "child": "movie_keyword",   "fk": "movie_id",        "parent": "title",          "parent_max_id": 2528312 },
-    { "name": "movie_companies__movie_id",  "type": "offsets_only", "child": "movie_companies", "fk": "movie_id",        "parent": "title",          "parent_max_id": 2528312 },
-    { "name": "movie_link__movie_id",       "type": "offsets_only", "child": "movie_link",      "fk": "movie_id",        "parent": "title",          "parent_max_id": 2528312 },
-    { "name": "complete_cast__movie_id",    "type": "offsets_only", "child": "complete_cast",   "fk": "movie_id",        "parent": "title",          "parent_max_id": 2528312 },
-    { "name": "aka_title__movie_id",        "type": "offsets_only", "child": "aka_title",       "fk": "movie_id",        "parent": "title",          "parent_max_id": 2528312 },
-    { "name": "aka_name__person_id",        "type": "offsets_only", "child": "aka_name",        "fk": "person_id",       "parent": "name",           "parent_max_id": 4167491 },
-    { "name": "person_info__person_id",     "type": "offsets_only", "child": "person_info",     "fk": "person_id",       "parent": "name",           "parent_max_id": 4167491 },
-    { "name": "cast_info__person_id",       "type": "csr",          "child": "cast_info",       "fk": "person_id",       "parent": "name",           "parent_max_id": 4167491 },
-    { "name": "cast_info__person_role_id",  "type": "csr",          "child": "cast_info",       "fk": "person_role_id",  "parent": "char_name",      "parent_max_id": 3140339 },
-    { "name": "cast_info__role_id",         "type": "csr",          "child": "cast_info",       "fk": "role_id",         "parent": "role_type",      "parent_max_id": 12 },
-    { "name": "movie_keyword__keyword_id",  "type": "csr",          "child": "movie_keyword",   "fk": "keyword_id",      "parent": "keyword",        "parent_max_id": 134170 },
-    { "name": "movie_info__info_type_id",   "type": "csr",          "child": "movie_info",      "fk": "info_type_id",    "parent": "info_type",      "parent_max_id": 113 },
-    { "name": "movie_info_idx__info_type_id","type": "csr",         "child": "movie_info_idx",  "fk": "info_type_id",    "parent": "info_type",      "parent_max_id": 113 },
-    { "name": "person_info__info_type_id",  "type": "csr",          "child": "person_info",     "fk": "info_type_id",    "parent": "info_type",      "parent_max_id": 113 },
-    { "name": "movie_companies__company_id","type": "csr",          "child": "movie_companies", "fk": "company_id",      "parent": "company_name",   "parent_max_id": 234997 },
-    { "name": "movie_companies__company_type_id","type":"csr",      "child": "movie_companies", "fk": "company_type_id", "parent": "company_type",   "parent_max_id": 4 },
-    { "name": "movie_link__link_type_id",   "type": "csr",          "child": "movie_link",      "fk": "link_type_id",    "parent": "link_type",      "parent_max_id": 18 },
-    { "name": "movie_link__linked_movie_id","type": "csr",          "child": "movie_link",      "fk": "linked_movie_id", "parent": "title",          "parent_max_id": 2528312 },
-    { "name": "complete_cast__subject_id",  "type": "csr",          "child": "complete_cast",   "fk": "subject_id",      "parent": "comp_cast_type", "parent_max_id": 4 },
-    { "name": "complete_cast__status_id",   "type": "csr",          "child": "complete_cast",   "fk": "status_id",       "parent": "comp_cast_type", "parent_max_id": 4 },
-    { "name": "title__kind_id",             "type": "csr",          "child": "title",           "fk": "kind_id",         "parent": "kind_type",      "parent_max_id": 7 }
-  ],
-  "file_format": {
-    "csv_dialect": "PostgreSQL COPY CSV with backslash-escaped quotes (\\\") and backslash-escaped backslash (\\\\); no embedded newlines in fields; delimiter is comma; empty field = NULL",
-    "table_files": "<data_dir>/<table>.csv",
-    "ingest_concurrency": "Each table parsed by its own worker thread; total <= 12 threads; large tables get more cores during indexed-sort phase"
+    "title": {
+      "estimated_rows": 2528312, "sort_order": ["id"], "block_size": 100000,
+      "csv_columns": ["id","title","imdb_index","kind_id","production_year","imdb_id","phonetic_code","episode_of_id","season_nr","episode_nr","series_years","md5sum"],
+      "skip_csv_columns": ["imdb_index","imdb_id","phonetic_code","episode_of_id","season_nr","series_years","md5sum"],
+      "columns": [
+        {"name":"id","cpp_type":"int32_t","semantic_type":"pk","encoding":"raw"},
+        {"name":"title","cpp_type":"varlen","semantic_type":"text","encoding":"varlen"},
+        {"name":"kind_id","cpp_type":"int32_t","semantic_type":"fk_kind_type","encoding":"raw"},
+        {"name":"production_year","cpp_type":"int32_t","semantic_type":"year","encoding":"raw","null":-1},
+        {"name":"episode_nr","cpp_type":"int32_t","encoding":"raw","null":-1}
+      ],
+      "indexes": [{"name":"title__id__pos","type":"pk_pos_dense","columns":["id"]}]
+    },
+    "name": {
+      "estimated_rows": 4167491, "sort_order": ["id"], "block_size": 100000,
+      "csv_columns": ["id","name","imdb_index","imdb_id","gender","name_pcode_cf","name_pcode_nf","surname_pcode","md5sum"],
+      "skip_csv_columns": ["imdb_index","imdb_id","name_pcode_nf","surname_pcode","md5sum"],
+      "columns": [
+        {"name":"id","cpp_type":"int32_t","semantic_type":"pk","encoding":"raw"},
+        {"name":"name","cpp_type":"varlen","encoding":"varlen"},
+        {"name":"gender","cpp_type":"char","encoding":"raw","null":0,"note":"'f','m', or 0 for NULL"},
+        {"name":"name_pcode_cf","cpp_type":"varlen","encoding":"varlen"}
+      ],
+      "indexes": [{"name":"name__id__pos","type":"pk_pos_dense","columns":["id"]}]
+    },
+    "char_name": {
+      "estimated_rows": 3140339, "sort_order": ["id"], "block_size": 100000,
+      "csv_columns": ["id","name","imdb_index","imdb_id","name_pcode_nf","surname_pcode","md5sum"],
+      "skip_csv_columns": ["imdb_index","imdb_id","name_pcode_nf","surname_pcode","md5sum"],
+      "columns": [
+        {"name":"id","cpp_type":"int32_t","semantic_type":"pk","encoding":"raw"},
+        {"name":"name","cpp_type":"varlen","encoding":"varlen"}
+      ],
+      "indexes": [{"name":"char_name__id__pos","type":"pk_pos_dense","columns":["id"]}]
+    },
+    "company_name": {
+      "estimated_rows": 234997, "sort_order": ["id"], "block_size": 50000,
+      "csv_columns": ["id","name","country_code","imdb_id","name_pcode_nf","name_pcode_sf","md5sum"],
+      "skip_csv_columns": ["imdb_id","name_pcode_nf","name_pcode_sf","md5sum"],
+      "columns": [
+        {"name":"id","cpp_type":"int32_t","semantic_type":"pk","encoding":"raw"},
+        {"name":"name","cpp_type":"varlen","encoding":"varlen"},
+        {"name":"country_code","cpp_type":"varlen","encoding":"varlen"}
+      ],
+      "indexes": [{"name":"company_name__id__pos","type":"pk_pos_dense","columns":["id"]}]
+    },
+    "keyword": {
+      "estimated_rows": 134170, "sort_order": ["id"], "block_size": 50000,
+      "csv_columns": ["id","keyword","phonetic_code"],
+      "skip_csv_columns": ["phonetic_code"],
+      "columns": [
+        {"name":"id","cpp_type":"int32_t","semantic_type":"pk","encoding":"raw"},
+        {"name":"keyword","cpp_type":"varlen","encoding":"varlen"}
+      ],
+      "indexes": [{"name":"keyword__id__pos","type":"pk_pos_dense","columns":["id"]}]
+    },
+    "info_type": {
+      "estimated_rows": 113, "sort_order": ["id"], "block_size": 113,
+      "csv_columns": ["id","info"], "skip_csv_columns": [],
+      "columns": [
+        {"name":"id","cpp_type":"int32_t","semantic_type":"pk","encoding":"raw"},
+        {"name":"info","cpp_type":"varlen","encoding":"varlen"}
+      ],
+      "indexes": [{"name":"info_type__id__pos","type":"pk_pos_dense","columns":["id"]}]
+    },
+    "link_type": {
+      "estimated_rows": 18, "sort_order": ["id"], "block_size": 18,
+      "csv_columns": ["id","link"], "skip_csv_columns": [],
+      "columns": [
+        {"name":"id","cpp_type":"int32_t","semantic_type":"pk","encoding":"raw"},
+        {"name":"link","cpp_type":"varlen","encoding":"varlen"}
+      ],
+      "indexes": [{"name":"link_type__id__pos","type":"pk_pos_dense","columns":["id"]}]
+    },
+    "role_type": {
+      "estimated_rows": 12, "sort_order": ["id"], "block_size": 12,
+      "csv_columns": ["id","role"], "skip_csv_columns": [],
+      "columns": [
+        {"name":"id","cpp_type":"int32_t","semantic_type":"pk","encoding":"raw"},
+        {"name":"role","cpp_type":"varlen","encoding":"varlen"}
+      ],
+      "indexes": [{"name":"role_type__id__pos","type":"pk_pos_dense","columns":["id"]}]
+    },
+    "kind_type": {
+      "estimated_rows": 7, "sort_order": ["id"], "block_size": 7,
+      "csv_columns": ["id","kind"], "skip_csv_columns": [],
+      "columns": [
+        {"name":"id","cpp_type":"int32_t","semantic_type":"pk","encoding":"raw"},
+        {"name":"kind","cpp_type":"varlen","encoding":"varlen"}
+      ],
+      "indexes": [{"name":"kind_type__id__pos","type":"pk_pos_dense","columns":["id"]}]
+    },
+    "company_type": {
+      "estimated_rows": 4, "sort_order": ["id"], "block_size": 4,
+      "csv_columns": ["id","kind"], "skip_csv_columns": [],
+      "columns": [
+        {"name":"id","cpp_type":"int32_t","semantic_type":"pk","encoding":"raw"},
+        {"name":"kind","cpp_type":"varlen","encoding":"varlen"}
+      ],
+      "indexes": [{"name":"company_type__id__pos","type":"pk_pos_dense","columns":["id"]}]
+    },
+    "comp_cast_type": {
+      "estimated_rows": 4, "sort_order": ["id"], "block_size": 4,
+      "csv_columns": ["id","kind"], "skip_csv_columns": [],
+      "columns": [
+        {"name":"id","cpp_type":"int32_t","semantic_type":"pk","encoding":"raw"},
+        {"name":"kind","cpp_type":"varlen","encoding":"varlen"}
+      ],
+      "indexes": [{"name":"comp_cast_type__id__pos","type":"pk_pos_dense","columns":["id"]}]
+    },
+    "aka_name": {
+      "estimated_rows": 901343, "sort_order": ["person_id"], "block_size": 50000,
+      "csv_columns": ["id","person_id","name","imdb_index","name_pcode_cf","name_pcode_nf","surname_pcode","md5sum"],
+      "skip_csv_columns": ["id","imdb_index","name_pcode_cf","name_pcode_nf","surname_pcode","md5sum"],
+      "columns": [
+        {"name":"person_id","cpp_type":"int32_t","encoding":"raw"},
+        {"name":"name","cpp_type":"varlen","encoding":"varlen"}
+      ],
+      "indexes": [{"name":"aka_name__person_id","type":"csr_primary","columns":["person_id"]}]
+    },
+    "aka_title": {
+      "estimated_rows": 361472, "sort_order": ["movie_id"], "block_size": 50000,
+      "csv_columns": ["id","movie_id","title","imdb_index","kind_id","production_year","phonetic_code","episode_of_id","season_nr","episode_nr","note","md5sum"],
+      "skip_csv_columns": ["id","imdb_index","kind_id","production_year","phonetic_code","episode_of_id","season_nr","episode_nr","note","md5sum"],
+      "columns": [
+        {"name":"movie_id","cpp_type":"int32_t","encoding":"raw"},
+        {"name":"title","cpp_type":"varlen","encoding":"varlen"}
+      ],
+      "indexes": [{"name":"aka_title__movie_id","type":"csr_primary","columns":["movie_id"]}]
+    },
+    "person_info": {
+      "estimated_rows": 2963664, "sort_order": ["person_id"], "block_size": 100000,
+      "csv_columns": ["id","person_id","info_type_id","info","note"],
+      "skip_csv_columns": ["id"],
+      "columns": [
+        {"name":"person_id","cpp_type":"int32_t","encoding":"raw"},
+        {"name":"info_type_id","cpp_type":"int32_t","encoding":"raw"},
+        {"name":"info","cpp_type":"varlen","encoding":"varlen"},
+        {"name":"note","cpp_type":"varlen","encoding":"varlen"}
+      ],
+      "indexes": [{"name":"person_info__person_id","type":"csr_primary","columns":["person_id"]}]
+    },
+    "movie_companies": {
+      "estimated_rows": 2609129, "sort_order": ["movie_id"], "block_size": 100000,
+      "csv_columns": ["id","movie_id","company_id","company_type_id","note"],
+      "skip_csv_columns": ["id"],
+      "columns": [
+        {"name":"movie_id","cpp_type":"int32_t","encoding":"raw"},
+        {"name":"company_id","cpp_type":"int32_t","encoding":"raw"},
+        {"name":"company_type_id","cpp_type":"int32_t","encoding":"raw"},
+        {"name":"note","cpp_type":"varlen","encoding":"varlen"}
+      ],
+      "indexes": [
+        {"name":"movie_companies__movie_id","type":"csr_primary","columns":["movie_id"]},
+        {"name":"movie_companies__company_id","type":"csr_aux","columns":["company_id"]}
+      ]
+    },
+    "movie_info": {
+      "estimated_rows": 14835720, "sort_order": ["movie_id"], "block_size": 200000,
+      "csv_columns": ["id","movie_id","info_type_id","info","note"],
+      "skip_csv_columns": ["id"],
+      "columns": [
+        {"name":"movie_id","cpp_type":"int32_t","encoding":"raw"},
+        {"name":"info_type_id","cpp_type":"int32_t","encoding":"raw"},
+        {"name":"info","cpp_type":"varlen","encoding":"varlen"},
+        {"name":"note","cpp_type":"varlen","encoding":"varlen"}
+      ],
+      "indexes": [
+        {"name":"movie_info__movie_id","type":"csr_primary","columns":["movie_id"]},
+        {"name":"movie_info__info_type_id","type":"csr_aux","columns":["info_type_id"]}
+      ]
+    },
+    "movie_info_idx": {
+      "estimated_rows": 1380035, "sort_order": ["movie_id"], "block_size": 100000,
+      "csv_columns": ["id","movie_id","info_type_id","info","note"],
+      "skip_csv_columns": ["id","note"],
+      "columns": [
+        {"name":"movie_id","cpp_type":"int32_t","encoding":"raw"},
+        {"name":"info_type_id","cpp_type":"int32_t","encoding":"raw"},
+        {"name":"info","cpp_type":"varlen","encoding":"varlen"}
+      ],
+      "indexes": [
+        {"name":"movie_info_idx__movie_id","type":"csr_primary","columns":["movie_id"]},
+        {"name":"movie_info_idx__info_type_id","type":"csr_aux","columns":["info_type_id"]}
+      ]
+    },
+    "movie_keyword": {
+      "estimated_rows": 4523930, "sort_order": ["movie_id"], "block_size": 100000,
+      "csv_columns": ["id","movie_id","keyword_id"],
+      "skip_csv_columns": ["id"],
+      "columns": [
+        {"name":"movie_id","cpp_type":"int32_t","encoding":"raw"},
+        {"name":"keyword_id","cpp_type":"int32_t","encoding":"raw"}
+      ],
+      "indexes": [
+        {"name":"movie_keyword__movie_id","type":"csr_primary","columns":["movie_id"]},
+        {"name":"movie_keyword__keyword_id","type":"csr_aux","columns":["keyword_id"]}
+      ]
+    },
+    "movie_link": {
+      "estimated_rows": 29997, "sort_order": ["movie_id"], "block_size": 30000,
+      "csv_columns": ["id","movie_id","linked_movie_id","link_type_id"],
+      "skip_csv_columns": ["id"],
+      "columns": [
+        {"name":"movie_id","cpp_type":"int32_t","encoding":"raw"},
+        {"name":"linked_movie_id","cpp_type":"int32_t","encoding":"raw"},
+        {"name":"link_type_id","cpp_type":"int32_t","encoding":"raw"}
+      ],
+      "indexes": [
+        {"name":"movie_link__movie_id","type":"csr_primary","columns":["movie_id"]},
+        {"name":"movie_link__linked_movie_id","type":"csr_aux","columns":["linked_movie_id"]},
+        {"name":"movie_link__link_type_id","type":"csr_aux","columns":["link_type_id"]}
+      ]
+    },
+    "complete_cast": {
+      "estimated_rows": 135086, "sort_order": ["movie_id"], "block_size": 50000,
+      "csv_columns": ["id","movie_id","subject_id","status_id"],
+      "skip_csv_columns": ["id"],
+      "columns": [
+        {"name":"movie_id","cpp_type":"int32_t","encoding":"raw","null":-1},
+        {"name":"subject_id","cpp_type":"int32_t","encoding":"raw"},
+        {"name":"status_id","cpp_type":"int32_t","encoding":"raw"}
+      ],
+      "indexes": [
+        {"name":"complete_cast__movie_id","type":"csr_primary","columns":["movie_id"]},
+        {"name":"complete_cast__subject_id","type":"csr_aux","columns":["subject_id"]},
+        {"name":"complete_cast__status_id","type":"csr_aux","columns":["status_id"]}
+      ]
+    },
+    "cast_info": {
+      "estimated_rows": 36244344, "sort_order": ["movie_id"], "block_size": 500000,
+      "csv_columns": ["id","person_id","movie_id","person_role_id","note","nr_order","role_id"],
+      "skip_csv_columns": ["id","nr_order"],
+      "columns": [
+        {"name":"person_id","cpp_type":"int32_t","encoding":"raw"},
+        {"name":"movie_id","cpp_type":"int32_t","encoding":"raw"},
+        {"name":"person_role_id","cpp_type":"int32_t","encoding":"raw","null":-1},
+        {"name":"note","cpp_type":"varlen","encoding":"varlen"},
+        {"name":"role_id","cpp_type":"int32_t","encoding":"raw"}
+      ],
+      "indexes": [
+        {"name":"cast_info__movie_id","type":"csr_primary","columns":["movie_id"]},
+        {"name":"cast_info__person_id","type":"csr_aux","columns":["person_id"]},
+        {"name":"cast_info__role_id","type":"csr_aux","columns":["role_id"]}
+      ]
+    }
   }
 }

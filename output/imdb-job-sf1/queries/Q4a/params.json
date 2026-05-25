@@ -1,3 +1,28 @@
 {
-  "parameters": []
+  "parameters": [
+    {
+      "name": "production_year_lower",
+      "type": "int",
+      "default": 2005,
+      "description": "Filter on production_year (lower)"
+    },
+    {
+      "name": "info_lower",
+      "type": "double",
+      "default": 5,
+      "description": "Filter on info (lower)"
+    },
+    {
+      "name": "info_eq",
+      "type": "string",
+      "default": "rating",
+      "description": "Filter on info (eq)"
+    },
+    {
+      "name": "keyword_pattern",
+      "type": "string",
+      "default": "%sequel%",
+      "description": "Filter on keyword (pattern)"
+    }
+  ]
 }

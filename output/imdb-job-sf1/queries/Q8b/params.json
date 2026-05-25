@@ -1,3 +1,82 @@
 {
-  "parameters": []
+  "parameters": [
+    {
+      "name": "production_year_lower",
+      "type": "int",
+      "default": 2006,
+      "description": "Filter on production_year (lower)"
+    },
+    {
+      "name": "production_year_upper",
+      "type": "int",
+      "default": 2007,
+      "description": "Filter on production_year (upper)"
+    },
+    {
+      "name": "role_eq",
+      "type": "string",
+      "default": "actress",
+      "description": "Filter on role (eq)"
+    },
+    {
+      "name": "title_pattern",
+      "type": "string",
+      "default": "One Piece%",
+      "description": "Filter on title (pattern)"
+    },
+    {
+      "name": "title_pattern_2",
+      "type": "string",
+      "default": "Dragon Ball Z%",
+      "description": "Filter on title (pattern)"
+    },
+    {
+      "name": "name_pattern",
+      "type": "string",
+      "default": "%Yu%",
+      "description": "Filter on name (pattern)"
+    },
+    {
+      "name": "name_pattern_2",
+      "type": "string",
+      "default": "%Yo%",
+      "description": "Filter on name (pattern)"
+    },
+    {
+      "name": "note_pattern",
+      "type": "string",
+      "default": "%(USA)%",
+      "description": "Filter on note (pattern)"
+    },
+    {
+      "name": "note_pattern_2",
+      "type": "string",
+      "default": "%(Japan)%",
+      "description": "Filter on note (pattern)"
+    },
+    {
+      "name": "note_pattern_3",
+      "type": "string",
+      "default": "%(2006)%",
+      "description": "Filter on note (pattern)"
+    },
+    {
+      "name": "note_pattern_4",
+      "type": "string",
+      "default": "%(2007)%",
+      "description": "Filter on note (pattern)"
+    },
+    {
+      "name": "note_eq",
+      "type": "string",
+      "default": "(voice: English version)",
+      "description": "Filter on note (eq)"
+    },
+    {
+      "name": "country_code_eq",
+      "type": "string",
+      "default": "[jp]",
+      "description": "Filter on country_code (eq)"
+    }
+  ]
 }

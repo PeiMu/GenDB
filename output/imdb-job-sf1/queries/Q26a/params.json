@@ -1,3 +1,52 @@
 {
-  "parameters": []
+  "parameters": [
+    {
+      "name": "production_year_lower",
+      "type": "int",
+      "default": 2000,
+      "description": "Filter on production_year (lower)"
+    },
+    {
+      "name": "info_lower",
+      "type": "double",
+      "default": 7,
+      "description": "Filter on info (lower)"
+    },
+    {
+      "name": "kind_eq",
+      "type": "string",
+      "default": "movie",
+      "description": "Filter on kind (eq)"
+    },
+    {
+      "name": "info_eq",
+      "type": "string",
+      "default": "rating",
+      "description": "Filter on info (eq)"
+    },
+    {
+      "name": "kind_eq_2",
+      "type": "string",
+      "default": "cast",
+      "description": "Filter on kind (eq)"
+    },
+    {
+      "name": "kind_pattern",
+      "type": "string",
+      "default": "%complete%",
+      "description": "Filter on kind (pattern)"
+    },
+    {
+      "name": "name_pattern",
+      "type": "string",
+      "default": "%man%",
+      "description": "Filter on name (pattern)"
+    },
+    {
+      "name": "name_pattern_2",
+      "type": "string",
+      "default": "%Man%",
+      "description": "Filter on name (pattern)"
+    }
+  ]
 }

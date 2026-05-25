@@ -1,3 +1,28 @@
 {
-  "parameters": []
+  "parameters": [
+    {
+      "name": "role_eq",
+      "type": "string",
+      "default": "actress",
+      "description": "Filter on role (eq)"
+    },
+    {
+      "name": "name_pattern",
+      "type": "string",
+      "default": "%An%",
+      "description": "Filter on name (pattern)"
+    },
+    {
+      "name": "gender_eq",
+      "type": "string",
+      "default": "f",
+      "description": "Filter on gender (eq)"
+    },
+    {
+      "name": "country_code_eq",
+      "type": "string",
+      "default": "[us]",
+      "description": "Filter on country_code (eq)"
+    }
+  ]
 }

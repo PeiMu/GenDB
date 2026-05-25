@@ -1,3 +1,58 @@
 {
-  "parameters": []
+  "parameters": [
+    {
+      "name": "production_year_lower",
+      "type": "int",
+      "default": 2005,
+      "description": "Filter on production_year (lower)"
+    },
+    {
+      "name": "production_year_upper",
+      "type": "int",
+      "default": 2010,
+      "description": "Filter on production_year (upper)"
+    },
+    {
+      "name": "info_pattern",
+      "type": "string",
+      "default": "USA:% 200%",
+      "description": "Filter on info (pattern)"
+    },
+    {
+      "name": "note_pattern",
+      "type": "string",
+      "default": "%internet%",
+      "description": "Filter on note (pattern)"
+    },
+    {
+      "name": "note_pattern_2",
+      "type": "string",
+      "default": "%(worldwide)%",
+      "description": "Filter on note (pattern)"
+    },
+    {
+      "name": "note_pattern_3",
+      "type": "string",
+      "default": "%(200%)%",
+      "description": "Filter on note (pattern)"
+    },
+    {
+      "name": "info_eq",
+      "type": "string",
+      "default": "release dates",
+      "description": "Filter on info (eq)"
+    },
+    {
+      "name": "country_code_eq",
+      "type": "string",
+      "default": "[us]",
+      "description": "Filter on country_code (eq)"
+    },
+    {
+      "name": "name_eq",
+      "type": "string",
+      "default": "YouTube",
+      "description": "Filter on name (eq)"
+    }
+  ]
 }

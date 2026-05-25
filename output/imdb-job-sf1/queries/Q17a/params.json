@@ -1,3 +1,22 @@
 {
-  "parameters": []
+  "parameters": [
+    {
+      "name": "name_pattern",
+      "type": "string",
+      "default": "B%",
+      "description": "Filter on name (pattern)"
+    },
+    {
+      "name": "country_code_eq",
+      "type": "string",
+      "default": "[us]",
+      "description": "Filter on country_code (eq)"
+    },
+    {
+      "name": "keyword_eq",
+      "type": "string",
+      "default": "character-name-in-title",
+      "description": "Filter on keyword (eq)"
+    }
+  ]
 }

@@ -137,4 +137,9 @@ node src/gendb/orchestrator.mjs \
 
 echo ""
 echo "=== Done ==="
-echo "Results: output/imdb-job-sf1/"
+echo "Pipeline output: output/imdb-job-sf1/"
+echo ""
+echo "Next: verify correctness, then measure performance:"
+echo "  bash verify_correctness.sh"
+echo "  python3 $BENCHMARK_DIR/measure_gendb_warm.py"
+echo "  python3 $BENCHMARK_DIR/measure_gendb_cold.py"

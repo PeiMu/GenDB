@@ -1,3 +1,64 @@
 {
-  "parameters": []
+  "parameters": [
+    {
+      "name": "production_year_lower",
+      "type": "int",
+      "default": 1950,
+      "description": "Filter on production_year (lower)"
+    },
+    {
+      "name": "production_year_upper",
+      "type": "int",
+      "default": 2010,
+      "description": "Filter on production_year (upper)"
+    },
+    {
+      "name": "link_pattern",
+      "type": "string",
+      "default": "%follow%",
+      "description": "Filter on link (pattern)"
+    },
+    {
+      "name": "keyword_eq",
+      "type": "string",
+      "default": "sequel",
+      "description": "Filter on keyword (eq)"
+    },
+    {
+      "name": "kind_eq",
+      "type": "string",
+      "default": "production companies",
+      "description": "Filter on kind (eq)"
+    },
+    {
+      "name": "country_code_neq",
+      "type": "string",
+      "default": "[pl]",
+      "description": "Filter on country_code (neq)"
+    },
+    {
+      "name": "kind_eq_2",
+      "type": "string",
+      "default": "cast",
+      "description": "Filter on kind (eq)"
+    },
+    {
+      "name": "kind_pattern",
+      "type": "string",
+      "default": "complete%",
+      "description": "Filter on kind (pattern)"
+    },
+    {
+      "name": "name_pattern",
+      "type": "string",
+      "default": "%Film%",
+      "description": "Filter on name (pattern)"
+    },
+    {
+      "name": "name_pattern_2",
+      "type": "string",
+      "default": "%Warner%",
+      "description": "Filter on name (pattern)"
+    }
+  ]
 }

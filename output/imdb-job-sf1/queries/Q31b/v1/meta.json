@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "created_by_run": "2026-05-25T16-51-13",
+  "created_at": "2026-05-25T17:21:10.918Z",
+  "source_iteration": "iter_0",
+  "storage_deps": [
+    "title/id.bin",
+    "title/production_year.bin",
+    "title/title.offsets.bin",
+    "title/title.data.bin",
+    "cast_info/note.offsets.bin",
+    "cast_info/note.data.bin",
+    "cast_info/person_id.bin",
+    "company_name/id.bin",
+    "company_name/name.offsets.bin",
+    "company_name/name.data.bin",
+    "info_type/id.bin",
+    "info_type/info.offsets.bin",
+    "info_type/info.data.bin",
+    "keyword/id.bin",
+    "keyword/keyword.offsets.bin",
+    "keyword/keyword.data.bin",
+    "movie_companies/movie_id.bin",
+    "movie_companies/company_id.bin",
+    "movie_companies/note.offsets.bin",
+    "movie_companies/note.data.bin",
+    "movie_info/movie_id.bin",
+    "movie_info/info_type_id.bin",
+    "movie_info/info.offsets.bin",
+    "movie_info/info.data.bin",
+    "movie_info_idx/movie_id.bin",
+    "movie_info_idx/info_type_id.bin",
+    "movie_info_idx/info.offsets.bin",
+    "movie_info_idx/info.data.bin",
+    "movie_keyword/keyword_id.bin",
+    "name/gender.bin",
+    "name/name.offsets.bin",
+    "name/name.data.bin",
+    "indexes/movie_companies__movie_id__offsets.bin",
+    "indexes/movie_info__movie_id__offsets.bin",
+    "indexes/movie_info_idx__movie_id__offsets.bin",
+    "indexes/movie_keyword__movie_id__offsets.bin",
+    "indexes/cast_info__movie_id__offsets.bin",
+    "indexes/name__id__pos.bin"
+  ],
+  "hardware_results": {
+    "5825bbdaf7d0": {
+      "fingerprint": {
+        "cpu_cores": 12,
+        "simd": "avx2",
+        "total_memory_gb": 63,
+        "disk_type": "hdd",
+        "l3_cache_mb": 12
+      },
+      "hot_ms": 13.703333333333333,
+      "cold_ms": null,
+      "validated": true,
+      "validated_at": "2026-05-25T17:21:10.918Z",
+      "validated_by_run": "2026-05-25T16-51-13"
+    }
+  }
+}

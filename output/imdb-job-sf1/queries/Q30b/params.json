@@ -1,3 +1,52 @@
 {
-  "parameters": []
+  "parameters": [
+    {
+      "name": "production_year_lower",
+      "type": "int",
+      "default": 2000,
+      "description": "Filter on production_year (lower)"
+    },
+    {
+      "name": "gender_eq",
+      "type": "string",
+      "default": "m",
+      "description": "Filter on gender (eq)"
+    },
+    {
+      "name": "title_pattern",
+      "type": "string",
+      "default": "Saw%",
+      "description": "Filter on title (pattern)"
+    },
+    {
+      "name": "title_pattern_2",
+      "type": "string",
+      "default": "%Freddy%",
+      "description": "Filter on title (pattern)"
+    },
+    {
+      "name": "title_pattern_3",
+      "type": "string",
+      "default": "%Jason%",
+      "description": "Filter on title (pattern)"
+    },
+    {
+      "name": "info_eq",
+      "type": "string",
+      "default": "votes",
+      "description": "Filter on info (eq)"
+    },
+    {
+      "name": "info_eq_2",
+      "type": "string",
+      "default": "genres",
+      "description": "Filter on info (eq)"
+    },
+    {
+      "name": "kind_eq",
+      "type": "string",
+      "default": "complete+verified",
+      "description": "Filter on kind (eq)"
+    }
+  ]
 }

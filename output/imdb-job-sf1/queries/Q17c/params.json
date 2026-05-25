@@ -1,3 +1,16 @@
 {
-  "parameters": []
+  "parameters": [
+    {
+      "name": "keyword_eq",
+      "type": "string",
+      "default": "character-name-in-title",
+      "description": "Filter on keyword (eq)"
+    },
+    {
+      "name": "name_pattern",
+      "type": "string",
+      "default": "X%",
+      "description": "Filter on name (pattern)"
+    }
+  ]
 }
