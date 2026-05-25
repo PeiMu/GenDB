@@ -1,0 +1,149 @@
+{
+  "query_id": "Q33c",
+  "execution_target": "cpp",
+  "driver": "movie_link",
+  "pipeline": [
+    "resolve_dim_literals",
+    "filter_dim_kind_type",
+    "filter_dim_link_type",
+    "filter_dim_info_type",
+    "scan_movie_link_filtered_by_link_type",
+    "for_each_ml_probe_t1_t2",
+    "filter_t2_production_year_and_kind",
+    "filter_t1_kind",
+    "probe_mi_idx1_by_t1_id_filter_info_type",
+    "probe_mi_idx2_by_t2_id_filter_info_type_and_info_lt_3_5",
+    "probe_mc1_by_t1_id_filter_cn1_country_code_neq_us",
+    "probe_mc2_by_t2_id_get_cn2",
+    "aggregate_min"
+  ],
+  "dim_literal_resolution": [
+    {"dim": "info_type", "text_col": "info", "literal": "rating", "output": "it_rating_id (single id, it1==it2)"},
+    {"dim": "kind_type", "text_col": "kind", "literals": ["tv series", "episode"], "output": "kt_allowed_ids set (size<=2)"},
+    {"dim": "link_type", "text_col": "link", "literals": ["sequel", "follows", "followed by"], "output": "lt_allowed_ids set (size<=3)"}
+  ],
+  "join_order": [
+    {
+      "step": 1,
+      "build": "lt_allowed_ids (set of ~3 link_type ids)",
+      "probe": "movie_link.link_type_id",
+      "type": "inner",
+      "strategy": "scan_with_small_set_membership",
+      "build_cardinality": 3,
+      "notes": "29,997 movie_link rows total; sequel/follows/followed by typically cover most rows. Linear scan of link_type_id column, keep rows where in set. Yields surviving ml rowids with their movie_id and linked_movie_id."
+    },
+    {
+      "step": 2,
+      "build": "surviving ml rows (movie_id=t1.id, linked_movie_id=t2.id)",
+      "probe": "title (t2) via direct id lookup",
+      "type": "inner",
+      "strategy": "direct_id_lookup",
+      "build_cardinality": "~25000",
+      "notes": "t2.id = ml.linked_movie_id; title is dimension PK so title row position == id-1 (or use pos index). Read t2.production_year[id]: must be in [2000,2010]. Then t2.kind_id must be in kt_allowed_ids."
+    },
+    {
+      "step": 3,
+      "build": "surviving ml after t2 filter",
+      "probe": "title (t1) via direct id lookup",
+      "type": "inner",
+      "strategy": "direct_id_lookup",
+      "build_cardinality": "small (after t2 year+kind filter)",
+      "notes": "t1.id = ml.movie_id. Read t1.kind_id: must be in kt_allowed_ids."
+    },
+    {
+      "step": 4,
+      "build": "t2.id",
+      "probe": "movie_info_idx primary CSR on movie_id",
+      "type": "semi+filter",
+      "strategy": "primary_csr_range_scan",
+      "notes": "For each surviving t2.id, iterate movie_info_idx rows in [off[id], off[id+1]); keep where info_type_id == it_rating_id AND info < '3.5'. Must have at least one match. Track lex-min of info as second_rating."
+    },
+    {
+      "step": 5,
+      "build": "t1.id",
+      "probe": "movie_info_idx primary CSR on movie_id",
+      "type": "semi+filter",
+      "strategy": "primary_csr_range_scan",
+      "notes": "For each surviving t1.id, iterate movie_info_idx rows in [off[id], off[id+1]); keep where info_type_id == it_rating_id. Must have at least one match. Track lex-min of info as first_rating."
+    },
+    {
+      "step": 6,
+      "build": "t1.id",
+      "probe": "movie_companies primary CSR on movie_id",
+      "type": "semi+filter",
+      "strategy": "primary_csr_range_scan",
+      "notes": "For each surviving t1.id, iterate mc rows; for each, look up cn1 via company_name__id__pos[company_id]; keep where cn1.country_code != '[us]'. Must have at least one match. Track lex-min of cn1.name as first_company. Track lex-min of t1.title as first_movie."
+    },
+    {
+      "step": 7,
+      "build": "t2.id",
+      "probe": "movie_companies primary CSR on movie_id",
+      "type": "semi+filter",
+      "strategy": "primary_csr_range_scan",
+      "notes": "For each surviving t2.id, iterate mc rows; cn2 has no country_code filter. Just require at least one mc2 row exists. Track lex-min of cn2.name (via company_name__id__pos[company_id]) as second_company. Track lex-min of t2.title as second_movie."
+    }
+  ],
+  "filters": [
+    {"table": "link_type", "predicate": "link IN ('sequel','follows','followed by')", "selectivity": 0.17, "applied_at": "dim resolution"},
+    {"table": "kind_type", "predicate": "kind IN ('tv series','episode')", "selectivity": 0.29, "applied_at": "dim resolution"},
+    {"table": "info_type", "predicate": "info = 'rating'", "selectivity": 0.009, "applied_at": "dim resolution"},
+    {"table": "movie_link", "predicate": "link_type_id IN lt_allowed_ids", "selectivity": 0.8, "applied_at": "driver scan"},
+    {"table": "title (t2)", "predicate": "production_year BETWEEN 2000 AND 2010", "selectivity": 0.25, "applied_at": "after ml scan"},
+    {"table": "title (t2)", "predicate": "kind_id IN kt_allowed_ids", "selectivity": 0.15, "applied_at": "after ml scan"},
+    {"table": "title (t1)", "predicate": "kind_id IN kt_allowed_ids", "selectivity": 0.15, "applied_at": "after t2 filter"},
+    {"table": "movie_info_idx (mi_idx2)", "predicate": "info_type_id = it_rating_id AND info < '3.5'", "selectivity": 0.3, "applied_at": "csr range scan"},
+    {"table": "movie_info_idx (mi_idx1)", "predicate": "info_type_id = it_rating_id", "selectivity": 1.0, "applied_at": "csr range scan"},
+    {"table": "company_name (cn1)", "predicate": "country_code != '[us]'", "selectivity": 0.6, "applied_at": "after mc1 join"}
+  ],
+  "data_structures": {
+    "kt_allowed_ids": "std::array<int32_t,2> or small bitset (max id = 7)",
+    "lt_allowed_ids": "std::array<int32_t,3> or small bitset (max id = 18)",
+    "it_rating_id": "int32_t scalar",
+    "ml_survivors": "implicit (iterate row-by-row, no materialization needed)",
+    "csr_probes": "primary CSR offsets (mmap'd uint64 arrays)",
+    "cn_pos": "company_name__id__pos.bin (mmap int32 array)",
+    "agg_state": "six std::string running-min slots (or string_view tracked + final copy)"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "morsel_unit": "movie_link rows (29,997 total)",
+    "threads": "auto(nproc up to 12)",
+    "reduction": "per-thread local min strings, final merge picks lex-min across threads",
+    "notes": "movie_link is small (~30k rows); split linearly across 12 threads. Each thread does all downstream probes for its slice. Merge 6 MIN aggregates at end."
+  },
+  "indexes": [
+    {"index": "movie_link/link_type_id.bin", "purpose": "filter driver"},
+    {"index": "movie_link/movie_id.bin", "purpose": "extract t1.id"},
+    {"index": "movie_link/linked_movie_id.bin", "purpose": "extract t2.id"},
+    {"index": "indexes/title__id__pos.bin", "purpose": "id->row for t1, t2 attribute reads"},
+    {"index": "title/production_year.bin", "purpose": "filter t2"},
+    {"index": "title/kind_id.bin", "purpose": "filter t1 and t2"},
+    {"index": "title/title.{offsets,data}.bin", "purpose": "MIN(t1.title), MIN(t2.title) projection"},
+    {"index": "indexes/movie_info_idx__movie_id__offsets.bin", "purpose": "range probe per movie_id"},
+    {"index": "movie_info_idx/info_type_id.bin", "purpose": "filter to rating info_type"},
+    {"index": "movie_info_idx/info.{offsets,data}.bin", "purpose": "filter info<'3.5' and projection"},
+    {"index": "indexes/movie_companies__movie_id__offsets.bin", "purpose": "range probe per movie_id"},
+    {"index": "movie_companies/company_id.bin", "purpose": "extract cn id"},
+    {"index": "indexes/company_name__id__pos.bin", "purpose": "id->row for company_name reads"},
+    {"index": "company_name/country_code.{offsets,data}.bin", "purpose": "filter cn1"},
+    {"index": "company_name/name.{offsets,data}.bin", "purpose": "MIN(cn1.name), MIN(cn2.name) projection"},
+    {"index": "indexes/info_type__id__pos.bin", "purpose": "only for literal resolution scan (linear scan acceptable, table has 113 rows)"},
+    {"index": "indexes/kind_type__id__pos.bin", "purpose": "literal resolution scan"},
+    {"index": "indexes/link_type__id__pos.bin", "purpose": "literal resolution scan"}
+  ],
+  "aggregation": "scalar_min_six_slots",
+  "output": {
+    "columns": ["MIN(cn1.name)", "MIN(cn2.name)", "MIN(mi_idx1.info)", "MIN(mi_idx2.info)", "MIN(t1.title)", "MIN(t2.title)"],
+    "group_by": [],
+    "order_by": [],
+    "limit": 1,
+    "row_count": 1
+  },
+  "execution_notes": [
+    "Driver choice rationale: movie_link is by far the smallest fact table relevant here (~30k rows), and it transitively constrains BOTH t1 and t2 ids. Driving on movie_link avoids enumerating all ~2.5M title rows.",
+    "All movie_id-keyed facts (movie_info_idx, movie_companies) use their primary CSR for O(matches) range scans per t1.id and t2.id, which is optimal given the physical sort order.",
+    "The join condition 'ml.movie_id = mi_idx1.movie_id = mc1.movie_id' (and similarly for t2 side) is automatically satisfied by joining all three to t1.id (resp. t2.id) — no extra equality check needed.",
+    "Since aggregation is unconditional MIN with no GROUP BY, no early-exit is safe; must scan all surviving rows.",
+    "For each ml row we need: at least one matching mi_idx1 (rating), at least one matching mi_idx2 (rating, <3.5), at least one matching mc1 (non-us), at least one matching mc2 (any). All four are existential semi-joins gating the row's contribution; the MINs use the lex-smallest qualifying value seen."
+  ]
+}

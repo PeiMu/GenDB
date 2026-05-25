@@ -1,0 +1,162 @@
+{
+  "query_id": "Q31b",
+  "pipeline": [
+    "resolve_dim_literals",
+    "build_mc_seed_movie_ids",
+    "intersect_with_title_filters",
+    "probe_facts_per_movie",
+    "aggregate_min"
+  ],
+  "dimension_literal_resolution": [
+    {
+      "alias": "it1",
+      "table": "info_type",
+      "column": "info",
+      "literal": "genres",
+      "lookup": "scan info_type/info.{off,dat} sequentially (113 rows); read info_type/id.bin at matching row → it1_id (int32)"
+    },
+    {
+      "alias": "it2",
+      "table": "info_type",
+      "column": "info",
+      "literal": "votes",
+      "lookup": "same scan as above, single pass capturing both literals → it2_id (int32)"
+    },
+    {
+      "alias": "cn",
+      "table": "company_name",
+      "column": "name",
+      "literal": "Lionsgate%",
+      "lookup": "scan company_name/name.{off,dat} (234,997 rows), keep rows where slice startswith 'Lionsgate'; collect company_name/id.bin values into std::unordered_set<int32_t> lionsgate_ids (expected ~10 ids)"
+    },
+    {
+      "alias": "k",
+      "table": "keyword",
+      "column": "keyword",
+      "literals": ["murder","violence","blood","gore","death","female-nudity","hospital"],
+      "lookup": "scan keyword/keyword.{off,dat} (134,170 rows), match against std::unordered_set<string_view> literal set; collect keyword/id.bin values into std::unordered_set<int32_t> keyword_ids (expected ≤7 ids)"
+    }
+  ],
+  "constants": {
+    "ci_note_set": ["(writer)","(head writer)","(written by)","(story)","(story editor)"],
+    "mi_info_set": ["Horror","Thriller"],
+    "mc_note_substr": "(Blu-ray)",
+    "title_patterns": {"contains": ["Freddy","Jason"], "prefix": ["Saw"]},
+    "gender_byte": 109,
+    "production_year_min_exclusive": 2000
+  },
+  "filters": [
+    {"table": "title", "predicate": "production_year > 2000", "selectivity": 0.547, "estimated_rows": 1381453},
+    {"table": "title", "predicate": "title LIKE %Freddy% OR %Jason% OR Saw%", "selectivity": 0.000299, "estimated_rows": 755},
+    {"table": "title", "predicate": "year AND title combined", "selectivity": 0.000211, "estimated_rows": 533},
+    {"table": "movie_companies", "predicate": "note LIKE %(Blu-ray)%", "selectivity": 0.00305, "estimated_rows": 7963},
+    {"table": "movie_companies", "predicate": "note Blu-ray AND company_id ∈ Lionsgate", "selectivity": 0.0000517, "estimated_rows": 135},
+    {"table": "company_name", "predicate": "name LIKE 'Lionsgate%'", "estimated_rows": 10},
+    {"table": "info_type", "predicate": "info='genres' OR info='votes'", "estimated_rows": 2},
+    {"table": "keyword", "predicate": "keyword IN (...)", "estimated_rows": 7},
+    {"table": "name", "predicate": "gender = 'm'", "selectivity": 0.45},
+    {"table": "cast_info", "predicate": "note IN writer-set", "selectivity": 0.05},
+    {"table": "movie_info", "predicate": "info IN ('Horror','Thriller')", "selectivity": 0.005}
+  ],
+  "sampling_notes": "Empirically measured: 533 titles satisfy (year>2000 AND title pattern); 135 movie_companies rows satisfy (Blu-ray note AND Lionsgate company); intersect of these two seed sets is expected to be very small (≤ few rows). Strategy: drive on the smaller mc-seed set, then validate with title filter, then probe all other facts per surviving movie_id.",
+  "join_order": [
+    {
+      "step": 1,
+      "build": "movie_companies (filtered: note∋'(Blu-ray)' AND company_id ∈ lionsgate_ids)",
+      "probe": "—",
+      "type": "inner",
+      "strategy": "parallel_scan_collect",
+      "build_cardinality": 135,
+      "notes": "Parallel morsel scan over 2,609,129 movie_companies rows. For each row r: test memmem(note, '(Blu-ray)') AND lionsgate_ids.count(company_id[r]); if both true, insert movie_id[r] into a std::unordered_set<int32_t> seed_movie_ids (merge per-thread sets at end). Expected |seed_movie_ids| ≈ 100."
+    },
+    {
+      "step": 2,
+      "build": "title (filtered: year>2000 AND title pattern AND id ∈ seed_movie_ids)",
+      "probe": "seed_movie_ids",
+      "type": "inner",
+      "strategy": "iterate_seed_then_pk_pos_lookup",
+      "build_cardinality": "≤ |seed_movie_ids|",
+      "notes": "For each v in seed_movie_ids: row = title__id__pos[v]; if row<0 skip; if production_year[row] <= 2000 skip; test title[row] against (contains 'Freddy' OR 'Jason') OR (startswith 'Saw'); survivors are candidate movie_ids (expected ≤ a handful). Keep a vector<int32_t> candidate_movie_ids and parallel vector<int32_t> title_rows."
+    },
+    {
+      "step": 3,
+      "build": "movie_info range per movie_id",
+      "probe": "candidate_movie_ids",
+      "type": "inner",
+      "strategy": "primary_csr_range_then_inline_filter",
+      "build_cardinality": "small",
+      "notes": "For each candidate v: lo=mi_off[v], hi=mi_off[v+1]; scan rows in [lo,hi); keep rows where info_type_id[r]==it1_id AND mi_info[r] ∈ {Horror,Thriller}. If no surviving mi rows for v, skip v entirely. Capture min(mi.info) lex over surviving slices."
+    },
+    {
+      "step": 4,
+      "build": "movie_info_idx range per movie_id",
+      "probe": "candidate_movie_ids",
+      "type": "inner",
+      "strategy": "primary_csr_range_then_inline_filter",
+      "build_cardinality": "small",
+      "notes": "For each surviving v: scan mi_idx CSR range; keep rows where info_type_id[r]==it2_id. If none, skip. Capture min(mi_idx.info)."
+    },
+    {
+      "step": 5,
+      "build": "movie_keyword range per movie_id",
+      "probe": "candidate_movie_ids",
+      "type": "semi",
+      "strategy": "primary_csr_range_existence_check",
+      "build_cardinality": "small",
+      "notes": "For each surviving v: scan mk CSR range; existence check that ∃ row where keyword_id[r] ∈ keyword_ids. If no match, skip v."
+    },
+    {
+      "step": 6,
+      "build": "cast_info range per movie_id ⨝ name (via pk_pos)",
+      "probe": "candidate_movie_ids",
+      "type": "inner",
+      "strategy": "primary_csr_range_then_dim_lookup",
+      "build_cardinality": "small",
+      "notes": "For each surviving v: scan ci CSR range; for each ci row r where ci_note[r] ∈ note_set: lookup name_row = name__id__pos[ci_person_id[r]]; if name_row<0 skip; if name_gender[name_row]!=0x6d skip; capture min(n.name) lex over surviving names. If no surviving ci row, skip v."
+    },
+    {
+      "step": 7,
+      "build": "title projection",
+      "probe": "surviving v with title_row",
+      "type": "inner",
+      "strategy": "direct_array_read",
+      "build_cardinality": "tiny",
+      "notes": "Capture min(t.title) lex over title slices for v that satisfied all other steps."
+    }
+  ],
+  "data_structures": {
+    "lionsgate_ids": "std::unordered_set<int32_t> (~10 entries)",
+    "keyword_ids": "std::unordered_set<int32_t> (~7 entries)",
+    "ci_note_set": "std::unordered_set<std::string_view> (5 entries)",
+    "mi_info_set": "std::unordered_set<std::string_view> (2 entries)",
+    "seed_movie_ids": "std::unordered_set<int32_t> (~100 entries, merged across threads)",
+    "candidate_movie_ids": "std::vector<int32_t> (≤ tens)",
+    "title_rows": "std::vector<int32_t> (parallel to candidate_movie_ids)",
+    "aggregation": "4 thread-local std::string min accumulators (min mi.info, min mi_idx.info, min n.name, min t.title); merged with lex-min at end"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "threads": "auto(nproc=12)",
+    "morsels": [
+      {"phase": "dimension_literal_scan", "parallel": false, "reason": "tiny dims, single sequential scan each"},
+      {"phase": "mc_seed_scan", "parallel": true, "chunk_rows": 100000, "reason": "2.6M row scan dominates I/O"},
+      {"phase": "candidate_probe", "parallel": true, "chunk": "1 candidate per task", "reason": "few candidates, but each probes 5 facts; parallelize across candidates"}
+    ]
+  },
+  "indexes": [
+    {"index": "title__id__pos", "purpose": "map candidate movie_id → title row for year/title filter and projection"},
+    {"index": "movie_info__movie_id (primary CSR)", "purpose": "range scan mi rows per candidate movie_id"},
+    {"index": "movie_info_idx__movie_id (primary CSR)", "purpose": "range scan mi_idx rows per candidate movie_id"},
+    {"index": "movie_keyword__movie_id (primary CSR)", "purpose": "semi-join existence check per candidate movie_id"},
+    {"index": "cast_info__movie_id (primary CSR)", "purpose": "range scan ci rows per candidate movie_id"},
+    {"index": "name__id__pos", "purpose": "map ci.person_id → name row for gender filter and name projection"}
+  ],
+  "aggregation": "scalar_min_4cols",
+  "output": {"columns": ["MIN(mi.info) AS movie_budget","MIN(mi_idx.info) AS movie_votes","MIN(n.name) AS writer","MIN(t.title) AS violent_liongate_movie"], "limit": 1},
+  "execution_target": "cpp",
+  "memory_footprint_mb": {
+    "indexes_mmap": 250,
+    "fact_columns_mmap": 600,
+    "working_set_heap": 1
+  }
+}

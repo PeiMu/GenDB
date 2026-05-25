@@ -1,0 +1,144 @@
+{
+  "query_id": "Q18c",
+  "pipeline": [
+    "resolve_dim_literals",
+    "build_name_gender_bitmap",
+    "drive_title_parallel",
+    "probe_mi_idx_csr_filter_info_type",
+    "probe_mi_csr_filter_info_and_info_type",
+    "probe_ci_csr_filter_note_and_person_gender",
+    "aggregate_min"
+  ],
+  "dimension_literal_resolution": [
+    {
+      "alias": "it1",
+      "table": "info_type",
+      "predicate": "info = 'genres'",
+      "method": "scan info_type/info varlen + parallel id.bin; output: it1_id (int32)"
+    },
+    {
+      "alias": "it2",
+      "table": "info_type",
+      "predicate": "info = 'votes'",
+      "method": "scan info_type/info varlen + parallel id.bin; output: it2_id (int32)"
+    }
+  ],
+  "prefilters": [
+    {
+      "table": "name",
+      "predicate": "n.gender == 'm'",
+      "output": "name_gender_m_bitmap",
+      "structure": "bitset(4167491)",
+      "selectivity": 0.4,
+      "notes": "Built once by scanning name/gender.bin == 'm'. Probed by person_id from cast_info."
+    }
+  ],
+  "join_order": [
+    {
+      "step": 1,
+      "build": "title.id (driver, 1..2528312)",
+      "probe": "movie_info_idx via primary CSR on movie_id",
+      "type": "inner",
+      "strategy": "csr_range_probe",
+      "build_cardinality": 2528312,
+      "notes": "Drive title id loop. For each tid, probe movie_info_idx__movie_id offsets. If range empty, skip tid (most selective fact filter)."
+    },
+    {
+      "step": 2,
+      "build": "mi_idx rows in range",
+      "probe": "mi_idx.info_type_id == it2_id",
+      "type": "filter",
+      "strategy": "scalar_eq_filter",
+      "notes": "Within CSR range, keep rows where info_type_id == it2_id. Capture candidate mi_idx row positions for projection."
+    },
+    {
+      "step": 3,
+      "build": "title id (surviving)",
+      "probe": "movie_info via primary CSR on movie_id",
+      "type": "inner",
+      "strategy": "csr_range_probe",
+      "build_cardinality": 1380035,
+      "notes": "Only enter if step 2 produced >=1 mi_idx row for this tid."
+    },
+    {
+      "step": 4,
+      "build": "mi rows in range",
+      "probe": "mi.info_type_id == it1_id AND mi.info IN ('Horror','Action','Sci-Fi','Thriller','Crime','War')",
+      "type": "filter",
+      "strategy": "scalar_eq_then_set_membership",
+      "notes": "Check info_type_id first (int32 cheap), then varlen mi.info via unordered_set<string_view> of 6 literals."
+    },
+    {
+      "step": 5,
+      "build": "title id (surviving)",
+      "probe": "cast_info via primary CSR on movie_id",
+      "type": "inner",
+      "strategy": "csr_range_probe",
+      "notes": "Only enter if step 4 produced >=1 mi row for this tid."
+    },
+    {
+      "step": 6,
+      "build": "ci rows in range",
+      "probe": "ci.note IN ('(writer)','(head writer)','(written by)','(story)','(story editor)') AND name_gender_m_bitmap[ci.person_id resolved via name__id__pos]",
+      "type": "filter+semijoin",
+      "strategy": "set_membership_then_bitmap_lookup",
+      "notes": "Note filter via unordered_set<string_view> (5 literals). For surviving rows, look up n.id via name__id__pos[ci.person_id] -> row, then bitmap[row]. Equivalently: since name_gender_m is a per-row bitmap indexed by name row position, and ci.person_id is a name id, use pos[id] -> bitmap[pos]."
+    },
+    {
+      "step": 7,
+      "build": "surviving (tid, mi_idx_row, mi_row) tuples",
+      "probe": "MIN aggregation",
+      "type": "aggregate",
+      "strategy": "running_min_per_thread",
+      "notes": "For tid surviving all probes, update running MIN of mi.info (over qualifying mi rows), mi_idx.info (over qualifying mi_idx rows), and t.title (read once for tid)."
+    }
+  ],
+  "filters": [
+    {"table": "cast_info", "predicate": "note IN (5 lits)", "selectivity": 0.05},
+    {"table": "info_type", "predicate": "info = 'genres'", "selectivity": 0.0088},
+    {"table": "info_type", "predicate": "info = 'votes'", "selectivity": 0.0088},
+    {"table": "movie_info", "predicate": "info IN (6 genres)", "selectivity": 0.05},
+    {"table": "name", "predicate": "gender = 'm'", "selectivity": 0.4}
+  ],
+  "data_structures": {
+    "it1_id": "int32 scalar",
+    "it2_id": "int32 scalar",
+    "name_gender_m_bitmap": "bitset(4167491) ~ 522KB",
+    "ci_note_set": "unordered_set<string> of 5 literals (lookup via string_view slice)",
+    "mi_info_set": "unordered_set<string> of 6 literals (lookup via string_view slice)",
+    "title_csr_offsets_mi": "mmap movie_info__movie_id__offsets.bin (uint64[2528314])",
+    "title_csr_offsets_mi_idx": "mmap movie_info_idx__movie_id__offsets.bin (uint64[2528314])",
+    "title_csr_offsets_ci": "mmap cast_info__movie_id__offsets.bin (uint64[2528314])",
+    "name_id_pos": "mmap name__id__pos.bin (int32[max_name_id+2])",
+    "aggregation": "thread-local running MIN strings; final reduce across threads"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven",
+    "morsel": "title id range (e.g., 16K ids per task)",
+    "threads": "auto(nproc)=12",
+    "notes": "Each thread maintains local MIN(mi.info), MIN(mi_idx.info), MIN(t.title). Final pass reduces 12 candidates."
+  },
+  "indexes": [
+    {"index": "movie_info_idx__movie_id (primary CSR)", "purpose": "join_lookup tid -> mi_idx rows"},
+    {"index": "movie_info__movie_id (primary CSR)", "purpose": "join_lookup tid -> mi rows"},
+    {"index": "cast_info__movie_id (primary CSR)", "purpose": "join_lookup tid -> ci rows"},
+    {"index": "name__id__pos", "purpose": "person_id -> name row position for gender bitmap probe"},
+    {"index": "title__id__pos", "purpose": "not needed (drive on id directly = row position when contiguous; use id.bin to confirm row=tid mapping if needed)"}
+  ],
+  "aggregation": "scalar_min_no_groupby",
+  "output": {
+    "columns": ["MIN(mi.info) AS movie_budget", "MIN(mi_idx.info) AS movie_votes", "MIN(t.title) AS movie_title"],
+    "row_count": 1
+  },
+  "execution_notes": [
+    "MIN over varlen requires lexicographic compare; no early exit.",
+    "Drive on title to leverage 3 primary CSRs on movie_id simultaneously — all three facts are physically sorted by movie_id, so per-tid probes are contiguous sequential reads (ideal on HDD).",
+    "Order of probes (mi_idx -> mi -> ci) is by ascending size: 1.38M < 14.8M < 36.2M rows; skip tid as soon as any probe yields zero qualifying rows.",
+    "Apply cheap int32 filters (info_type_id) BEFORE varlen filters (info text) within each CSR range.",
+    "ci.note filter is selective (~5%); apply before name gender semijoin to minimize pos/bitmap lookups.",
+    "For MIN(t.title): only read title.title for tid that survives all three fact probes (rare).",
+    "For MIN(mi.info) and MIN(mi_idx.info): only read varlen for rows that pass all filters for the surviving tid (multiple rows possible per tid; update running min each).",
+    "Title row position == tid - 1 if title is dense+sorted; use title__id__pos to be safe, but for sequential drive over tid 1..2528312 we can read title.title.offsets[tid] directly if id maps 1:1 to row."
+  ],
+  "execution_target": "cpp"
+}

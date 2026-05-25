@@ -1,0 +1,121 @@
+{
+  "query_id": "Q19a",
+  "pipeline": [
+    "resolve_literals",
+    "build_aka_existence_bitset",
+    "name_filter_gated_by_aka",
+    "company_us_bitset",
+    "title_year_filter",
+    "drive_title_probe_facts",
+    "aggregate_min"
+  ],
+  "literal_resolution": [
+    {"dim": "role_type", "text_col": "role", "literal_param": "role_eq", "output": "actress_role_id"},
+    {"dim": "info_type", "text_col": "info", "literal_param": "info_eq", "output": "release_dates_info_type_id"},
+    {"dim": "name.gender", "text_col": "gender (dict)", "literal_param": "gender_eq", "output": "gender_code (int8/int16 dict code)"},
+    {"dim": "company_name.country_code", "text_col": "country_code (dict)", "literal_param": "country_code_eq", "output": "cc_code (int16 dict code)"}
+  ],
+  "join_order": [
+    {
+      "build": "aka_name(person_id) → aka_has bitset over name.id space",
+      "probe": "n/a (existence-only scan)",
+      "type": "semi",
+      "strategy": "sequential_scan_into_bitset",
+      "build_cardinality": 901343,
+      "notes": "FIRST pass. Scan aka_name/person_id.bin (~3.6MB). For each pid in [1..name_N], set aka_has[pid]=1. Output: bitset of ~name_N+1 bytes. Cost: O(901k) sequential reads, dominated by reading one ~3.6MB array. This precedes the name filter so the expensive LIKE only runs on names that could join."
+    },
+    {
+      "build": "name(filtered: aka_has[id] AND gender='f' AND name LIKE %Ang%) → name_bits over name.id space",
+      "probe": "n/a",
+      "type": "semi",
+      "strategy": "gated_sequential_scan_into_bitset",
+      "build_cardinality": 4167491,
+      "notes": "CRITICAL ORDERING: for each name row r, evaluate predicates in cheapest-to-most-expensive order: (1) aka_has[r+1] (1-byte bitset read), (2) gender[r]==gender_code (1-byte read), (3) name LIKE %Ang% (varlen memmem — only reached for ~14% of rows that pass aka_has and ~33% that pass gender). Set name_bits[r+1]=1. NO separate aka_bits is built — the single name_bits already encodes (name predicate AND name has aka_name row). Inner loop tests one bitset instead of two."
+    },
+    {
+      "build": "company_name(country_code='[us]') → us_bits over company_name.id space",
+      "probe": "n/a",
+      "type": "semi",
+      "strategy": "sequential_scan_into_bitset",
+      "build_cardinality": 234997,
+      "notes": "Unchanged. Cheap (~0ms)."
+    },
+    {
+      "build": "title(production_year BETWEEN ylo AND yhi) → trows list of surviving row positions",
+      "probe": "n/a",
+      "type": "filter",
+      "strategy": "parallel_scan_thread_local_vectors_then_merge",
+      "build_cardinality": 2528312,
+      "notes": "Unchanged. ~200k surviving titles drive the outer loop."
+    },
+    {
+      "build": "title(filtered) ~200k driver",
+      "probe": "movie_companies via primary CSR on movie_id",
+      "type": "inner",
+      "strategy": "primary_csr_range_scan_with_short_circuit",
+      "build_cardinality": 200000,
+      "notes": "For each title.id v, iterate mc rows in [mc_csr[v], mc_csr[v+1]). Per-row tests in order: note non-empty, company_id in us_bits, then LIKE on (USA)/(worldwide). Break on first match (mc_ok flag)."
+    },
+    {
+      "build": "title (post mc)",
+      "probe": "movie_info via primary CSR on movie_id",
+      "type": "inner",
+      "strategy": "primary_csr_range_scan_with_short_circuit",
+      "build_cardinality": 50000,
+      "notes": "Per-row tests: info_type_id==release_dates_id (cheapest), then info non-empty, then LIKE Japan:%200% / USA:%200%. Break on first match."
+    },
+    {
+      "build": "title (post mi)",
+      "probe": "cast_info via primary CSR on movie_id",
+      "type": "inner",
+      "strategy": "primary_csr_range_scan",
+      "build_cardinality": 20000,
+      "notes": "Per-row tests in order: role_id==actress_role_id, person_role_id>=1 (char_name existence — ids dense 1..3140339, so range check IS the semi-join), person_id>=1 && person_id<=name_N && name_bits[person_id] (single bitset test, replaces previous double-test of name_bits AND aka_bits), then note length-switch against the 4 voice literals. On success: read n.name (row = pid-1) and update thread-local MIN(n.name); set any_ci flag so MIN(t.title) is updated once outside the inner ci loop."
+    }
+  ],
+  "filters": [
+    {"table": "name", "predicate": "aka_has[id] AND gender=='f' AND name LIKE %Ang%", "selectivity": 0.0002},
+    {"table": "company_name", "predicate": "country_code=='[us]'", "selectivity": 0.35},
+    {"table": "title", "predicate": "production_year BETWEEN 2005 AND 2009", "selectivity": 0.08},
+    {"table": "movie_companies", "predicate": "note NOT NULL AND (LIKE %(USA)% OR LIKE %(worldwide)%) AND company_id in us_bits", "selectivity": 0.1},
+    {"table": "movie_info", "predicate": "info_type_id=release_dates AND info NOT NULL AND (LIKE Japan:%200% OR LIKE USA:%200%)", "selectivity": 0.005},
+    {"table": "cast_info", "predicate": "role_id=actress AND person_role_id>=1 AND name_bits[person_id] AND note IN voice_set", "selectivity": 0.0005}
+  ],
+  "scan": {
+    "table": "title",
+    "rows": 2528312,
+    "columns": [
+      {"name": "production_year", "file": "title/production_year.bin", "type": "int32_t", "bytes_per_row": 4},
+      {"name": "title", "file": "title/title.dat (+title/title.off)", "type": "varlen", "bytes_per_row": "var"}
+    ],
+    "access_pattern": "sequential for prefilter; random (CSR-driven) for fact joins"
+  },
+  "data_structures": {
+    "aka_has": "byte-bitset of size name_N+2 — single-pass build from aka_name/person_id.bin (901k rows)",
+    "name_bits": "byte-bitset of size name_N+2 — encodes (gender match AND name LIKE AND has aka_name row); subsumes the former aka_bits",
+    "us_bits": "byte-bitset of size cn_N+2 over company_name.id",
+    "trows": "vector<int32> of surviving title row positions (~200k)",
+    "voice_note_set": "inline length-switch against 4 string literals — no hash needed",
+    "aggregation": "thread-local {min_name, min_title} string_views; reduce at end. Single-row scalar aggregate, no GROUP BY."
+  },
+  "parallelism": {
+    "strategy": "morsel_driven_over_title",
+    "threads": "auto(nproc)",
+    "notes": "aka_has build: parallel scan with byte-stores into bitset (benign race — value is always 1). name_filter: parallel scan, byte-store on success. title prefilter: thread-local vectors then merge. main_scan: dynamic schedule(256) over surviving title rows, thread-local mins reduced at end."
+  },
+  "indexes": [
+    {"index": "movie_companies__movie_id (primary CSR)", "purpose": "join_lookup mc by title.id"},
+    {"index": "movie_info__movie_id (primary CSR)", "purpose": "join_lookup mi by title.id"},
+    {"index": "cast_info__movie_id (primary CSR)", "purpose": "join_lookup ci by title.id"},
+    {"index": "dense-id arithmetic (title, name, char_name, company_name)", "purpose": "row<->id with row = id-1; char_name existence collapses to range check on person_role_id"}
+  ],
+  "aggregation": "scalar_min_two_columns",
+  "output": {
+    "columns": ["MIN(n.name) AS voicing_actress", "MIN(t.title) AS voiced_movie"],
+    "order_by": [],
+    "limit": 1
+  },
+  "execution_target": "cpp",
+  "optimization_notes": "Category A (plan restructuring / work elimination). Diagnosis: the dominant phase (name_filter, 12ms of 68ms) ran an expensive memmem LIKE on all 4.17M name rows even though only ~14% have a matching aka_name row and could possibly contribute to the final join. The previous order built name_bits first and then derived aka_bits as a subset — doing the costly work on rows that were doomed to fail the aka_name semi-join anyway. New order: (1) scan aka_name/person_id.bin into aka_has bitset (~3.6MB sequential, ~1-2ms), (2) name filter gated as aka_has[id] && gender==code && LIKE — short-circuit ordering puts the cheapest tests first so memmem only runs for the rare survivor. The two bitsets collapse into one (name_bits encodes name predicate AND has-aka), so the inner ci loop does a single bitset probe instead of two. All other physical choices (primary-CSR range scans into the three fact tables, dense-id arithmetic for char_name existence and name-row recovery, thread-local MIN reduction) are preserved from iter_0 — they were not the bottleneck.",
+  "correctness_anchors": {}
+}

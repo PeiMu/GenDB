@@ -1,0 +1,121 @@
+{
+  "query_id": "Q16c",
+  "pipeline": [
+    "resolve_keyword_literal",
+    "build_us_company_bitset",
+    "enumerate_movies_by_keyword",
+    "filter_title_episode_nr",
+    "probe_movie_companies_us",
+    "probe_cast_info_with_aka_name",
+    "aggregate_min"
+  ],
+  "filters": [
+    {
+      "table": "keyword",
+      "predicate": "keyword = 'character-name-in-title'",
+      "selectivity": "1/134170",
+      "resolution": "scan keyword/keyword.{offsets,data}.bin once; record matching keyword.id (single row expected)"
+    },
+    {
+      "table": "company_name",
+      "predicate": "country_code = '[us]'",
+      "selectivity": "~0.3 (~70k of 234,997 rows)",
+      "resolution": "scan company_name/country_code.{offsets,data}.bin in parallel with company_name/id.bin; build bitset us_company_ids[max_company_id+1]"
+    },
+    {
+      "table": "title",
+      "predicate": "episode_nr < 100 (and episode_nr != -1)",
+      "selectivity": "low overall (~7-10% of title rows; episodes only)",
+      "evaluation": "test title.episode_nr[pos] < 100 && >= 0 on demand using id->pos"
+    }
+  ],
+  "join_order": [
+    {
+      "step": 1,
+      "build": "keyword_id (scalar) for 'character-name-in-title'",
+      "probe": "movie_keyword via aux CSR on keyword_id",
+      "type": "inner",
+      "strategy": "aux_csr_lookup",
+      "build_cardinality": 1,
+      "expected_movie_id_count": "~3,000-5,000 distinct movies",
+      "notes": "Most selective starting point. Use indexes/movie_keyword__keyword_id__{offsets,rowids}.bin; gather distinct movie_ids into a sorted unique vector (sort + unique) for cache-friendly downstream probes."
+    },
+    {
+      "step": 2,
+      "build": "us_company_bitset over company_name.id",
+      "probe": "movie_companies primary CSR on movie_id",
+      "type": "semi",
+      "strategy": "primary_csr_with_bitset_check",
+      "build_cardinality": "~70,000",
+      "notes": "For each candidate movie_id v, iterate [off[v], off[v+1]) on movie_companies; require at least one company_id whose us_company_bitset bit is set. Short-circuit on first match (semi-join)."
+    },
+    {
+      "step": 3,
+      "build": "title id->pos map (or direct id-as-position since title is sorted by id)",
+      "probe": "title.episode_nr at pos",
+      "type": "inner",
+      "strategy": "pk_pos_lookup",
+      "notes": "Apply episode_nr filter; needed for MIN(t.title) projection."
+    },
+    {
+      "step": 4,
+      "build": "aka_name primary CSR on person_id (presence check)",
+      "probe": "cast_info primary CSR on movie_id -> person_id; for each person_id check aka_name CSR non-empty",
+      "type": "inner",
+      "strategy": "csr_to_csr_chain",
+      "notes": "Per surviving movie_id v, iterate cast_info[ci_off[v]..ci_off[v+1]) reading person_id; for each, check aka_name [an_off[pid], an_off[pid+1]) is non-empty (an_off[pid+1] > an_off[pid]). On any match, read aka_name.name values in that range and update MIN(an.name)."
+    }
+  ],
+  "data_structures": {
+    "keyword_id_scalar": "int32 (resolved at runtime)",
+    "us_company_bitset": "std::vector<uint64_t> sized to (max_company_id+1)/64; ~234,998 bits = ~29 KB (fits L1)",
+    "title_id_to_pos": "if title is dense PK 1..N, use identity mapping (pos = id - min_id) into a precomputed int32[max_id+2] array built by scanning title/id.bin once; size ~10 MB (fits L3)",
+    "candidate_movie_ids": "std::vector<int32_t> sorted/unique (~3-5k entries)",
+    "running_min_name": "std::string",
+    "running_min_title": "std::string"
+  },
+  "parallelism": {
+    "strategy": "serial_setup_then_parallel_movie_loop",
+    "threads": "auto(nproc)",
+    "details": "Resolve literal (serial). Build us_company_bitset and title id->pos array in parallel (independent). Enumerate movie_ids from movie_keyword aux CSR (serial, tiny). Parallelize the per-movie loop across the ~3-5k candidate movie_ids using static chunking (12 threads, chunk ~300 movies each). Each thread maintains thread-local min_name/min_title; final reduce merges 12 strings."
+  },
+  "indexes": [
+    {
+      "index": "movie_keyword__keyword_id (aux CSR)",
+      "purpose": "lookup all movie_ids for the single resolved keyword_id"
+    },
+    {
+      "index": "movie_companies__movie_id (primary CSR)",
+      "purpose": "per-movie company_id probe for country filter"
+    },
+    {
+      "index": "cast_info__movie_id (primary CSR)",
+      "purpose": "per-movie person_id enumeration"
+    },
+    {
+      "index": "aka_name__person_id (primary CSR)",
+      "purpose": "presence check + range scan for MIN(an.name) per person_id"
+    },
+    {
+      "index": "title__id__pos (pk_pos_dense, build at startup if missing)",
+      "purpose": "map title.id -> row position for episode_nr filter and title text projection"
+    },
+    {
+      "index": "company_name__id__pos (NOT NEEDED in this plan)",
+      "purpose": "n/a - we encode country filter directly as bitset over company_id"
+    }
+  ],
+  "aggregation": "single_row_min_reduction",
+  "output": {
+    "columns": [
+      "MIN(an.name) AS cool_actor_pseudonym",
+      "MIN(t.title) AS series_named_after_char"
+    ],
+    "rows": 1,
+    "no_group_by": true,
+    "early_exit": false,
+    "note": "Cannot early-exit: a later row may yield a lexicographically smaller string. Must visit every qualifying row."
+  },
+  "execution_target": "cpp",
+  "rationale_brief": "keyword='character-name-in-title' is the most selective filter (single id => few thousand movies via movie_keyword aux CSR). Driving from this side reduces the title/cast_info/movie_companies scans to small per-movie CSR ranges, avoiding any full scan of the 36M-row cast_info or 2.6M-row movie_companies. Semi-join on company_country and presence-check on aka_name allow short-circuiting; only the MIN aggregates require reading varlen data for surviving rows."
+}

@@ -1,0 +1,105 @@
+{
+  "query_id": "Q17e",
+  "storage_extensions": [
+    {
+      "id": "name.name.sortorder",
+      "action": "built_new",
+      "files": {
+        "order": "column_versions/name.name.sortorder/order.bin",
+        "order_format": "int32_t[4167491] — row indices in lex-ascending order of name.name; empty/NULL strings placed at the end"
+      },
+      "usage": "mmap order.bin as const int32_t*. After the join pipeline produces the set of candidate person_ids (as a bitset), scan order.bin sequentially: for k=0..N_name, let nrow=order[k]; pid=name_id[nrow]; if pid in candidate_pid_bitset, read name/name.{off,dat} at nrow — that string IS the MIN; break."
+    }
+  ],
+  "pipeline": [
+    "resolve_dim_literals",
+    "build_us_company_bitset",
+    "drive_movies_from_keyword_aux_csr",
+    "filter_movies_by_us_company_and_collect_person_id_bitset",
+    "find_min_name_via_sorted_order"
+  ],
+  "join_order": [
+    {
+      "step": 1,
+      "operation": "resolve_keyword_literal",
+      "table": "keyword",
+      "strategy": "linear_scan_varlen_text",
+      "build_cardinality": 1,
+      "notes": "Scan keyword/keyword.{off,dat} for keyword_eq; read keyword/id.bin at match -> target_kw_id."
+    },
+    {
+      "step": 2,
+      "operation": "resolve_country_code_literal_and_build_us_company_bitset",
+      "build": "company_name(filtered country_code=country_code_eq)",
+      "probe": "(set lookup later)",
+      "type": "semi",
+      "strategy": "dict_resolve_then_bitset",
+      "build_cardinality": 9775,
+      "notes": "Resolve country_code dict id from country_code.dict.{off,dat} (1-indexed). Scan company_name/country_code.bin (int16) and set bits in bitset of size (max_company_id+1)/8 ~ 30KB. Fits in L1."
+    },
+    {
+      "step": 3,
+      "operation": "enumerate_candidate_movies",
+      "build": "movie_keyword aux CSR bucket for target_kw_id",
+      "probe": "(driver)",
+      "type": "semi",
+      "strategy": "aux_csr_lookup",
+      "build_cardinality": 41840,
+      "notes": "Use _idx/movie_keyword__keyword_id__{offsets,rowids}.bin (int32). Range [off[kw], off[kw+1]) gives mk rowids; read movie_keyword/movie_id.bin at each rowid. Sort + dedupe candidate_movies to improve probe locality."
+    },
+    {
+      "step": 4,
+      "operation": "filter_movies_by_us_company_and_expand_to_person_id_bitset",
+      "build": "us_company_bitset, cast_info CSR",
+      "probe": "movie_companies CSR + cast_info CSR",
+      "type": "semi+inner",
+      "strategy": "fused_csr_probe_to_bitset",
+      "build_cardinality": 4377,
+      "notes": "For each candidate mid: (a) probe _idx/movie_companies__movie_id__offsets.bin (int32) and short-circuit if any movie_companies.company_id is in us_company_bitset; (b) on hit, probe _idx/cast_info__movie_id__offsets.bin (int32) for [lo,hi), read cast_info/person_id.bin[lo..hi), and set bit in candidate_pid_bitset (size = (max_name_id+1)/8 ~ 520 KB, fits in L2). No varlen name reads in this phase."
+    },
+    {
+      "step": 5,
+      "operation": "find_min_name_via_sorted_order",
+      "build": "name.name.sortorder order.bin",
+      "probe": "candidate_pid_bitset",
+      "type": "inner",
+      "strategy": "sorted_order_first_match",
+      "build_cardinality": 1,
+      "notes": "mmap column_versions/name.name.sortorder/order.bin (int32[N_name]). Iterate k=0..N_name-1: nrow=order[k]; pid=name_id[nrow]; if bit set in candidate_pid_bitset, read name/name.{off,dat} at nrow and that string IS MIN(n.name) (sortorder excludes empty strings by placing them at end). Expected first hit within tens of iterations given hit rate ~ |candidate_pids|/N_name."
+    }
+  ],
+  "filters": [
+    {"table": "keyword", "predicate": "keyword = keyword_eq", "selectivity": "1 of 134k"},
+    {"table": "company_name", "predicate": "country_code = country_code_eq", "selectivity": "9775 / 234997 ~= 4.16%"},
+    {"table": "movie_companies", "predicate": "company_id IN us_company_bitset", "selectivity": "per-movie short-circuit"}
+  ],
+  "scan": {
+    "table": "title",
+    "rows": 2528312,
+    "columns": [],
+    "access_pattern": "driven_via_movie_keyword_aux_csr"
+  },
+  "data_structures": {
+    "us_company_bitset": "bitset((max_company_id+1)/8) ~= 30 KB (fits L1)",
+    "candidate_movies": "std::vector<int32_t> reserve(45000), sort+dedupe",
+    "candidate_pid_bitset": "bitset((max_name_id+1)/8) ~= 520 KB (fits L2 per core)",
+    "name_sort_order": "mmap int32[N_name] = 16 MB (sequentially streamed; OS readahead handles HDD)",
+    "aggregation": "single string_view (set once on first sorted-order hit)"
+  },
+  "parallelism": {
+    "strategy": "single_thread",
+    "threads": "1",
+    "notes": "Total work ~ 60ms baseline. After this rewrite the dominant remaining phases (build bitsets, sort dedupe candidates, ~4k movie probes, ~tens of sorted-order steps) are too small for threading to amortize sync overhead."
+  },
+  "indexes": [
+    {"index": "movie_keyword__keyword_id (aux CSR)", "purpose": "driver: enumerate candidate movie_ids for kw"},
+    {"index": "movie_companies__movie_id (primary CSR)", "purpose": "per-movie US-company check"},
+    {"index": "cast_info__movie_id (primary CSR)", "purpose": "per-movie expansion to person_ids"},
+    {"index": "name.name.sortorder (storage extension)", "purpose": "find MIN(name) by first sorted-order hit instead of 258K random varlen reads"}
+  ],
+  "aggregation": "scalar_min_varlen_via_sorted_first_match",
+  "output": {"columns": ["MIN(n.name) AS member_in_charnamed_movie"], "order_by": [], "limit": 1},
+  "execution_target": "cpp",
+  "optimization_notes": "Iter 0 spent 46.5ms / 62ms in main_scan, dominated by ~258K random reads of name/name.{off,dat} for the running MIN aggregate. Root cause (Q2): name varlen reads are random-access into name.off (33 MB) and name.dat (60 MB), both far exceeding the 12 MB L3 — every name lookup is a cache miss chain. Fix (Category E, storage extension): built name.name.sortorder = int32[N_name] of row indices in lex-ascending name order (~644 ms one-time build, 16 MB file, reusable by any query needing MIN/MAX/top-K of name.name). The revised plan separates the join into two phases: (1) the join pipeline now writes survivors into a candidate_pid bitset (~520 KB, fits L2) instead of doing per-row name MIN updates; (2) MIN is computed by sequentially scanning sortorder and stopping at the first row whose person_id is in the bitset. With ~258K candidate pids out of 4.17M names, the expected first-hit position is ~16, so the MIN phase collapses from ~30 ms of random varlen access to a handful of sequential reads.",
+  "correctness_anchors": {}
+}

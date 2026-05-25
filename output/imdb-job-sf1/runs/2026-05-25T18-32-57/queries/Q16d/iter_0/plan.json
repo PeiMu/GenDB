@@ -1,0 +1,148 @@
+{
+  "query_id": "Q16d",
+  "pipeline": [
+    "resolve_dim_literals",
+    "build_cn_us_bitset",
+    "drive_movie_keyword_aux_csr",
+    "filter_title_episode_nr",
+    "semi_join_mc_us",
+    "expand_cast_info",
+    "semi_join_aka_name",
+    "aggregate_min"
+  ],
+  "dimension_literal_resolution": [
+    {
+      "dim": "keyword",
+      "text_col": "keyword",
+      "literal": "%(keyword_eq)s",
+      "default_literal": "character-name-in-title",
+      "scan": "linear over keyword/keyword.off + keyword/keyword.dat, take keyword/id.bin at matching row",
+      "output": "target_kw_id (int32, ~117 for default)",
+      "note": "single matching row expected; first-match early exit"
+    },
+    {
+      "dim": "company_name.country_code",
+      "encoding": "dictionary",
+      "dict_files": ["company_name/country_code.dict.off (uint64[n+1])", "company_name/country_code.dict.dat"],
+      "code_file": "company_name/country_code.bin (int16[N_cn])",
+      "literal": "%(country_code_eq)s",
+      "default_literal": "[us]",
+      "scan": "linear over dict entries to find matching dict_idx; this is the int16 code stored in country_code.bin",
+      "output": "us_code (int16, 1 for default; dict has ~215 entries)"
+    }
+  ],
+  "build_phase": [
+    {
+      "name": "cn_us_bitset",
+      "structure": "bitset(max_company_id+1) ~= bitset(234997)",
+      "build": "scan company_name/country_code.bin; for each r where cc[r]==us_code, set bit at company_name/id.bin[r]",
+      "expected_set_bits": 9775,
+      "purpose": "O(1) membership test for mc.company_id"
+    }
+  ],
+  "join_order": [
+    {
+      "step": 1,
+      "build": "keyword (literal lookup)",
+      "probe": "movie_keyword via aux CSR on keyword_id",
+      "type": "inner",
+      "strategy": "aux_csr_range_scan",
+      "index": "_idx/movie_keyword__keyword_id__offsets.bin (int32[max_kw+2]) + _idx/movie_keyword__keyword_id__rowids.bin (int32[N_mk])",
+      "expected_rows": 41840,
+      "notes": "single keyword id → contiguous rowid range; yields candidate movie_ids (with dups)"
+    },
+    {
+      "step": 2,
+      "build": "title (PK + episode_nr filter)",
+      "probe": "candidate movie_id from step 1",
+      "type": "inner",
+      "strategy": "pk_pos_lookup_then_filter",
+      "index": "_idx/title__id__pos.bin (int32[max_id+2])",
+      "filter": "title.episode_nr >= 5 AND title.episode_nr < 100",
+      "expected_rows": 5382,
+      "notes": "for each mk movie_id v: row = title_pos[v]; if row>=0 and episode_nr[row] in [5,100), keep"
+    },
+    {
+      "step": 3,
+      "build": "cn_us_bitset",
+      "probe": "movie_companies via primary CSR on movie_id, semi-join on company_id in cn[us]",
+      "type": "semi",
+      "strategy": "primary_csr_range_scan + bitset_membership",
+      "index": "_idx/movie_companies__movie_id__offsets.bin (int32[max_movie_id+2])",
+      "filter_inner": "cn_us_bitset[mc.company_id[k]]",
+      "expected_rows": 88,
+      "notes": "first hit per movie is enough (EXISTS semantics for the conjunctive join)"
+    },
+    {
+      "step": 4,
+      "build": "cast_info via primary CSR on movie_id",
+      "probe": "surviving movie_ids",
+      "type": "inner",
+      "strategy": "primary_csr_range_scan",
+      "index": "_idx/cast_info__movie_id__offsets.bin (int32[max_movie_id+2])",
+      "expected_rows_per_movie_avg": "~14 (36M/2.5M); 88 surviving movies × avg fan-out ≈ 1k-10k ci rows",
+      "notes": "produce (movie_id, person_id) pairs"
+    },
+    {
+      "step": 5,
+      "build": "aka_name primary CSR on person_id",
+      "probe": "person_id from cast_info",
+      "type": "inner",
+      "strategy": "primary_csr_range_scan",
+      "index": "_idx/aka_name__person_id__offsets.bin (int32[max_person_id+2])",
+      "filter_inner": "range non-empty (aka_name row exists)",
+      "notes": "for MIN(an.name), iterate ALL aka_name rows in the range (cannot early-exit because a later row could be lex-smaller). Join an.person_id = n.id = ci.person_id collapses since aka_name and cast_info share person_id directly; the name table is only used as a connector and has no projected columns or filters, so it does not need to be probed (every ci.person_id corresponds to a valid name.id by FK)."
+    }
+  ],
+  "filters": [
+    {"table": "keyword", "predicate": "keyword = '%(keyword_eq)s'", "selectivity": "1/134170", "applied_via": "literal resolution"},
+    {"table": "company_name", "predicate": "country_code = '%(country_code_eq)s'", "selectivity": 0.0416, "applied_via": "dict code equality + bitset build"},
+    {"table": "title", "predicate": "episode_nr >= 5 AND episode_nr < 100", "selectivity": 0.274, "applied_via": "per-row check after PK-pos lookup"}
+  ],
+  "data_structures": {
+    "cn_us_bitset": "bitset(max_company_id+1) ~ 234,997 bits (~30KB; fits L1)",
+    "kw_target_id": "int32 scalar",
+    "us_code": "int16 scalar",
+    "title_pos_index": "mmap'd int32 array (existing index file, ~10MB)",
+    "csr_offsets": "mmap'd int32 arrays (existing index files)",
+    "csr_rowids": "mmap'd int32 array (movie_keyword aux, ~17MB)",
+    "aggregation": "two scalar running mins as std::string (one for an.name, one for t.title)"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven over movie_keyword aux-CSR range for keyword=target",
+    "morsel_size": 4096,
+    "threads": "auto(nproc) = 12",
+    "reduction": "per-thread local (min_name, min_title), final lex-min reduction across threads",
+    "notes": "Range is only 41,840 rowids — single-threaded would also work in <50ms on warm cache. Use parallelism for safety against cold cache (hdd) since random index probes can stall."
+  },
+  "indexes": [
+    {"index": "_idx/movie_keyword__keyword_id__offsets.bin + __rowids.bin", "purpose": "drive: select mk rows for target keyword (aux CSR)"},
+    {"index": "_idx/title__id__pos.bin", "purpose": "map movie_id → title row to read episode_nr and title text"},
+    {"index": "_idx/movie_companies__movie_id__offsets.bin", "purpose": "for each candidate movie, scan mc rows to test cn[us] semi-join"},
+    {"index": "_idx/cast_info__movie_id__offsets.bin", "purpose": "for each surviving movie, scan ci rows to obtain person_ids"},
+    {"index": "_idx/aka_name__person_id__offsets.bin", "purpose": "for each person_id, scan aka_name rows for MIN(name)"}
+  ],
+  "aggregation": "scalar_min_two_columns",
+  "output": {
+    "columns": ["MIN(an.name) AS cool_actor_pseudonym", "MIN(t.title) AS series_named_after_char"],
+    "order_by": [],
+    "limit": null,
+    "row_count": 1
+  },
+  "io_notes": {
+    "hdd": true,
+    "hot_columns": [
+      "movie_keyword/keyword_id.bin (sequential scan via aux CSR rowid order is random, but only 41,840 reads)",
+      "movie_keyword/movie_id.bin (random via aux rowid; 41,840 reads)",
+      "title/episode_nr.bin (random via title_pos; up to ~41,840 reads)",
+      "movie_companies/company_id.bin (sequential within CSR range per movie; small ranges)",
+      "cast_info/person_id.bin (sequential within CSR range per movie; up to ~10k reads total)",
+      "aka_name/name.{off,dat} (only for surviving person_ids; tiny)",
+      "title/title.{off,dat} (only for 88 surviving movies; tiny)"
+    ],
+    "advise": "madvise MADV_RANDOM on title_pos and CSR offset/rowid arrays; MADV_SEQUENTIAL on column files within CSR scans (negligible benefit on hdd given small range sizes)"
+  },
+  "memory_estimate_mb": 50,
+  "expected_runtime_class": "milliseconds to low-seconds (88 surviving movies, ≤10k inner rows, varlen reads minimal)",
+  "execution_target": "cpp"
+}

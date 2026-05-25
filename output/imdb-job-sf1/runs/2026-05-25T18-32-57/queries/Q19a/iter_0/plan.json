@@ -1,0 +1,130 @@
+{
+  "query_id": "Q19a",
+  "pipeline": [
+    "resolve_literals",
+    "prefilter_name",
+    "build_aka_name_person_bitset",
+    "prefilter_company_name_us_bitset",
+    "prefilter_title_year",
+    "drive_title_probe_facts",
+    "aggregate_min"
+  ],
+  "literal_resolution": [
+    {
+      "dim": "role_type",
+      "text_col": "role",
+      "literal": "actress",
+      "output": "actress_role_id (int32)"
+    },
+    {
+      "dim": "info_type",
+      "text_col": "info",
+      "literal": "release dates",
+      "output": "release_dates_info_type_id (int32)"
+    }
+  ],
+  "prefilters": [
+    {
+      "name": "name_filter",
+      "table": "name",
+      "predicate": "gender == 'f' AND name LIKE '%Ang%'",
+      "output": "name_id_bitset (bitset over name.id, size = max_name_id+1) AND parallel name_row_for_id map via name__id__pos",
+      "selectivity_est": 0.001,
+      "notes": "Scan name parallel: read gender byte first (fast filter), then memmem 'Ang' on name varlen. Insert n.id into bitset. Also remember row position so we can read MIN(n.name) later."
+    },
+    {
+      "name": "aka_name_person_bitset",
+      "table": "aka_name",
+      "predicate": "person_id in name_id_bitset (i.e., person exists in aka_name AND survived name filter)",
+      "output": "aka_person_bitset over name.id space",
+      "notes": "Scan aka_name/person_id.bin once: if person_id in name_id_bitset, set aka_person_bitset[person_id]. Used to enforce n.id = an.person_id (semi-join with aka_name)."
+    },
+    {
+      "name": "company_us_bitset",
+      "table": "company_name",
+      "predicate": "country_code == '[us]'",
+      "output": "company_us_bitset over company_name.id space (size = max_company_id+1)",
+      "selectivity_est": 0.35,
+      "notes": "Scan company_name; for matching rows set bitset[id]=1. Used to test mc.company_id at probe time."
+    },
+    {
+      "name": "title_year_filter",
+      "table": "title",
+      "predicate": "production_year BETWEEN 2005 AND 2009",
+      "output": "list of title rows (id, row_pos) surviving — drives outer loop",
+      "selectivity_est": 0.08,
+      "notes": "~200k titles survive."
+    }
+  ],
+  "join_order": [
+    {
+      "build": "title(year filtered) ~200k driver",
+      "probe": "movie_companies via primary CSR on movie_id",
+      "type": "inner",
+      "strategy": "primary_csr_range_scan",
+      "build_cardinality": 200000,
+      "notes": "For each surviving title.id v, iterate mc rows in [mc_off[v], mc_off[v+1]). Apply mc.note NOT NULL AND (LIKE '%(USA)%' OR LIKE '%(worldwide)%') AND mc.company_id in company_us_bitset. Skip title if no mc survives."
+    },
+    {
+      "build": "title (post mc filter)",
+      "probe": "movie_info via primary CSR on movie_id",
+      "type": "inner",
+      "strategy": "primary_csr_range_scan",
+      "build_cardinality": 50000,
+      "notes": "For each surviving title.id v, iterate mi rows in [mi_off[v], mi_off[v+1]). Apply mi.info_type_id == release_dates_info_type_id AND mi.info NOT NULL AND (LIKE 'Japan:%200%' OR LIKE 'USA:%200%'). Skip title if no mi survives."
+    },
+    {
+      "build": "title (post mi filter)",
+      "probe": "cast_info via primary CSR on movie_id",
+      "type": "inner",
+      "strategy": "primary_csr_range_scan",
+      "build_cardinality": 20000,
+      "notes": "For each surviving title.id v, iterate ci rows in [ci_off[v], ci_off[v+1]). Apply ci.role_id == actress_role_id AND ci.note IN voice_set AND ci.person_role_id >= 0 AND ci.person_id in name_id_bitset AND ci.person_id in aka_person_bitset. Read ci.note via offsets; compare against fixed 4-string set."
+    },
+    {
+      "build": "char_name dim",
+      "probe": "ci.person_role_id",
+      "type": "semi",
+      "strategy": "pk_pos_lookup",
+      "build_cardinality": 3140339,
+      "notes": "Use char_name__id__pos: row = pos[person_role_id]; require row >= 0. (person_role_id may be NULL/-1 — exclude.)"
+    }
+  ],
+  "filters": [
+    {"table": "title", "predicate": "production_year BETWEEN 2005 AND 2009", "selectivity": 0.08},
+    {"table": "name", "predicate": "gender='f' AND name LIKE '%Ang%'", "selectivity": 0.001},
+    {"table": "company_name", "predicate": "country_code='[us]'", "selectivity": 0.35},
+    {"table": "movie_companies", "predicate": "note NOT NULL AND (LIKE '%(USA)%' OR LIKE '%(worldwide)%') AND company_id in us_set", "selectivity": 0.1},
+    {"table": "movie_info", "predicate": "info_type_id=release_dates AND info NOT NULL AND (LIKE 'Japan:%200%' OR LIKE 'USA:%200%')", "selectivity": 0.005},
+    {"table": "cast_info", "predicate": "role_id=actress AND note IN voice_set AND person_id in filtered_name_set AND person_role_id valid", "selectivity": 0.0005}
+  ],
+  "data_structures": {
+    "name_id_set": "bitset over name.id space (max ~6M) — fast set membership test on ci.person_id",
+    "aka_person_bitset": "bitset over name.id space — semi-join with aka_name",
+    "company_us_bitset": "bitset over company_name.id space (max ~250k)",
+    "voice_note_set": "small inline match: 4 string_view literals compared by length-then-memcmp",
+    "name_row_lookup": "use name__id__pos to recover name row from ci.person_id for reading n.name in aggregate",
+    "aggregation": "two running mins (string_view) — single-row scalar aggregate, no hash table needed"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven_over_title",
+    "threads": "auto(nproc)",
+    "notes": "Partition the surviving title list across 12 threads. Each thread maintains thread-local MIN(n.name), MIN(t.title); merge at end. Prefilters (name scan, aka_name scan, company_name scan, title year scan) also run parallel over their row ranges."
+  },
+  "indexes": [
+    {"index": "movie_companies__movie_id (primary CSR)", "purpose": "join_lookup mc by title.id"},
+    {"index": "movie_info__movie_id (primary CSR)", "purpose": "join_lookup mi by title.id"},
+    {"index": "cast_info__movie_id (primary CSR)", "purpose": "join_lookup ci by title.id"},
+    {"index": "char_name__id__pos", "purpose": "semi-join existence test for ci.person_role_id"},
+    {"index": "name__id__pos", "purpose": "fetch name row for MIN(n.name) projection from ci.person_id"},
+    {"index": "title__id__pos", "purpose": "(optional) confirm title row position; titles already scanned linearly"}
+  ],
+  "aggregation": "scalar_min_two_columns",
+  "output": {
+    "columns": ["MIN(n.name) AS voicing_actress", "MIN(t.title) AS voiced_movie"],
+    "order_by": [],
+    "limit": 1
+  },
+  "execution_target": "cpp",
+  "notes": "Drive on title (smallest dimension after year filter). Outer-most filters reduce title to ~200k. For each title we probe three fact tables via their primary CSR (movie_id-sorted). The most selective predicates (mi LIKE pattern, ci.note IN voice_set, name filter) are pushed down into the inner CSR-range scans. The name+aka_name semi-join is pre-materialized as two bitsets over name.id space so the ci.person_id check is two O(1) bit tests. Anti/semi-join with char_name is a single pk_pos lookup. No hash join is required anywhere — every join is either a CSR range scan or a dense PK position lookup."
+}

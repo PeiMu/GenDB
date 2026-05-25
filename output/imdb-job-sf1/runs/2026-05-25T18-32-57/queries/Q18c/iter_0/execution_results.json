@@ -1,0 +1,24 @@
+{
+  "compile": {
+    "status": "pass"
+  },
+  "run": {
+    "status": "pass",
+    "duration_ms": 50
+  },
+  "validation": {
+    "status": "pass"
+  },
+  "optimization_target": "hot",
+  "timing_ms": 22.959999999999997,
+  "hot_timing_ms": 22.959999999999997,
+  "operation_timings": {
+    "data_loading": 0.12,
+    "dim_resolve": 0,
+    "gender_resolve": 0,
+    "build_gender_bitmap": 2.56,
+    "main_scan": 19.81,
+    "output": 0.13,
+    "total": 22.7
+  }
+}

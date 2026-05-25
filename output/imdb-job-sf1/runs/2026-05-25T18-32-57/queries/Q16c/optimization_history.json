@@ -1,0 +1,25 @@
+{
+  "query_id": "Q16c",
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 6.516666666666667,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 6.516666666666667,
+      "validation": "pass",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "data_loading": 0.53,
+        "build_us_company_bitset": 0.67,
+        "enumerate_movies": 1.16,
+        "main_scan": 4.01,
+        "output": 0.17,
+        "total": 6.6
+      }
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "query_id": "Q16d",
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 10.180000000000001,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 10.180000000000001,
+      "validation": "pass",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "resolve_literals": 0.01,
+        "build_cn_us_bitset": 0.66,
+        "filter_and_semi_join": 2.35,
+        "expand_and_aggregate": 6.43,
+        "output": 0.18,
+        "total": 10.2
+      }
+    }
+  ]
+}

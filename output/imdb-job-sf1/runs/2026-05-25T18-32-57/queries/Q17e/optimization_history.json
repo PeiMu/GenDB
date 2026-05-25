@@ -1,0 +1,46 @@
+{
+  "query_id": "Q17e",
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 61.79666666666666,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 61.79666666666666,
+      "validation": "pass",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "data_loading": 0,
+        "resolve_keyword": 0.01,
+        "resolve_country_code": 0,
+        "build_us_company_set": 0.59,
+        "build_name_pos": 1.3,
+        "fill_name_pos": 2.68,
+        "enumerate_candidate_movies": 1.01,
+        "sort_dedupe_candidates": 0.27,
+        "main_scan": 46.53,
+        "output": 0.15,
+        "total": 61.16
+      }
+    },
+    {
+      "iteration": 1,
+      "improved": true,
+      "categories": [],
+      "timing_ms": 12.003333333333332,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 12.003333333333332,
+      "validation": "pass",
+      "strategy": "Iter 0 spent 46.5ms / 62ms in main_scan, dominated by ~258K random reads of name/name.{off,dat} for the running MIN aggregate. Root cause (Q2): name varlen reads are random-access into name.off (33 MB) and name.dat (60 MB), both far exceeding the 12 MB L3 — every name lookup is a cache miss chain. Fix (Category E, storage extension): built name.name.sortorder = int32[N_name] of row indices in lex-ascending name order (~644 ms one-time build, 16 MB file, reusable by any query needing MIN/MAX/top-K of name.name). The revised plan separates the join into two phases: (1) the join pipeline now writes survivors into a candidate_pid bitset (~520 KB, fits L2) instead of doing per-row name MIN updates; (2) MIN is computed by sequentially scanning sortorder and stopping at the first row whose person_id is in the bitset. With ~258K candidate pids out of 4.17M names, the expected first-hit position is ~16, so the MIN phase collapses from ~30 ms of random varlen access to a handful of sequential reads.",
+      "operation_timings": {
+        "data_loading": 0.1,
+        "main_scan": 11.66,
+        "output": 1.46,
+        "total": 13.25
+      }
+    }
+  ]
+}

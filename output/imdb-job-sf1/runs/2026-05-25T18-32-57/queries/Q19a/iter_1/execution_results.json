@@ -1,0 +1,25 @@
+{
+  "compile": {
+    "status": "pass"
+  },
+  "run": {
+    "status": "pass",
+    "duration_ms": 46
+  },
+  "validation": {
+    "status": "pass"
+  },
+  "optimization_target": "hot",
+  "timing_ms": 20.156666666666666,
+  "hot_timing_ms": 20.156666666666666,
+  "operation_timings": {
+    "data_loading": 0.86,
+    "aka_existence": 0.85,
+    "name_filter": 2.63,
+    "company_filter": 0.08,
+    "title_filter": 1.94,
+    "main_scan": 10.22,
+    "output": 0.16,
+    "total": 20.31
+  }
+}

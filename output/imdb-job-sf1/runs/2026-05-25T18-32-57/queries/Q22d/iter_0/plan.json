@@ -1,0 +1,108 @@
+{
+  "query_id": "Q22d",
+  "pipeline": [
+    "resolve_dim_literals",
+    "build_keyword_id_set",
+    "build_kind_id_set",
+    "build_cn_allowed_company_id_bitset",
+    "scan_title_driver_parallel",
+    "probe_mi_idx_csr_filter_rating_and_info_lt_85",
+    "probe_mk_csr_filter_keyword_in_set",
+    "probe_mi_csr_filter_countries_and_country_in_set",
+    "probe_mc_csr_filter_company_type_and_company_in_bitset",
+    "reduce_running_mins"
+  ],
+  "dimension_literal_resolution": [
+    {"dim": "info_type", "text_col": "info", "literal": "countries", "out": "it1_id"},
+    {"dim": "info_type", "text_col": "info", "literal": "rating",    "out": "it2_id"},
+    {"dim": "kind_type", "text_col": "kind", "literals": ["movie","episode"], "out": "kt_id_set"},
+    {"dim": "keyword",   "text_col": "keyword", "literals": ["murder","murder-in-title","blood","violence"], "out": "k_id_set"},
+    {"dim": "company_name", "text_col": "country_code", "predicate": "!= '[us]'", "out": "cn_allowed_bitset"}
+  ],
+  "join_order": [
+    {
+      "build": "kt_id_set (<=7 ids)",
+      "probe": "title.kind_id",
+      "type": "inner",
+      "strategy": "small_int_set_lookup",
+      "build_cardinality": 2,
+      "notes": "Combined with production_year>2005 to filter the driver"
+    },
+    {
+      "build": "title surviving driver",
+      "probe": "movie_info_idx via movie_id CSR",
+      "type": "semi",
+      "strategy": "primary_csr_range_scan",
+      "build_cardinality": 800000,
+      "notes": "Smallest fact (1.38M); filter inside range: info_type_id==it2_id AND info<'8.5'. Track min(mi_idx.info)."
+    },
+    {
+      "build": "k_id_set (4 ids)",
+      "probe": "movie_keyword via movie_id CSR (per surviving t.id)",
+      "type": "semi",
+      "strategy": "primary_csr_range_scan + small_int_set",
+      "build_cardinality": 4,
+      "notes": "Scan mk rows for that movie_id; require keyword_id in k_id_set."
+    },
+    {
+      "build": "it1_id + country_name_set (10 strings)",
+      "probe": "movie_info via movie_id CSR (per surviving t.id)",
+      "type": "semi",
+      "strategy": "primary_csr_range_scan",
+      "build_cardinality": 10,
+      "notes": "Filter inside range: info_type_id==it1_id AND info in set."
+    },
+    {
+      "build": "cn_allowed_bitset(max_company_id+1)",
+      "probe": "movie_companies via movie_id CSR (per surviving t.id)",
+      "type": "inner",
+      "strategy": "primary_csr_range_scan + bitset_lookup",
+      "build_cardinality": 234997,
+      "notes": "Filter inside range: company_type_id arbitrary (all 4 allowed since no ct filter) AND cn_allowed_bitset[company_id]==1. Track min(cn.name) via company_name__id__pos."
+    }
+  ],
+  "filters": [
+    {"table": "title", "predicate": "production_year > 2005", "selectivity": 0.20},
+    {"table": "title", "predicate": "kind_id IN (movie,episode)", "selectivity": 0.95},
+    {"table": "movie_info_idx", "predicate": "info_type_id == it2_id AND info < '8.5'", "selectivity": 0.45},
+    {"table": "movie_keyword", "predicate": "keyword_id IN k_id_set", "selectivity": 0.002},
+    {"table": "movie_info", "predicate": "info_type_id == it1_id AND info IN country_set", "selectivity": 0.003},
+    {"table": "movie_companies", "predicate": "cn_allowed_bitset[company_id]==1", "selectivity": 0.65},
+    {"table": "company_name", "predicate": "country_code != '[us]'", "selectivity": 0.65}
+  ],
+  "data_structures": {
+    "it1_id": "int32 scalar",
+    "it2_id": "int32 scalar",
+    "kt_id_set": "tiny std::array<int32,2> with linear compare",
+    "k_id_set": "tiny std::array<int32,4> with linear compare",
+    "country_name_set": "std::unordered_set<std::string_view> (10 elems, precomputed)",
+    "cn_allowed_bitset": "std::vector<uint8_t>(max_company_name_id+1) (~235K bytes)",
+    "min_cn_name": "thread-local std::string then reduce",
+    "min_mi_idx_info": "thread-local std::string then reduce",
+    "min_t_title": "thread-local std::string then reduce"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven over title row range",
+    "threads": "auto(nproc)",
+    "morsel_size": 16384,
+    "reduction": "per-thread running mins reduced at end"
+  },
+  "indexes": [
+    {"index": "indexes/movie_info_idx__movie_id__offsets.bin", "purpose": "csr range for mi_idx by movie_id"},
+    {"index": "indexes/movie_keyword__movie_id__offsets.bin", "purpose": "csr range for mk by movie_id"},
+    {"index": "indexes/movie_info__movie_id__offsets.bin", "purpose": "csr range for mi by movie_id"},
+    {"index": "indexes/movie_companies__movie_id__offsets.bin", "purpose": "csr range for mc by movie_id"},
+    {"index": "indexes/company_name__id__pos.bin", "purpose": "company_id -> row for reading cn.name"},
+    {"index": "indexes/title__id__pos.bin", "purpose": "not strictly needed; title scanned by row but id==row+1-style mapping unsafe — read id.bin sequentially"}
+  ],
+  "aggregation": "scalar_min_reduce_3cols",
+  "output": {"order_by": [], "limit": 1},
+  "early_exit": false,
+  "notes_on_ordering": [
+    "Probe mi_idx FIRST after the title filter: it has the strongest combined predicate (info_type=rating AND info<'8.5') applied inside the CSR range, eliminating most movies cheaply.",
+    "Then mk (keyword filter is highly selective ~0.002 across all mk rows but per surviving movie cheap).",
+    "Then mi (10-country IN set with info_type=countries).",
+    "Finally mc (least selective dim, plus bitset lookup) and read cn.name only for the row that updates the running min."
+  ],
+  "execution_target": "cpp"
+}

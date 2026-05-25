@@ -1,0 +1,47 @@
+{
+  "query_id": "Q19a",
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 67.55666666666667,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 67.55666666666667,
+      "validation": "pass",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "data_loading": 0.89,
+        "name_filter": 12.32,
+        "aka_filter": 3.84,
+        "company_filter": 0.08,
+        "title_filter": 1.95,
+        "main_scan": 10.16,
+        "output": 0.08,
+        "total": 32.9
+      }
+    },
+    {
+      "iteration": 1,
+      "improved": true,
+      "categories": [],
+      "timing_ms": 20.156666666666666,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 20.156666666666666,
+      "validation": "pass",
+      "strategy": "Category A (plan restructuring / work elimination). Diagnosis: the dominant phase (name_filter, 12ms of 68ms) ran an expensive memmem LIKE on all 4.17M name rows even though only ~14% have a matching aka_name row and could possibly contribute to the final join. The previous order built name_bits first and then derived aka_bits as a subset — doing the costly work on rows that were doomed to fail the aka_name semi-join anyway. New order: (1) scan aka_name/person_id.bin into aka_has bitset (~3.6MB sequential, ~1-2ms), (2) name filter gated as aka_has[id] && gender==code && LIKE — short-circuit ordering puts the cheapest tests first so memmem only runs for the rare survivor. The two bitsets collapse into one (name_bits encodes name predicate AND has-aka), so the inner ci loop does a single bitset probe instead of two. All other physical choices (primary-CSR range scans into the three fact tables, dense-id arithmetic for char_name existence and name-row recovery, thread-local MIN reduction) are preserved from iter_0 — they were not the bottleneck.",
+      "operation_timings": {
+        "data_loading": 0.86,
+        "aka_existence": 0.85,
+        "name_filter": 2.63,
+        "company_filter": 0.08,
+        "title_filter": 1.94,
+        "main_scan": 10.22,
+        "output": 0.16,
+        "total": 20.31
+      }
+    }
+  ]
+}

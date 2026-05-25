@@ -1,0 +1,26 @@
+{
+  "query_id": "Q18c",
+  "iterations": [
+    {
+      "iteration": 0,
+      "improved": true,
+      "categories": [
+        "initial"
+      ],
+      "timing_ms": 22.959999999999997,
+      "cold_timing_ms": null,
+      "hot_timing_ms": 22.959999999999997,
+      "validation": "pass",
+      "strategy": "initial implementation",
+      "operation_timings": {
+        "data_loading": 0.12,
+        "dim_resolve": 0,
+        "gender_resolve": 0,
+        "build_gender_bitmap": 2.56,
+        "main_scan": 19.81,
+        "output": 0.13,
+        "total": 22.7
+      }
+    }
+  ]
+}

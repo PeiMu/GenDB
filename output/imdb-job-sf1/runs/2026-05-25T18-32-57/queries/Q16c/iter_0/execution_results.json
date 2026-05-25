@@ -1,0 +1,23 @@
+{
+  "compile": {
+    "status": "pass"
+  },
+  "run": {
+    "status": "pass",
+    "duration_ms": 12
+  },
+  "validation": {
+    "status": "pass"
+  },
+  "optimization_target": "hot",
+  "timing_ms": 6.516666666666667,
+  "hot_timing_ms": 6.516666666666667,
+  "operation_timings": {
+    "data_loading": 0.53,
+    "build_us_company_bitset": 0.67,
+    "enumerate_movies": 1.16,
+    "main_scan": 4.01,
+    "output": 0.17,
+    "total": 6.6
+  }
+}

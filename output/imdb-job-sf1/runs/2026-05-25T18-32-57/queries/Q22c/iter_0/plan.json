@@ -1,0 +1,129 @@
+{
+  "query_id": "Q22c",
+  "pipeline": [
+    "resolve_dim_literals",
+    "build_keyword_id_set",
+    "build_kind_id_set",
+    "scan_title_driver",
+    "probe_movie_keyword_semi",
+    "probe_movie_info_semi",
+    "probe_movie_info_idx_filter",
+    "probe_movie_companies_filter_join_cn",
+    "aggregate_mins"
+  ],
+  "dimension_resolution": [
+    {
+      "alias": "it1",
+      "table": "info_type",
+      "text_col": "info",
+      "literal": "countries",
+      "output": "it1_id (scalar int32)"
+    },
+    {
+      "alias": "it2",
+      "table": "info_type",
+      "text_col": "info",
+      "literal": "rating",
+      "output": "it2_id (scalar int32)"
+    },
+    {
+      "alias": "kt",
+      "table": "kind_type",
+      "text_col": "kind",
+      "literals": ["movie", "episode"],
+      "output": "kt_id_set (small flat_array of int32, expect 2 ids)"
+    },
+    {
+      "alias": "k",
+      "table": "keyword",
+      "text_col": "keyword",
+      "literals": ["murder", "murder-in-title", "blood", "violence"],
+      "output": "k_id_set (flat_array of int32, expect ~4 ids)"
+    }
+  ],
+  "filters": [
+    {"table": "title", "predicate": "production_year > 2005", "selectivity": 0.30},
+    {"table": "title", "predicate": "kind_id IN kt_id_set", "selectivity": 0.95, "notes": "movie+episode dominate"},
+    {"table": "movie_keyword", "predicate": "keyword_id IN k_id_set", "selectivity": 0.0009, "notes": "~4 of 134k keywords; per-row inside CSR range"},
+    {"table": "movie_info", "predicate": "info_type_id == it1_id AND info IN country_set", "selectivity": "tiny"},
+    {"table": "movie_info_idx", "predicate": "info_type_id == it2_id AND info < '8.5'", "selectivity": "~0.4"},
+    {"table": "movie_companies", "predicate": "note NOT LIKE '%(USA)%' AND note LIKE '%(200%)%'", "selectivity": "small"},
+    {"table": "company_name", "predicate": "country_code != '[us]'", "selectivity": 0.85}
+  ],
+  "join_order": [
+    {
+      "build": "title (filtered: production_year>2005 AND kind_id in kt_id_set)",
+      "probe": "movie_keyword via primary CSR on movie_id",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "build_cardinality": 700000,
+      "notes": "Driver scan over title; CSR probe gives contiguous rows; semi-join exit on first row whose keyword_id is in k_id_set"
+    },
+    {
+      "build": "surviving title ids",
+      "probe": "movie_info via primary CSR on movie_id",
+      "type": "semi",
+      "strategy": "index_nested_loop",
+      "notes": "Per candidate movie_id, iterate CSR range; require info_type_id==it1_id AND info in country_set; early-exit on first match"
+    },
+    {
+      "build": "surviving title ids",
+      "probe": "movie_info_idx via primary CSR on movie_id",
+      "type": "inner",
+      "strategy": "index_nested_loop",
+      "notes": "Per candidate, iterate CSR range; require info_type_id==it2_id AND info<'8.5'; keep all matches because we need MIN(mi_idx.info) over surviving rows"
+    },
+    {
+      "build": "company_name (pre-scanned: country_code != '[us]' → bitset by row, plus pos[id]→row valid filter)",
+      "probe": "movie_companies via primary CSR on movie_id",
+      "type": "inner",
+      "strategy": "index_nested_loop_with_bitset_lookup",
+      "build_cardinality": 200000,
+      "notes": "Pre-scan company_name once: build bitset[N_cn] for country_code != '[us]'. For each candidate movie_id, iterate mc CSR range; apply note filters; map company_id → cn row via company_name__id__pos; test bitset; keep all surviving rows for MIN(cn.name)"
+    }
+  ],
+  "data_structures": {
+    "kt_id_set": "flat_array<int32> (2 elems) — linear scan",
+    "k_id_set": "flat_array<int32> (~4 elems) — linear scan",
+    "country_set": "std::unordered_set<std::string_view> with 10 country literals for mi.info test",
+    "cn_country_ok_bitset": "std::vector<uint8_t> size N_company_name (~235k bytes) — pre-scan once",
+    "title_driver": "sequential scan with morsel partitioning",
+    "fact_probes": "primary CSR offsets (mmap) — no hash tables built",
+    "dim_lookups": "pk_pos arrays (mmap) for company_name__id__pos, info_type__id__pos"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven over title rows",
+    "threads": "auto(nproc)",
+    "morsel_size": 16384,
+    "notes": "Per-thread local MIN(cn.name), MIN(mi_idx.info), MIN(t.title); merge at end with lexicographic min"
+  },
+  "indexes": [
+    {"index": "movie_keyword__movie_id (primary CSR)", "purpose": "join_lookup per title id"},
+    {"index": "movie_info__movie_id (primary CSR)", "purpose": "join_lookup per title id"},
+    {"index": "movie_info_idx__movie_id (primary CSR)", "purpose": "join_lookup per title id"},
+    {"index": "movie_companies__movie_id (primary CSR)", "purpose": "join_lookup per title id"},
+    {"index": "company_name__id__pos", "purpose": "id→row for cn.country_code and cn.name"},
+    {"index": "info_type__id__pos", "purpose": "literal id lookup (optional; resolution via direct scan)"}
+  ],
+  "execution_outline": [
+    "1. mmap all needed columns and indexes.",
+    "2. Resolve scalar/set ids: it1_id, it2_id, kt_id_set, k_id_set (linear scan of small dimension text columns).",
+    "3. Pre-scan company_name.country_code → cn_country_ok_bitset[N_cn] (true if !=  '[us]').",
+    "4. Build country_set unordered_set<string_view> for mi.info membership test.",
+    "5. Parallel morsel scan over title rows r in [0, N_title):",
+    "   a. Skip if production_year[r] <= 2005.",
+    "   b. Skip if title.kind_id[r] not in kt_id_set.",
+    "   c. tid = title.id[r].",
+    "   d. SEMI on movie_keyword: iterate CSR [mk_off[tid], mk_off[tid+1]); break-on-match where mk.keyword_id in k_id_set. If none, skip.",
+    "   e. SEMI on movie_info: iterate CSR [mi_off[tid], mi_off[tid+1]); break-on-match where mi.info_type_id==it1_id && mi.info in country_set. If none, skip.",
+    "   f. Walk movie_companies CSR [mc_off[tid], mc_off[tid+1]); for each row apply note LIKE '%(200%)%' AND NOT LIKE '%(USA)%'; lookup cn_row=company_name_pos[mc.company_id]; require cn_row>=0 && cn_country_ok_bitset[cn_row]; collect candidate mc rows (and cn_row).",
+    "   g. If no surviving mc rows, skip.",
+    "   h. Walk movie_info_idx CSR [midx_off[tid], midx_off[tid+1]); for each row require info_type_id==it2_id && info<'8.5'; collect surviving midx rows.",
+    "   i. If no surviving midx rows, skip.",
+    "   j. For each (surviving mc row, surviving midx row) -- conceptually cartesian within tid -- update thread-local mins: cn.name via company_name.name[cn_row], mi_idx.info via mi_idx.info[midx_row], title via title.title[r]. Since aggregates are MIN only, we just need min over distinct surviving rows: update min(cn.name) over surviving cn_rows, min(mi_idx.info) over surviving midx rows, min(t.title) once per surviving tid (guarded by both sides non-empty).",
+    "6. Reduce per-thread mins into final triple."
+  ],
+  "aggregation": "scalar_min_triple (no group by) — per-thread local MIN buffers reduced at end; early-exit NOT safe (lex min needs full scan of survivors)",
+  "output": {"order_by": [], "limit": 1, "shape": "single row: (MIN(cn.name), MIN(mi_idx.info), MIN(t.title))"},
+  "execution_target": "cpp"
+}

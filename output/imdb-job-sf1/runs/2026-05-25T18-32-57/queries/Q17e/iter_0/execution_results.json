@@ -1,0 +1,28 @@
+{
+  "compile": {
+    "status": "pass"
+  },
+  "run": {
+    "status": "pass",
+    "duration_ms": 64
+  },
+  "validation": {
+    "status": "pass"
+  },
+  "optimization_target": "hot",
+  "timing_ms": 61.79666666666666,
+  "hot_timing_ms": 61.79666666666666,
+  "operation_timings": {
+    "data_loading": 0,
+    "resolve_keyword": 0.01,
+    "resolve_country_code": 0,
+    "build_us_company_set": 0.59,
+    "build_name_pos": 1.3,
+    "fill_name_pos": 2.68,
+    "enumerate_candidate_movies": 1.01,
+    "sort_dedupe_candidates": 0.27,
+    "main_scan": 46.53,
+    "output": 0.15,
+    "total": 61.16
+  }
+}

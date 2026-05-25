@@ -1,0 +1,36 @@
+{
+  "version": 2,
+  "created_by_run": "2026-05-25T18-32-57",
+  "created_at": "2026-05-25T19:03:07.633Z",
+  "source_iteration": "iter_0",
+  "storage_deps": [
+    "keyword/id.bin",
+    "company_name/country_code.bin",
+    "company_name/id.bin",
+    "_idx/movie_keyword__keyword_id__offsets.bin",
+    "_idx/movie_keyword__keyword_id__rowids.bin",
+    "movie_keyword/movie_id.bin",
+    "_idx/movie_companies__movie_id__offsets.bin",
+    "movie_companies/company_id.bin",
+    "_idx/cast_info__movie_id__offsets.bin",
+    "cast_info/person_id.bin",
+    "_idx/aka_name__person_id__offsets.bin",
+    "title/episode_nr.bin"
+  ],
+  "hardware_results": {
+    "5825bbdaf7d0": {
+      "fingerprint": {
+        "cpu_cores": 12,
+        "simd": "avx2",
+        "total_memory_gb": 63,
+        "disk_type": "hdd",
+        "l3_cache_mb": 12
+      },
+      "hot_ms": 6.516666666666667,
+      "cold_ms": null,
+      "validated": true,
+      "validated_at": "2026-05-25T19:03:07.633Z",
+      "validated_by_run": "2026-05-25T18-32-57"
+    }
+  }
+}

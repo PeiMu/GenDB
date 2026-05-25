@@ -1,0 +1,124 @@
+{
+  "query_id": "Q21c",
+  "pipeline": [
+    "resolve_dim_literals",
+    "filter_company_name_bitset",
+    "drive_movie_link_by_link_type",
+    "for_each_candidate_movie_probe_facts",
+    "aggregate_mins"
+  ],
+  "dimension_resolution": [
+    {
+      "dim": "link_type",
+      "predicate": "link LIKE '%follow%'",
+      "produces": "vector<int32_t> link_type_ids (expected 2-4 of 18)",
+      "method": "scan link_type/link.{offsets,data}.bin, memmem '%follow%', collect link_type/id.bin[r]"
+    },
+    {
+      "dim": "keyword",
+      "predicate": "keyword = 'sequel'",
+      "produces": "int32_t keyword_id (single)",
+      "method": "scan keyword/keyword.{offsets,data}.bin for exact 'sequel', read keyword/id.bin[r]"
+    },
+    {
+      "dim": "company_type",
+      "predicate": "kind = 'production companies'",
+      "produces": "int32_t company_type_id (single, of 4 rows)",
+      "method": "scan company_type/kind.{offsets,data}.bin for exact match, read company_type/id.bin[r]"
+    },
+    {
+      "dim": "company_name",
+      "predicate": "country_code != '[pl]' AND (name LIKE '%Film%' OR name LIKE '%Warner%')",
+      "produces": "bitset over company_name row positions (and parallel set of cn.id allowed)",
+      "method": "single scan over 234,997 rows; for surviving rows set both bitset_by_rowpos and a uint8_t allowed_by_id[max_company_id+1] flag for O(1) lookup from mc.company_id",
+      "estimated_survivors": 8000
+    }
+  ],
+  "join_order": [
+    {
+      "step": 1,
+      "build": "movie_link rows for link_type_ids (via aux CSR movie_link__link_type_id)",
+      "probe": "(driver)",
+      "type": "inner",
+      "strategy": "aux_csr_lookup",
+      "build_cardinality": "~2000-6000 movie_link rows out of 29997",
+      "notes": "Driver. Each row gives a movie_id. Dedup is not required because subsequent join semantics already allow duplicates; collect into vector<int32_t> candidate_movie_ids and dedup with sort+unique for efficiency."
+    },
+    {
+      "step": 2,
+      "build": "title.production_year filter on candidate movie ids",
+      "probe": "for each candidate_movie_id v, fetch title row via indexes/title__id__pos.bin; check 1950 <= production_year <= 2010",
+      "type": "inner",
+      "strategy": "pk_pos_lookup + range check",
+      "selectivity": 0.7,
+      "notes": "Survivors retain (title_rowpos, movie_id)"
+    },
+    {
+      "step": 3,
+      "build": "movie_info IN-list semi-join",
+      "probe": "primary CSR movie_info__movie_id for v -> scan movie_info/info varlen; test against unordered_set of 9 literals",
+      "type": "semi",
+      "strategy": "primary_csr_probe + hash_set_membership",
+      "selectivity": 0.2,
+      "notes": "Hash set built once over 9 literals at query start. Short-circuit on first hit per movie."
+    },
+    {
+      "step": 4,
+      "build": "movie_keyword semi-join on keyword_id == sequel_id",
+      "probe": "primary CSR movie_keyword__movie_id for v -> scan keyword_id, test == sequel_id",
+      "type": "semi",
+      "strategy": "primary_csr_probe + scalar_equality",
+      "selectivity": 0.02,
+      "notes": "Short-circuit on first match"
+    },
+    {
+      "step": 5,
+      "build": "movie_companies rows matching note IS NULL, company_type_id == ct_id, allowed_by_id[company_id]",
+      "probe": "primary CSR movie_companies__movie_id for v -> scan mc rows applying all 3 predicates",
+      "type": "inner",
+      "strategy": "primary_csr_probe + inline_filters",
+      "notes": "For surviving mc rows we still need company_name.name for MIN aggregate -> use company_name__id__pos to map mc.company_id -> cn rowpos -> read cn/name varlen."
+    }
+  ],
+  "filters": [
+    {"table": "company_name", "predicate": "country_code != '[pl]'", "selectivity": 0.85},
+    {"table": "company_name", "predicate": "name LIKE '%Film%' OR name LIKE '%Warner%'", "selectivity": 0.04},
+    {"table": "company_type", "predicate": "kind = 'production companies'", "selectivity": 0.25},
+    {"table": "keyword", "predicate": "keyword = 'sequel'", "selectivity": "1 of 134170"},
+    {"table": "link_type", "predicate": "link LIKE '%follow%'", "selectivity": "~3 of 18"},
+    {"table": "movie_companies", "predicate": "note IS NULL (note_off[r+1]==note_off[r])", "selectivity": 0.55},
+    {"table": "movie_info", "predicate": "info IN (9 literals)", "selectivity": 0.02},
+    {"table": "title", "predicate": "production_year BETWEEN 1950 AND 2010", "selectivity": 0.7}
+  ],
+  "data_structures": {
+    "link_type_ids": "small std::vector<int32_t> (<=18)",
+    "candidate_movie_ids": "std::vector<int32_t> sorted+unique from movie_link aux CSR",
+    "company_name_allowed_by_id": "std::vector<uint8_t>(max_company_id+1) flag array — 0/1 membership for O(1) test from mc.company_id",
+    "movie_info_literal_set": "std::unordered_set<std::string_view> of 9 country/language literals (constructed once)",
+    "running_mins": "three std::string locals (min_cn_name, min_lt_link, min_title); init to sentinel high; lex-min update"
+  },
+  "parallelism": {
+    "strategy": "single_thread",
+    "threads": 1,
+    "rationale": "Driver set is small (~2-6k candidate movies after movie_link aux probe). Per-movie work is a handful of small CSR probes. Parallel overhead would exceed the work. Use single thread to avoid mutex contention on the three running min strings."
+  },
+  "indexes": [
+    {"index": "movie_link__link_type_id (aux CSR)", "purpose": "driver: link_type_id -> movie_link rows -> movie_ids"},
+    {"index": "title__id__pos", "purpose": "movie_id -> title rowpos for production_year + title varlen"},
+    {"index": "movie_info__movie_id (primary CSR)", "purpose": "movie_id -> mi row range for IN-list semi-join"},
+    {"index": "movie_keyword__movie_id (primary CSR)", "purpose": "movie_id -> mk row range for keyword semi-join"},
+    {"index": "movie_companies__movie_id (primary CSR)", "purpose": "movie_id -> mc row range for note/company_type_id/company_id filters"},
+    {"index": "company_name__id__pos", "purpose": "mc.company_id -> cn rowpos to read cn.name for MIN"},
+    {"index": "link_type__id__pos", "purpose": "ml.link_type_id -> lt rowpos to read lt.link for MIN (within link_type_ids set)"}
+  ],
+  "aggregation": "scalar_min_three_columns_no_groupby",
+  "output": {"order_by": [], "limit": 1, "columns": ["MIN(cn.name)", "MIN(lt.link)", "MIN(t.title)"]},
+  "execution_notes": [
+    "Order of per-candidate semi-join probes: cheapest+most-selective first. Recommended per-movie order: (a) production_year range (single int compare via title__id__pos), (b) movie_keyword sequel check (typically <=10 mk rows per title), (c) movie_info IN-list (avg ~6 mi rows per title), (d) movie_companies full check (which also yields company_name + link_type lookups for MIN).",
+    "For MIN aggregates we cannot early-exit per movie because a later movie may produce a lex-smaller string. However within a single movie's mc rows, after the first valid (movie, mc, ml) combination we still must enumerate ALL ml rows of this movie (filtered by link_type_ids) and ALL valid mc rows to update all three mins.",
+    "ml-side MIN(lt.link): for each candidate movie that passes everything else, enumerate movie_link rows (primary CSR movie_link__movie_id[v]) whose link_type_id is in link_type_ids; for each, look up lt.link via link_type__id__pos and update min.",
+    "Avoid hardcoding any dimension id constant — resolve at runtime per Dimension Literal Resolution section.",
+    "All column files mmap'd read-only at startup."
+  ],
+  "execution_target": "cpp"
+}

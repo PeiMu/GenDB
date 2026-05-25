@@ -1,0 +1,117 @@
+{
+  "query_id": "Q17e",
+  "pipeline": [
+    "resolve_dim_literals",
+    "build_us_company_set",
+    "drive_movies_from_keyword_aux_csr",
+    "filter_movies_by_us_company",
+    "probe_cast_info_for_persons",
+    "lookup_name_and_aggregate_min"
+  ],
+  "join_order": [
+    {
+      "step": 1,
+      "operation": "resolve_keyword_literal",
+      "table": "keyword",
+      "predicate": "k.keyword = 'character-name-in-title'",
+      "strategy": "linear_scan_varlen_text",
+      "output": "kw_id (int32, single value)",
+      "build_cardinality": 1,
+      "notes": "Scan keyword/keyword.{off,dat}; read keyword/id.bin at match. ~134k rows, single pass."
+    },
+    {
+      "step": 2,
+      "build": "company_name(filtered country_code='[us]')",
+      "probe": "movie_companies via company_id",
+      "type": "semi",
+      "strategy": "hash_set_int32",
+      "build_cardinality": 9775,
+      "operation": "build_us_company_set",
+      "notes": "country_code is dict-encoded int16; resolve '[us]' dict id via country_code.dict.{off,dat}, then scan country_code.bin (int16[Ncn]) and collect company_name.id where == us_dict_id. Use std::unordered_set<int32_t> sized ~10k, or a bitset(max_company_id+1) since max_company_id <= 234997 (~30KB bitset). Prefer bitset for O(1) lookup."
+    },
+    {
+      "step": 3,
+      "build": "movie_keyword aux CSR bucket for kw_id",
+      "probe": "title (driver loop)",
+      "type": "semi",
+      "strategy": "aux_csr_lookup",
+      "build_cardinality": 41840,
+      "operation": "enumerate_candidate_movies",
+      "notes": "Use indexes/movie_keyword__keyword_id__{offsets,rowids}.bin. Range [off[kw_id], off[kw_id+1]) gives 41,840 mk rows; read movie_keyword/movie_id.bin at each rowid. Dedupe is essentially a no-op (~99.95% unique); collecting into a std::vector<int32_t> is fine."
+    },
+    {
+      "step": 4,
+      "build": "us_company_set",
+      "probe": "movie_companies via primary CSR on movie_id",
+      "type": "semi",
+      "strategy": "primary_csr_probe_then_set_lookup",
+      "build_cardinality": 9775,
+      "operation": "filter_movies_by_us_company",
+      "notes": "For each candidate movie_id, use indexes/movie_companies__movie_id__offsets.bin to get [lo,hi). Scan movie_companies/company_id.bin[lo..hi) and short-circuit if any company_id is in us_company_set. Output: ~4,377 surviving movie_ids."
+    },
+    {
+      "step": 5,
+      "build": "(none — surviving movies)",
+      "probe": "cast_info via primary CSR on movie_id",
+      "type": "inner",
+      "strategy": "primary_csr_probe",
+      "build_cardinality": 4377,
+      "operation": "expand_cast_info_for_movies",
+      "notes": "For each surviving movie_id, use indexes/cast_info__movie_id__offsets.bin to read [lo,hi) of cast_info/person_id.bin. Total ~258,755 person_ids produced."
+    },
+    {
+      "step": 6,
+      "build": "name id-position index",
+      "probe": "name via pk_pos lookup",
+      "type": "inner",
+      "strategy": "pk_pos_lookup",
+      "build_cardinality": 4167491,
+      "operation": "lookup_name_for_person_id",
+      "notes": "Use indexes/name__id__pos.bin (int32[max_id+2]). For each person_id pid: row = pos[pid]; if row >= 0, read name/name.{off,dat} at row and update running MIN."
+    }
+  ],
+  "filters": [
+    {
+      "table": "keyword",
+      "predicate": "keyword = 'character-name-in-title'",
+      "selectivity": "1 of ~134k",
+      "notes": "Single dimension row resolves to kw_id (observed: 117)."
+    },
+    {
+      "table": "company_name",
+      "predicate": "country_code = '[us]'",
+      "selectivity": "9775 / 234997 ≈ 4.16%",
+      "notes": "Dict-encoded int16 column; resolve dict id once, then linear scan."
+    },
+    {
+      "table": "movie_companies",
+      "predicate": "company_id IN us_company_set",
+      "selectivity": "applied per-movie short-circuit",
+      "notes": "Bitset on company_id makes this O(rows_in_movie) with cheap probes."
+    }
+  ],
+  "data_structures": {
+    "us_company_set": "bitset(max_company_id+1) ≈ 30 KB (preferred over hash_set for cache locality and zero allocation churn)",
+    "candidate_movie_ids": "std::vector<int32_t> reserve(45000)",
+    "surviving_movie_ids": "std::vector<int32_t> reserve(5000) (optional intermediate; can fuse step 4 into step 5)",
+    "aggregation": "single scalar: std::string_view running_min (initially empty/unset); lexicographic compare on each lookup"
+  },
+  "parallelism": {
+    "strategy": "morsel_driven over candidate_movie_ids",
+    "threads": "auto(nproc) — but workload is small (~4.4k surviving movies, ~260k name lookups). Recommend single-threaded execution to avoid synchronization overhead; if parallelized, partition candidate_movie_ids across threads and reduce per-thread running mins at the end.",
+    "recommendation": "single_thread"
+  },
+  "indexes": [
+    {"index": "movie_keyword__keyword_id (aux CSR)", "purpose": "driver: enumerate candidate movie_ids for kw"},
+    {"index": "movie_companies__movie_id (primary CSR)", "purpose": "per-movie probe for US-company filter"},
+    {"index": "cast_info__movie_id (primary CSR)", "purpose": "per-movie expansion to person_ids"},
+    {"index": "name__id__pos (pk_pos_dense)", "purpose": "person_id -> name row position for MIN(name)"}
+  ],
+  "aggregation": "scalar_min_varlen",
+  "output": {"columns": ["MIN(n.name) AS member_in_charnamed_movie"], "order_by": [], "limit": 1},
+  "fusion_notes": [
+    "Fuse step 4 and step 5: for each candidate movie_id, do the US-company short-circuit check, and on success immediately probe cast_info and update MIN inline (no intermediate surviving_movie_ids vector needed).",
+    "Reading name.name varlen is the costliest per-row operation; running MIN compare is cheap (varlen string_view lex compare). No early-exit possible since MIN over unsorted lex strings can be improved by any later row."
+  ],
+  "execution_target": "cpp"
+}
